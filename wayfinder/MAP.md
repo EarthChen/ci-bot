@@ -27,6 +27,7 @@
 - [R4: pi 作为 bot 骨架](tickets/R4-pi-as-bot.md) — 事实: 第三方模型**全覆盖原生**(DeepSeek/Kimi/OpenRouter→Qwen/Bedrock/Vertex/Ollama/vLLM, 三候选最完整); headless 四入口(-p/--mode json/rpc/SDK)但**无原生 max_turns/max_tokens 硬上限**(issue#1898, 须 SDK 自建~50-100行); 无内置 subagent 但多进程隔离干净; skill**零迁移**复用, `/skill:name` 确定性加载, skillsOverride 精确控; 本地+.m2 契合高(无沙箱天然访问宿主FS, 建议容器内跑)。迁移代价最低但非零: 预算控制+并发编排+CI胶水~300-500行。
 - [G6: SDK+模型选型决策](tickets/G6-model-selection.md) — 决策: SDK=**Claude Agents SDK**; v1=**单 agent + 单主模型 + skills 启用 + prompt 点名语言专长**(多模型路由降级演进目标); provider=**直连兼容端点**(DeepSeek anthropic/Ollama); fallback=**主→同族备用→转人工**; 预算=**双层(subagent max_turns+全局 max_budget_usd)**。演进接缝: context超阈值/多模块时拆 subagent, skill 迁到 AgentDefinition.skills。待实测: allowed_tools bug/#677/#1378/#41143/#14882-subagent。
 - [G1: 单测失败分类法](tickets/G1-failure-taxonomy.md) — 决策: 5 类根因分类, v1 **只自动修 1/2/3** (测试 bug/被测变更致过时/测试缺失), **4 环境 flaky + 5 非单测根因 转交不修**(原则: 根因可能不在本服务一律不碰)。判定信号=CI日志摘要+本地执行双源; 渠道选择归 G2。**类别 3 升级**: 按 spec/PRD 补规格符合性测试(非"补到代码能跑", 避免固化 bug); spec=仓库内 spec 目录; 代码不符 spec 或 spec 不可读→转交人工。类别 2 文档同步=行为变更时触发, 判定留给 G2。
+- [G2: 诊断与修复路由/编排](tickets/G2-routing-orchestration.md) — 决策: v1 单连续 session(bot 代码做前后确定性事+agent 中间连续跑)。渠道=**混合**(glab 取元数据+本地 clone 执行)。pipeline: webhook→glab取日志/diff→粗筛类别5早转交→起 ClaudeSDKClient→agent 诊断+修复+文档→验证(相关测试+全量双层)→开 MR。验证遇 flaky=标记 skip+独立钉钉通知。修不动=直接转人工(MR 带诊断摘要)。**新维度**: 钉钉主动推送(转人工/异常/成功三类, 与 MR 解耦)。spec 读写时序: 诊断阶段读/修复后阶段写。
 
 ## Not yet specified
 
@@ -35,7 +36,7 @@
 - **语言适配层具体设计**：G6 已定调 v1=单 agent + skills 启用 + prompt 点名(挂载已有 java-coding-standards/springboot-tdd); 演进=拆 subagent, skill 迁到 AgentDefinition.skills。具体设计依赖 G2 pipeline 形状, 作为 G2 下游处理。R2 #14882 未知(subagent 内 skill 是否受全量加载回归影响)待实测。
 - **本地执行形态的依赖复用**：用户要求本地执行时复用 .m2。pi 无沙箱天然访问宿主 FS(R4 证实),但安全建议容器隔离。具体方案依赖 G5(沙箱)+G7(部署) grilling。
 - **成本估算**：依赖模型选型(G6)+ 并发规模(G4)。模型选型已落地(G6: 单主模型+provider配置), 但并发规模未定。G4 落地后 graduate; 单次修复 token 量级 + 并发峰值成本两项可同时算。
-- **每类失败的具体修复策略**：G1 分类法已落地(1/2/3 修, 4/5 转交; 类别 3 按 spec 补规格符合性测试)。具体修复策略(改动边界、验证要求)逐类依赖 G2 路由结论。G2 落地后 graduate 为 G3。
+- **每类失败的具体修复策略**: G1 分类法 + G2 路由均已落地。具体修复策略(每类的改动边界/验证要求/禁止动作)已 graduate 为 **G3**, 不再是 fog。
 - **部署形态细节**（runtime/容器/编排栈）：长驻服务大方向已定，具体栈依赖 G4（worker 供给）+ G6（模型，影响 runtime）落地。G7 会先搭框架。
 - **文档不一致检测的精度**：大方向"仅行为变更时顺带",但"行为变更"如何判定（签名 diff? 语义比对?)依赖 G2 路由结论。
 - **spec/PRD 格式与可读性判定**: 类别 3 要求按 spec 补测试, spec 位置已定(仓库内 spec 目录), 但格式(结构化 Markdown? OpenSpec? 自由文档?)与"spec 可读"的判定信号未定。依赖 G2 pipeline 设计。

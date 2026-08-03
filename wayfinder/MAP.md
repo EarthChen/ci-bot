@@ -28,6 +28,7 @@
 - [G6: SDK+模型选型决策](tickets/G6-model-selection.md) — 决策: SDK=**Claude Agents SDK**; v1=**单 agent + 单主模型 + skills 启用 + prompt 点名语言专长**(多模型路由降级演进目标); provider=**直连兼容端点**(DeepSeek anthropic/Ollama); fallback=**主→同族备用→转人工**; 预算=**双层(subagent max_turns+全局 max_budget_usd)**。演进接缝: context超阈值/多模块时拆 subagent, skill 迁到 AgentDefinition.skills。待实测: allowed_tools bug/#677/#1378/#41143/#14882-subagent。
 - [G1: 单测失败分类法](tickets/G1-failure-taxonomy.md) — 决策: 5 类根因分类, v1 **只自动修 1/2/3** (测试 bug/被测变更致过时/测试缺失), **4 环境 flaky + 5 非单测根因 转交不修**(原则: 根因可能不在本服务一律不碰)。判定信号=CI日志摘要+本地执行双源; 渠道选择归 G2。**类别 3 升级**: 按 spec/PRD 补规格符合性测试(非"补到代码能跑", 避免固化 bug); spec=仓库内 spec 目录; 代码不符 spec 或 spec 不可读→转交人工。类别 2 文档同步=行为变更时触发, 判定留给 G2。
 - [G2: 诊断与修复路由/编排](tickets/G2-routing-orchestration.md) — 决策: v1 单连续 session(bot 代码做前后确定性事+agent 中间连续跑)。渠道=**混合**(glab 取元数据+本地 clone 执行)。pipeline: webhook→glab取日志/diff→粗筛类别5早转交→起 ClaudeSDKClient→agent 诊断+修复+文档→验证(相关测试+全量双层)→开 MR。验证遇 flaky=标记 skip+独立钉钉通知。修不动=直接转人工(MR 带诊断摘要)。**新维度**: 钉钉主动推送(转人工/异常/成功三类, 与 MR 解耦)。spec 读写时序: 诊断阶段读/修复后阶段写。
+- [G3: 每类失败的修复策略](tickets/G3-repair-strategies.md) — 决策: **权限边界=只改测试和文档，绝不改被测代码**(与 G1 原则一致; 被测代码 bug→转交)。类别1/2: 改断言/期望/mock值+**轻量重构测试结构**(用户选, 风险: LLM 重构引入新 bug, 演进接缝=频发则收回)。类别3: 按 spec 补规格符合性测试, 只补失败相关路径。类别2文档同步: 只动变更相关段落。review 强度=强制人工(G6定)。验证=相关+全量双层(G2定)。
 
 ## Not yet specified
 

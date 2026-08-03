@@ -25,14 +25,15 @@
 - [R2: Claude SDK skill/MCP headless 消费](tickets/R2-skill-mcp-headless.md) — 事实: SDK skill 与交互式同款但 LLM 自主触发非确定; headless 领域专长首选 **subagent(AgentDefinition)** 非 skill; 确定性工具首选 **in-process MCP server**; MCP headersHelper bug(#64894) 阻塞预置 token 路径; skill 全量加载回归(#14882) 威胁 context。推荐: 主 agent `skills:[]`+显式路由 subagent+in-process MCP。
 - [R3: Codex SDK 能力边界](tickets/R3-codex-sdk.md) — 事实: Codex 三层(CLI/App Server / Agents SDK / Responses API)差异大; Codex CLI **2026.02 弃用 chat/completions 仅留 responses** → DeepSeek/Qwen/Kimi 无法直连(硬伤); Agents SDK 模型支持最广(原生 chat/completions 适配器)但并发有 ContextVar bug(#2246); Codex 有 Skills(feature-flagged) 与 pi 兼容但触发非确定; Agents SDK 无原生 skill。迁移: →Codex Skills 中度, →Agents SDK 中高。
 - [R4: pi 作为 bot 骨架](tickets/R4-pi-as-bot.md) — 事实: 第三方模型**全覆盖原生**(DeepSeek/Kimi/OpenRouter→Qwen/Bedrock/Vertex/Ollama/vLLM, 三候选最完整); headless 四入口(-p/--mode json/rpc/SDK)但**无原生 max_turns/max_tokens 硬上限**(issue#1898, 须 SDK 自建~50-100行); 无内置 subagent 但多进程隔离干净; skill**零迁移**复用, `/skill:name` 确定性加载, skillsOverride 精确控; 本地+.m2 契合高(无沙箱天然访问宿主FS, 建议容器内跑)。迁移代价最低但非零: 预算控制+并发编排+CI胶水~300-500行。
+- [G6: SDK+模型选型决策](tickets/G6-model-selection.md) — 决策: SDK=**Claude Agents SDK**; v1=**单 agent + 单主模型 + skills 启用 + prompt 点名语言专长**(多模型路由降级演进目标); provider=**直连兼容端点**(DeepSeek anthropic/Ollama); fallback=**主→同族备用→转人工**; 预算=**双层(subagent max_turns+全局 max_budget_usd)**。演进接缝: context超阈值/多模块时拆 subagent, skill 迁到 AgentDefinition.skills。待实测: allowed_tools bug/#677/#1378/#41143/#14882-subagent。
 
 ## Not yet specified
 
 <!-- 向 destination 的雾：能感到要来但还钉不精确的问题。随 frontier 推进逐片 graduate 为 ticket -->
 
-- **语言适配层具体设计**：内核语言无关、语言专长经 skill/MCP 注入。R1–R4 已落地，结论明确——pi 路径 skill 零迁移 + `/skill:name` 确定性加载是首选;Claude SDK 用 subagent(AgentDefinition) 表达专长非 skill;Codex/Agents SDK 迁移代价中高。**已可 graduate** 但具体设计依赖 G2 路由结论，作为 G2 下游处理。
+- **语言适配层具体设计**：G6 已定调 v1=单 agent + skills 启用 + prompt 点名(挂载已有 java-coding-standards/springboot-tdd); 演进=拆 subagent, skill 迁到 AgentDefinition.skills。具体设计依赖 G2 pipeline 形状, 作为 G2 下游处理。R2 #14882 未知(subagent 内 skill 是否受全量加载回归影响)待实测。
 - **本地执行形态的依赖复用**：用户要求本地执行时复用 .m2。pi 无沙箱天然访问宿主 FS(R4 证实),但安全建议容器隔离。具体方案依赖 G5(沙箱)+G7(部署) grilling。
-- **成本估算**：依赖模型选型（G6）+ 并发规模（G4）。两者落地后 graduate。
+- **成本估算**：依赖模型选型(G6)+ 并发规模(G4)。模型选型已落地(G6: 单主模型+provider配置), 但并发规模未定。G4 落地后 graduate; 单次修复 token 量级 + 并发峰值成本两项可同时算。
 - **每类失败的具体修复策略**：依赖 G1（分类法）+ G2（路由）落地后逐类 graduate。
 - **部署形态细节**（runtime/容器/编排栈）：长驻服务大方向已定，具体栈依赖 G4（worker 供给）+ G6（模型，影响 runtime）落地。G7 会先搭框架。
 - **文档不一致检测的精度**：大方向"仅行为变更时顺带"，但"行为变更"如何判定（签名 diff? 语义比对?）依赖 G2 路由结论。

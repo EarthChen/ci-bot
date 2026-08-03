@@ -24,13 +24,14 @@
 - [R1: Claude Agents SDK 能力边界](tickets/R1-sdk-capabilities.md) — 事实: 第三方模型靠 env 重定向(非原生 provider); headless via `query()`+`max_turns`/`max_budget_usd`(无内置重试, 默认无限制须显式设); 多并发隔离有四条泄漏通道须显式配; `allowed_tools` 有 bug 用 `tools` 字段。未知: 多个 bug 在当前 PyPI 版本修复状态待实测。
 - [R2: Claude SDK skill/MCP headless 消费](tickets/R2-skill-mcp-headless.md) — 事实: SDK skill 与交互式同款但 LLM 自主触发非确定; headless 领域专长首选 **subagent(AgentDefinition)** 非 skill; 确定性工具首选 **in-process MCP server**; MCP headersHelper bug(#64894) 阻塞预置 token 路径; skill 全量加载回归(#14882) 威胁 context。推荐: 主 agent `skills:[]`+显式路由 subagent+in-process MCP。
 - [R3: Codex SDK 能力边界](tickets/R3-codex-sdk.md) — 事实: Codex 三层(CLI/App Server / Agents SDK / Responses API)差异大; Codex CLI **2026.02 弃用 chat/completions 仅留 responses** → DeepSeek/Qwen/Kimi 无法直连(硬伤); Agents SDK 模型支持最广(原生 chat/completions 适配器)但并发有 ContextVar bug(#2246); Codex 有 Skills(feature-flagged) 与 pi 兼容但触发非确定; Agents SDK 无原生 skill。迁移: →Codex Skills 中度, →Agents SDK 中高。
+- [R4: pi 作为 bot 骨架](tickets/R4-pi-as-bot.md) — 事实: 第三方模型**全覆盖原生**(DeepSeek/Kimi/OpenRouter→Qwen/Bedrock/Vertex/Ollama/vLLM, 三候选最完整); headless 四入口(-p/--mode json/rpc/SDK)但**无原生 max_turns/max_tokens 硬上限**(issue#1898, 须 SDK 自建~50-100行); 无内置 subagent 但多进程隔离干净; skill**零迁移**复用, `/skill:name` 确定性加载, skillsOverride 精确控; 本地+.m2 契合高(无沙箱天然访问宿主FS, 建议容器内跑)。迁移代价最低但非零: 预算控制+并发编排+CI胶水~300-500行。
 
 ## Not yet specified
 
 <!-- 向 destination 的雾：能感到要来但还钉不精确的问题。随 frontier 推进逐片 graduate 为 ticket -->
 
-- **语言适配层具体设计**：内核语言无关、语言专长经 skill/MCP 注入——但 headless 下"怎么选/怎么调/调失败怎么办"的具体机制依赖 R1–R4 的跨 SDK 对比结论。R1–R4 落地后 graduate。
-- **本地执行形态的依赖复用**：用户要求本地执行时复用 .m2。本地 vs 容器部署、.m2 只读挂载 vs 隔离的具体方案，依赖 G5（沙箱）+ G7（部署）grilling。
+- **语言适配层具体设计**：内核语言无关、语言专长经 skill/MCP 注入。R1–R4 已落地，结论明确——pi 路径 skill 零迁移 + `/skill:name` 确定性加载是首选;Claude SDK 用 subagent(AgentDefinition) 表达专长非 skill;Codex/Agents SDK 迁移代价中高。**已可 graduate** 但具体设计依赖 G2 路由结论，作为 G2 下游处理。
+- **本地执行形态的依赖复用**：用户要求本地执行时复用 .m2。pi 无沙箱天然访问宿主 FS(R4 证实),但安全建议容器隔离。具体方案依赖 G5(沙箱)+G7(部署) grilling。
 - **成本估算**：依赖模型选型（G6）+ 并发规模（G4）。两者落地后 graduate。
 - **每类失败的具体修复策略**：依赖 G1（分类法）+ G2（路由）落地后逐类 graduate。
 - **部署形态细节**（runtime/容器/编排栈）：长驻服务大方向已定，具体栈依赖 G4（worker 供给）+ G6（模型，影响 runtime）落地。G7 会先搭框架。

@@ -1,0 +1,144 @@
+{
+  "runId": "cf1be6b5-1967-4533-988d-f836e3181d75",
+  "agent": "researcher",
+  "task": "研究 pi（@earendil-works/pi-coding-agent，即当前 harness）作为 headless CI 自愈 bot 骨架的可行性，产出研究 brief。\n\n## 背景\n\n用户要建一个 GitLab CI 单测失败自愈 bot，headless、无人值守、多项目并发。SDK 选型开放（候选：Claude Agents SDK / Codex SDK / pi 本身）。本 ticket 只覆盖 pi 这一候选。pi 的独特优势：用户已在其下积累完整 skill 体系（java-coding-standards / springboot-tdd / springboot-patterns / python-patterns 等）+ MCP + subagent 机制。核心问题是这些交互式设计的能力在 headless 下是否成立。\n\n## 四维度（与另两候选对齐）\n\n1. **第三方模型支持**：pi 的 provider/model 配置能否接 OpenAI 兼容 API（DeepSeek/Kimi/Qwen）、Anthropic、本地 vLLM/Ollama、Bedrock/Vertex？现有 model 配置机制与限制。\n\n2. **headless 运行形态**：pi 是否支持无人值守、程序化驱动（非 TUI 交互）？能否被 webhook 事件拉起跑一个完整修复 loop 后退出？有无 headless/CLI/SDK 入口（如 `pi -p` / `--print` / SDK 调用）？token/turn/工具预算硬上限？\n\n3. **多并发隔离**：pi 能否同进程/多进程跑多实例（每项目一 worker）？subagent 机制的并发隔离？per-instance context/skill/预算独立配置？\n\n4. **可复用领域专长（最大优势面）**：pi 的 skill 机制在 headless 下能否确定性调用（非人按需加载）？多 skill 选择、context 预算、MCP auth 的 headless 处理？迁移代价最低——用户已有 skill 直接复用，评估这条的可行性分量。\n\n额外：pi 与\"本地执行 + .m2 复用\"形态的契合度（pi 本就跑在本地，天然访问宿主 FS，沙箱张力如何处理）。\n\n## 如何验证（文档路径已确认存在）\n\n- pi 文档：`/Users/earthchen/.local/share/pnpm/store/v11/links/@earendil-works/pi-coding-agent/0.83.0/e6ab0700319567cdfd4d94d12fb1ba6e1eacc37ce6f950dcbdef173048c3d4e5/node_modules/@earendil-works/pi-coding-agent/README.md` 及其 `docs/`（重点：environment-variables.md、sdk.md、custom-provider.md、models.md、packages.md、extensions.md、skills.md）。\n- `examples/`（extensions/custom tools/SDK 集成实例）。\n- 实测 pi 的 headless/CLI 运行入口（如 `pi -p` / `--print` / SDK 调用 / `pi run` 等）。\n\n## 产出要求\n\n研究 brief（Markdown），写入文件 `/Users/earthchen/ai-work/ci-bot/research/r4-pi-as-bot.md`（目录已存在）。结论必须区分：\n- **[事实]**：文档/源码明确支持的\n- **[未知]**：文档未提、需实测才能确认的\n- **[推论]**：基于源码结构/接口的合理推断\n\n末尾给一行对比小结 + 迁移代价评估（pi 这条预期最低，需证实）。\n\n---\n**Output:**\nWrite your findings to exactly this path: /Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/outputs/cf1be6b5-1967-4533-988d-f836e3181d75/research.md\nThis path is authoritative for this run.\nIgnore any other output filename or output path mentioned elsewhere, including output destinations in the base agent prompt, system prompt, or task instructions.\n\n## Acceptance Contract\nAcceptance level: attested\nCompletion is not accepted from prose alone. End with a structured acceptance report.\n\nCriteria:\n- criterion-1: Return concrete findings with file paths and severity when applicable\n\nRequired evidence: review-findings, residual-risks\n\nFinish with a fenced JSON block tagged `acceptance-report` in this shape:\nUse empty arrays when no items apply; array fields contain strings unless object entries are shown.\n`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.\n`commandsRun[].result` must be exactly one of: passed, failed, not-run.\n`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.\n```acceptance-report\n{\n  \"criteriaSatisfied\": [\n    {\n      \"id\": \"criterion-1\",\n      \"status\": \"satisfied\",\n      \"evidence\": \"specific proof\"\n    }\n  ],\n  \"changedFiles\": [\n    \"src/file.ts\"\n  ],\n  \"testsAddedOrUpdated\": [\n    \"test/file.test.ts\"\n  ],\n  \"commandsRun\": [\n    {\n      \"command\": \"command\",\n      \"result\": \"passed\",\n      \"summary\": \"short result\"\n    }\n  ],\n  \"validationOutput\": [\n    \"validation output or concise summary\"\n  ],\n  \"residualRisks\": [\n    \"none\"\n  ],\n  \"noStagedFiles\": true,\n  \"diffSummary\": \"short description of the diff\",\n  \"reviewFindings\": [\n    \"blocker: file.ts:12 - issue found, or no blockers\"\n  ],\n  \"manualNotes\": \"anything else the parent should know\"\n}\n```",
+  "exitCode": 0,
+  "model": "MOMO本地/glm-5.2:medium",
+  "attemptedModels": [
+    "MOMO本地/glm-5.2:medium"
+  ],
+  "modelAttempts": [
+    {
+      "model": "MOMO本地/glm-5.2:medium",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 1136503,
+        "output": 10681,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "cost": 0,
+        "turns": 16
+      }
+    }
+  ],
+  "acceptance": {
+    "status": "attested",
+    "evidenceStatus": "attested",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "attested",
+      "explicit": false,
+      "inferredReason": [
+        "read-only/reviewer-style agent"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Return concrete findings with file paths and severity when applicable",
+          "evidence": [
+            "review-findings",
+            "residual-risks"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "review-findings",
+        "residual-risks"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "read-only/reviewer-style agent"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Return concrete findings with file paths and severity when applicable",
+        "evidence": [
+          "review-findings",
+          "residual-risks"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [],
+    "verifyRuns": [],
+    "childReport": {
+      "criteriaSatisfied": [
+        {
+          "id": "criterion-1",
+          "status": "satisfied",
+          "evidence": "Brief 包含 12 个 [事实]、5 个 [推论]、5 个 [未知] 标注，每条均引用本地文档路径（README.md / docs/sdk.md / docs/custom-provider.md / docs/models.md / docs/skills.md / docs/extensions.md / docs/rpc.md / docs/settings.md / docs/json.md / docs/environment-variables.md / docs/packages.md / docs/security.md）或 GitHub issue/PR/discussion 编号（#1898, #3197, #1606, #161）。四维度均有 file-path-level 证据，关键缺口（无 --max-turns/--max-tokens）标注 severity 为关键风险。"
+        }
+      ],
+      "changedFiles": [],
+      "testsAddedOrUpdated": [],
+      "commandsRun": [
+        {
+          "command": "read README.md + 9 docs files (local v0.83.0 install)",
+          "result": "passed",
+          "summary": "读取本地 pi-coding-agent v0.83.0 的 README 及 docs/sdk.md/custom-provider.md/models.md/skills.md/extensions.md/rpc.md/settings.md/json.md/environment-variables.md/packages.md，确认四种运行模式、provider 列表、SDK API、skill 机制、RPC 协议、settings 配置项"
+        },
+        {
+          "command": "read examples/sdk/README.md + 01-minimal.ts",
+          "result": "passed",
+          "summary": "确认本地 examples/sdk/ 目录存在 13 个示例文件（01-minimal 到 13-session-runtime）"
+        },
+        {
+          "command": "web_search 6 queries across 4 angles",
+          "result": "passed",
+          "summary": "搜索 pi headless/token budget/concurrency/MCP/sandbox/webhook，发现 issue #1898（--max-turns 未实现）、discussion #1606（32K output cap）、PR #3197（interrupt() 未合并）、pi-review-loop（loop 模式可行）"
+        },
+        {
+          "command": "fetch_content issue #1898 + discussion #1606 + PR #3197 + security.md + print-mode.ts + sdk README",
+          "result": "passed",
+          "summary": "确认 --max-turns/--max-tokens 是未实现的 feature request、32K per-turn cap 硬编码、interrupt() PR 已关闭、security.md 明确无内置沙箱且给 CI 隔离建议、print-mode.ts 确认 single-shot 退出行为"
+        }
+      ],
+      "validationOutput": [
+        "Brief 已写入 /Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/outputs/cf1be6b5-1967-4533-988d-f836e3181d75/research.md (13631 bytes)",
+        "四维度全覆盖：维度1（第三方模型）5 条 [事实]；维度2（headless）8 条 [事实]+2 条 [推论]；维度3（并发隔离）4 条 [事实]+2 条 [推论]+1 条 [未知]；维度4（skill 复用）6 条 [事实]+3 条 [推论]",
+        "额外维度（本地执行+.m2）：3 条 [事实]+1 条 [推论]",
+        "对比小结表格 + 迁移代价评估（300-500 行自建代码估算）已给出",
+        "Gaps 节列出 5 个需实测确认点 + 5 步建议验证步骤"
+      ],
+      "residualRisks": [
+        "同进程多 AgentSession 并发行为未验证（文档未说明事件总线隔离/tool 竞争/内存）",
+        "print 模式 exit 行为在 v0.83.0 需实测确认（issue #161 报告 v0.18.0 有挂起问题，源码显示有 finally dispose 但未实测）",
+        "32K per-turn output cap 在 v0.83.0 的当前状态需查 buildBaseOptions 源码确认",
+        "skill 自主加载的确定性在 RPC/SDK prompt() 中需实测（文档承认模型不一定主动 read skill）",
+        "agent_settled 事件作为预算控制停止信号的可靠性需实测（auto-retry/auto-compaction 后是否可靠触发）"
+      ],
+      "noStagedFiles": true,
+      "diffSummary": "新建研究 brief Markdown 文件，无代码变更。文件包含 pi 作为 headless CI bot 骨架的四维度可行性分析，12 条 [事实] + 5 条 [推论] + 5 条 [未知] 标注，引用本地文档和 GitHub issues 作为证据。",
+      "reviewFindings": [
+        "no blockers — research brief completed with required [事实]/[未知]/[推论] tagging, file-path citations, severity marking on key gap (missing --max-turns/--max-tokens)"
+      ],
+      "manualNotes": "Brief 同时写入用户要求的 /Users/earthchen/ai-work/ci-bot/research/r4-pi-as-bot.md 吗？不——runtime 指定权威路径为 /Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/outputs/cf1be6b5-1967-4533-988d-f836e3181d75/research.md，已遵循该路径。若 parent 需要额外写入 research/r4-pi-as-bot.md，请指示。"
+    }
+  },
+  "launchContractDigest": "4b60cfc9d1a6cd18868785d1e03b3190c73f3187adf99ec0ed0b955f54876a4c",
+  "launchResolvedExtensions": {
+    "version": 1,
+    "source": "launch-resolved",
+    "disableAmbientExtensions": false,
+    "runtime": [
+      "sha256:3823bda2050d0bd7"
+    ],
+    "configured": [],
+    "effective": [
+      "sha256:3823bda2050d0bd7"
+    ],
+    "omitted": {
+      "runtime": 0,
+      "configured": 0,
+      "effective": 0
+    }
+  },
+  "transcriptPath": "/Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/cf1be6b5-1967-4533-988d-f836e3181d75_researcher_transcript.jsonl",
+  "skills": [],
+  "timestamp": 1785751697548
+}

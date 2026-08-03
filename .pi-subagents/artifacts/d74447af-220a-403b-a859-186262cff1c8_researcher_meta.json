@@ -1,0 +1,142 @@
+{
+  "runId": "d74447af-220a-403b-a859-186262cff1c8",
+  "agent": "researcher",
+  "task": "研究 Claude Agents SDK 中 skill 与 MCP 在 headless、无人值守、多项目并发场景下的消费方式，产出研究 brief。\n\n## 背景\n\n用户已断言\"Claude Code Agents SDK 支持 skill、MCP 等能力\"——这在交互式形态下成立。本研究聚焦 **headless、无人值守、多项目并发** 下能否消费这些能力、以及怎么消费。\n\n## 研究范围（四点）\n\n1. **skill 在 SDK 里的形态**：SDK 暴露给自建程序的\"skill\"接口长什么样？是 Claude Code 交互式的同款机制、还是 SDK 自有原语（如可配置 system prompt + tool 集）？能否被 headless 程序**确定性**调用（非靠人在 REPL 里加载）？调用 API 形式是什么。\n\n2. **多 skill 选择机制**：无人值守时怎么选哪个 skill 处理哪类失败？是显式路由规则（bot 代码决定）、还是让 agent 自主选（LLM 决定）？各自的风险（误选/不选/context 爆炸）。\n\n3. **context 预算**：skill 是\"把 markdown 灌进 context\"——多 skill 叠加 / 大 skill 文本会不会撑爆 token 预算？SDK 有无压缩/检索（RAG/摘要/context window 管理）原语？\n\n4. **MCP 工具的 headless 适配**：MCP 工具可能需交互式 auth、有 rate limit、有状态——headless 批跑下怎么确定性处理（预置 token、自动续期、失败重试策略）？SDK 的 MCP client 是否支持非交互式 auth flow？\n\n## 如何验证\n\n- 官方文档关于 Agent Skills、MCP、tool authorization、headless 模式的章节。\n- SDK 类型定义中 skill/MCP 相关接口。\n- 已有用 SDK 自建 headless bot 的实例（含失败案例）。\n\n## 产出要求\n\n研究 brief（Markdown），写入文件 `/Users/earthchen/ai-work/ci-bot/research/r2-skill-mcp-headless.md`（目录不存在则创建）。结论必须区分：\n- **[事实]**：SDK 文档/源码明确支持的\n- **[未知]**：文档未提、需实测才能确认的\n- **[推论]**：基于源码结构/接口的合理推断\n\n特别标注：若 SDK 的\"skill\"与交互式 Claude Code 不同款，明确给出 SDK 里**可复用领域专长**的对应物是什么（system prompt 模板？subagent？MCP tool 包？），供后续设计据以重新定调。\n\n---\n**Output:**\nWrite your findings to exactly this path: /Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/outputs/d74447af-220a-403b-a859-186262cff1c8/research.md\nThis path is authoritative for this run.\nIgnore any other output filename or output path mentioned elsewhere, including output destinations in the base agent prompt, system prompt, or task instructions.\n\n## Acceptance Contract\nAcceptance level: attested\nCompletion is not accepted from prose alone. End with a structured acceptance report.\n\nCriteria:\n- criterion-1: Return concrete findings with file paths and severity when applicable\n\nRequired evidence: review-findings, residual-risks\n\nFinish with a fenced JSON block tagged `acceptance-report` in this shape:\nUse empty arrays when no items apply; array fields contain strings unless object entries are shown.\n`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.\n`commandsRun[].result` must be exactly one of: passed, failed, not-run.\n`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.\n```acceptance-report\n{\n  \"criteriaSatisfied\": [\n    {\n      \"id\": \"criterion-1\",\n      \"status\": \"satisfied\",\n      \"evidence\": \"specific proof\"\n    }\n  ],\n  \"changedFiles\": [\n    \"src/file.ts\"\n  ],\n  \"testsAddedOrUpdated\": [\n    \"test/file.test.ts\"\n  ],\n  \"commandsRun\": [\n    {\n      \"command\": \"command\",\n      \"result\": \"passed\",\n      \"summary\": \"short result\"\n    }\n  ],\n  \"validationOutput\": [\n    \"validation output or concise summary\"\n  ],\n  \"residualRisks\": [\n    \"none\"\n  ],\n  \"noStagedFiles\": true,\n  \"diffSummary\": \"short description of the diff\",\n  \"reviewFindings\": [\n    \"blocker: file.ts:12 - issue found, or no blockers\"\n  ],\n  \"manualNotes\": \"anything else the parent should know\"\n}\n```",
+  "exitCode": 0,
+  "model": "MOMO本地/glm-5.2:medium",
+  "attemptedModels": [
+    "MOMO本地/glm-5.2:medium"
+  ],
+  "modelAttempts": [
+    {
+      "model": "MOMO本地/glm-5.2:medium",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 851518,
+        "output": 11257,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "cost": 0,
+        "turns": 20
+      }
+    }
+  ],
+  "acceptance": {
+    "status": "attested",
+    "evidenceStatus": "attested",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "attested",
+      "explicit": false,
+      "inferredReason": [
+        "read-only/reviewer-style agent"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Return concrete findings with file paths and severity when applicable",
+          "evidence": [
+            "review-findings",
+            "residual-risks"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "review-findings",
+        "residual-risks"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "read-only/reviewer-style agent"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Return concrete findings with file paths and severity when applicable",
+        "evidence": [
+          "review-findings",
+          "residual-risks"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [],
+    "verifyRuns": [],
+    "childReport": {
+      "criteriaSatisfied": [
+        {
+          "id": "criterion-1",
+          "status": "satisfied",
+          "evidence": "Brief cites concrete file paths (SKILL.md, AgentDefinition in agents param, ClaudeAgentOptions), GitHub issues (#64894 headersHelper bug, #69620 headless MCP docs gap, #14882 skill full-load regression, #17327 proactive invocation), and SDK source artifacts (claude-agent-sdk-python README at commit 70bff63, examples/tool_permission_callback.py at a0fbd14). Severity-tagged findings: #64894 = blocker for HTTP MCP auth, #14882 = high for context budget, #17327 = medium for selection determinism."
+        }
+      ],
+      "changedFiles": [],
+      "testsAddedOrUpdated": [],
+      "commandsRun": [
+        {
+          "command": "web_search (4 query batches, 6-8 results each)",
+          "result": "passed",
+          "summary": "Covered 4 research angles: skill SDK form, multi-skill selection, context budget, MCP headless auth"
+        },
+        {
+          "command": "fetch_content (readable, 4 GitHub/docs URLs that resolved)",
+          "result": "passed",
+          "summary": "Retrieved README, subagents guide, permission example, controllability analysis"
+        },
+        {
+          "command": "get_search_content (bounded slices, 8 retrievals)",
+          "result": "passed",
+          "summary": "Extracted issue #64894 mitmproxy evidence, issue #69620 doc gap, issue #14882 regression, Promptfoo option table, subagent token data"
+        },
+        {
+          "command": "write research.md to authoritative output path",
+          "result": "passed",
+          "summary": "Brief written to /Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/outputs/d74447af-220a-403b-a859-186262cff1c8/research.md"
+        }
+      ],
+      "validationOutput": [
+        "All 4 research points covered with [事实]/[未知]/[推论] tags per requirement",
+        "Special marking section included: SDK skill is same as interactive Claude Code; programmatic correspondents (subagent, in-process MCP server, can_use_tool) explicitly identified for re-scoping",
+        "Severity-tagged findings: headersHelper bug #64894 (blocker for HTTP MCP), skill full-load #14882 (high for context budget), LLM skill selection non-determinism (medium)",
+        "5 concrete gaps identified with suggested next-step empirical tests"
+      ],
+      "residualRisks": [
+        "issue #14882 (skill full-token load at startup) observed only in interactive /context; SDK query() path unverified — context budget estimates may be optimistic if regression applies to headless",
+        "headersHelper bug #64894 marked closed but fix availability in PyPI-bundled CLI version unverified — remote HTTP MCP with pre-provisioned tokens may still fail",
+        "Concurrent query() resource overhead (subprocess per session) not quantified — multi-project concurrency limits unknown",
+        "claude.com / platform.claude.com / code.claude.com / anthropic.com domains blocked by network policy during research; official docs cited via search snippets and secondary sources, not direct fetch — some doc precision may be lost"
+      ],
+      "noStagedFiles": true,
+      "diffSummary": "Created research brief markdown file at the authoritative output path; no source code changes. Brief covers 4 research points with epistemic tags, a cross-cutting recommended architecture, a special marking on skill-vs-subagent re-scoping, and an acceptance report.",
+      "reviewFindings": [
+        "no blockers: research brief is documentation-only, no code modified"
+      ],
+      "manualNotes": "Official docs (code.claude.com, platform.claude.com, anthropic.com) were network-blocked; findings rely on search-result snippets, GitHub issues (directly fetched), the Python SDK README (directly fetched), and the Promptfoo provider doc (directly fetched, most complete option reference). The 5 gaps listed should be resolved by empirical tests before locking architecture decisions, especially #14882 regression in SDK path and #64894 fix status in bundled CLI."
+    }
+  },
+  "launchContractDigest": "ea9cc70b5b1967373b89b386bb97ac20f31975218261cf5825485574abd7bed6",
+  "launchResolvedExtensions": {
+    "version": 1,
+    "source": "launch-resolved",
+    "disableAmbientExtensions": false,
+    "runtime": [
+      "sha256:3823bda2050d0bd7"
+    ],
+    "configured": [],
+    "effective": [
+      "sha256:3823bda2050d0bd7"
+    ],
+    "omitted": {
+      "runtime": 0,
+      "configured": 0,
+      "effective": 0
+    }
+  },
+  "transcriptPath": "/Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/d74447af-220a-403b-a859-186262cff1c8_researcher_transcript.jsonl",
+  "skills": [],
+  "timestamp": 1785751248163
+}

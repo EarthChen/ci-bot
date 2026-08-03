@@ -2,7 +2,7 @@
 
 > **wayfinder:grilling** · 状态: open · 类型: HITL（需用户在线，/grilling）· assignee: unclaimed
 >
-> **Blocked by**: R1, R2（需 SDK 能力 + skill/MCP 形态结论）, G1（需失败分类法）
+> **Blocked by**: R1, R2, R3, R4（需跨 SDK 对比 + skill/MCP 形态结论定调路由机制）, G1（需失败分类法）
 
 ## Question
 

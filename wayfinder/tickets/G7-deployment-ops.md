@@ -8,7 +8,7 @@
 
 用户要 spec 含部署运维。本 ticket grilling 出 bot 长驻服务的部署形态、监控、告警、成本。
 
-1. **runtime 形态**：单进程多 worker、多进程、容器化、还是编排（k8s）？**依赖 G4 worker 供给方案**。模型层（G6）是否要求特定 runtime（如 GPU 节点、Bedrock 凭据）。
+1. **runtime 形态**：单进程多 worker、多进程、容器化、还是编排（k8s）？**本地执行形态作为选项**（复用宿主 .m2/依赖、省下载，与 G5 沙箱张力需协调）。**依赖 G4 worker 供给方案**。模型层（G6）是否要求特定 runtime（如 GPU 节点、Bedrock 凭据）。
 2. **GitLab webhook 接入**：服务暴露方式（公网 webhook + 签名校验、还是 GitLab sidecar/queue）、事件去重、重放保护。
 3. **可观测性**：每次修复的 trace（哪个项目、哪类失败、花了多少 token、修没修成、MR 链接）、指标（成功率、平均修复时长、成本/修复）、日志聚合。
 4. **告警**：bot 自身故障（webhook 收不到、worker 全死、配额耗尽）怎么告警。

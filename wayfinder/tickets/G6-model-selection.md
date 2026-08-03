@@ -1,12 +1,12 @@
-# G6: 模型选型决策
+# G6: SDK + 模型选型决策
 
 > **wayfinder:grilling** · 状态: open · 类型: HITL（需用户在线，/grilling）· assignee: unclaimed
 >
-> **Blocked by**: R1（SDK 对第三方模型支持）, R2（skill/MCP 是否限制模型选择）
+> **Blocked by**: R1, R2, R3, R4（需四份研究合成跨 SDK 对比矩阵：Claude Agents SDK / Codex SDK / pi 的能力 + 第三方模型支持 + headless 并发 + skill/MCP 消费 + 领域专长迁移代价）
 
 ## Question
 
-根据 R1 的 SDK 能力结论，决定 bot 用什么模型（或模型组合）。这是 spec 里最影响成本与质量的决策之一。
+根据 R1–R4 合成的跨 SDK 对比矩阵，决定 bot 用哪个 SDK 骨架 + 什么模型（或模型组合）。这是 spec 里最影响成本、质量、且最难回退的决策之一。
 
 grilling 出：
 1. **主模型**：单一大模型 vs 按任务路由多模型（诊断用强推理模型、改测试用快模型）？

@@ -1,0 +1,124 @@
+{
+  "runId": "6edb387e-29dd-4aae-b5d5-f5965abb993b",
+  "agent": "researcher",
+  "task": "研究 OpenAI Codex（codex-cli / codex agent SDK / Responses API + tools 体系）作为 headless CI 自愈 bot 骨架的能力边界，产出研究 brief。\n\n## 背景\n\n用户要建一个 GitLab CI 单测失败自愈 bot，headless、无人值守、多项目并发。SDK 选型开放（候选：Claude Agents SDK / Codex SDK / pi 本身）。本 ticket 只覆盖 Codex SDK 这一候选，与另两份研究合成跨 SDK 对比矩阵。\n\n> 注意：\"Codex SDK\"的确切所指需先厘清——是 codex-cli 的 agent 能力、OpenAI 官方发布的 agent SDK（如 openai-agents python 包）、还是 Responses API + function calling。研究第一步先界定范围，不要把不同东西混在一起。\n\n## 四维度（与另两候选对齐，便于横向比较）\n\n1. **第三方模型支持**：Codex 是否绑定 OpenAI 模型？能接 OpenAI 兼容 API（DeepSeek/Kimi/Qwen）、本地 vLLM/Ollama、Anthropic、Bedrock/Vertex 吗？接法（原生 provider 抽象？model 字符串？自定义 transport？）与限制。\n\n2. **headless 运行形态**：支持无人值守、程序化驱动 loop 吗（非交互 REPL）？subagent/agent 派发与 tool 调用能否无人在环确定性触发？有无 token/turn/工具调用预算的硬上限机制？错误/重试如何处理？\n\n3. **多并发隔离**：同进程内跑多 agent 实例（每项目一 worker）受支持否？有无共享状态陷阱？per-agent context/工具白名单/预算能否独立配置？\n\n4. **可复用领域专长**：Codex 怎么表达可复用领域专长（对应 pi 的 skill / Claude 的 skill）？是 prompt 模板、subagent、tool 包、还是无原生机制？headless 下能否确定性调用（非靠人加载）？特别评估迁移代价：用户在 pi 下积累的 java-coding-standards / springboot-tdd 等 skill 迁移到 Codex 需多少重写。\n\n## 如何验证\n\n- OpenAI 官方文档（Codex / Responses API / Agents 相关 / openai-agents python 包）。\n- codex-cli 源码/类型定义（如 GitHub openai/codex 或类似仓库）。\n- 社区 headless bot 实例与坑。\n\n## 产出要求\n\n研究 brief（Markdown），写入文件 `/Users/earthchen/ai-work/ci-bot/research/r3-codex-sdk.md`（目录已存在）。结论必须区分：\n- **[事实]**：文档/源码明确支持的\n- **[未知]**：文档未提、需实测才能确认的\n- **[推论]**：基于源码结构/接口的合理推断\n\n末尾给一行对比小结（便于横向比）+ 迁移代价评估。\n\n---\n**Output:**\nWrite your findings to exactly this path: /Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/outputs/6edb387e-29dd-4aae-b5d5-f5965abb993b/research.md\nThis path is authoritative for this run.\nIgnore any other output filename or output path mentioned elsewhere, including output destinations in the base agent prompt, system prompt, or task instructions.\n\n## Acceptance Contract\nAcceptance level: attested\nCompletion is not accepted from prose alone. End with a structured acceptance report.\n\nCriteria:\n- criterion-1: Return concrete findings with file paths and severity when applicable\n\nRequired evidence: review-findings, residual-risks\n\nFinish with a fenced JSON block tagged `acceptance-report` in this shape:\nUse empty arrays when no items apply; array fields contain strings unless object entries are shown.\n`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.\n`commandsRun[].result` must be exactly one of: passed, failed, not-run.\n`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.\n```acceptance-report\n{\n  \"criteriaSatisfied\": [\n    {\n      \"id\": \"criterion-1\",\n      \"status\": \"satisfied\",\n      \"evidence\": \"specific proof\"\n    }\n  ],\n  \"changedFiles\": [\n    \"src/file.ts\"\n  ],\n  \"testsAddedOrUpdated\": [\n    \"test/file.test.ts\"\n  ],\n  \"commandsRun\": [\n    {\n      \"command\": \"command\",\n      \"result\": \"passed\",\n      \"summary\": \"short result\"\n    }\n  ],\n  \"validationOutput\": [\n    \"validation output or concise summary\"\n  ],\n  \"residualRisks\": [\n    \"none\"\n  ],\n  \"noStagedFiles\": true,\n  \"diffSummary\": \"short description of the diff\",\n  \"reviewFindings\": [\n    \"blocker: file.ts:12 - issue found, or no blockers\"\n  ],\n  \"manualNotes\": \"anything else the parent should know\"\n}\n```",
+  "exitCode": 0,
+  "model": "MOMO本地/glm-5.2:medium",
+  "attemptedModels": [
+    "MOMO本地/glm-5.2:medium"
+  ],
+  "modelAttempts": [
+    {
+      "model": "MOMO本地/glm-5.2:medium",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 481461,
+        "output": 11875,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "cost": 0,
+        "turns": 14
+      }
+    }
+  ],
+  "acceptance": {
+    "status": "attested",
+    "evidenceStatus": "attested",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "attested",
+      "explicit": false,
+      "inferredReason": [
+        "read-only/reviewer-style agent"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Return concrete findings with file paths and severity when applicable",
+          "evidence": [
+            "review-findings",
+            "residual-risks"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "review-findings",
+        "residual-risks"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "read-only/reviewer-style agent"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Return concrete findings with file paths and severity when applicable",
+        "evidence": [
+          "review-findings",
+          "residual-risks"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [],
+    "verifyRuns": [],
+    "childReport": {
+      "criteriaSatisfied": [
+        {
+          "id": "criterion-1",
+          "status": "satisfied",
+          "evidence": "Research brief written to /Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/outputs/6edb387e-29dd-4aae-b5d5-f5965abb993b/research.md (17999 bytes). Every finding tagged [事实]/[未知]/[推论]. Critical risks flagged with [事实｜关键风险] and [推论｜风险] severity markers: (1) Codex CLI chat/completions deprecation 2026.02 breaks DeepSeek/Qwen/Kimi support; (2) Agents SDK Issue #2246 ContextVar concurrent bug with workaround; (3) CODEX_HOME shared-state concurrency contention. Per-dimension comparison tables provided with file paths/source URLs for each claim."
+        }
+      ],
+      "changedFiles": [
+        "/Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/outputs/6edb387e-29dd-4aae-b5d5-f5965abb993b/research.md"
+      ],
+      "testsAddedOrUpdated": [],
+      "commandsRun": [],
+      "validationOutput": [
+        "File write verified: 17999 bytes at authoritative output path",
+        "Read-back verified: first 30 lines + full file content confirmed structurally intact (Summary → 范围界定 A/B/C → 维度1-4 with comparison tables → 横向对比小结 → Sources → Gaps)",
+        "Epistemic tagging applied: every numbered finding prefixed with [事实]/[未知]/[推论] per task requirements",
+        "Five explicit Gaps identified with suggested next steps (source code reads, environment re-verification, empirical concurrency tests)"
+      ],
+      "residualRisks": [
+        "官方 Codex 文档 (developers.openai.com/codex/*) 全程被本地网络阻断，config-reference/config-advanced/sdk/subagents/skills 页面无法直接 fetch——维度2预算机制和维度4 skill GA状态依赖二级源(morphllm/ofox/blakecrosley/blog.fsck)+搜索摘要，需在可访问环境复验",
+        "Codex CLI agent loop 预算硬上限(max_turns/max_tokens/max_tool_calls)未从官方文档确认为[事实]，标注为[未知]——需读 codex-rs/core 源码",
+        "App Server 多thread共享状态边界(config/auth加载粒度)未从文档明确，标注为[推论]——需读 codex-rs/app-server 源码",
+        "Agents SDK ContextVar bug #2246 修复状态未最终确认——PR #3843 修复了 provider 隔离但 tracing ContextVar 修复未明确",
+        "任务要求写入 research/r3-codex-sdk.md 但权威路径为 .pi-subagents/artifacts/outputs，brief 仅写入权威路径并在开头注明了路径冲突——若父级需要镜像到 research/ 需额外指令"
+      ],
+      "noStagedFiles": true,
+      "diffSummary": "Created new research brief (17999 bytes) covering OpenAI Codex ecosystem (3 layers: Codex CLI/App Server, OpenAI Agents SDK, Responses API) across 4 dimensions for headless CI self-healing bot skeleton evaluation. Contains scope clarification, per-dimension findings with [事实]/[未知]/[推论] tags, comparison tables, migration cost assessment for pi skills, and horizontal comparison summary.",
+      "reviewFindings": [
+        "no blockers — research brief meets all task requirements: scope clarification (3 distinct layers), 4 dimensions covered, epistemic tagging applied, migration cost assessed, sources cited with kept/dropped rationale, gaps documented with next steps"
+      ],
+      "manualNotes": "关键决策信号供父级横向对比矩阵: Codex CLI 路径的第三方模型支持因 responses-only 迁移严重收窄(2026.02 硬错误),这是与 Claude/pi 候选对比时的最大劣势; Agents SDK 路径模型支持最广但无原生 skill 机制,迁移代价中高; 并发隔离上 Codex CLI 进程级隔离更稳健,Agents SDK 同进程并发有 ContextVar bug 但有 workaround。建议跨 SDK 对比矩阵将 Codex 拆为 CLI 和 Agents SDK 两行,不要合并。"
+    }
+  },
+  "launchContractDigest": "4d345b305fdf282525ede30322e32ed77ce62c3d24d462e1978fa4711a964510",
+  "launchResolvedExtensions": {
+    "version": 1,
+    "source": "launch-resolved",
+    "disableAmbientExtensions": false,
+    "runtime": [
+      "sha256:3823bda2050d0bd7"
+    ],
+    "configured": [],
+    "effective": [
+      "sha256:3823bda2050d0bd7"
+    ],
+    "omitted": {
+      "runtime": 0,
+      "configured": 0,
+      "effective": 0
+    }
+  },
+  "transcriptPath": "/Users/earthchen/ai-work/ci-bot/.pi-subagents/artifacts/6edb387e-29dd-4aae-b5d5-f5965abb993b_researcher_transcript.jsonl",
+  "skills": [],
+  "timestamp": 1785751628731
+}

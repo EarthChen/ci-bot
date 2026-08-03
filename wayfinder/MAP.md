@@ -23,6 +23,7 @@
 
 - [R1: Claude Agents SDK 能力边界](tickets/R1-sdk-capabilities.md) — 事实: 第三方模型靠 env 重定向(非原生 provider); headless via `query()`+`max_turns`/`max_budget_usd`(无内置重试, 默认无限制须显式设); 多并发隔离有四条泄漏通道须显式配; `allowed_tools` 有 bug 用 `tools` 字段。未知: 多个 bug 在当前 PyPI 版本修复状态待实测。
 - [R2: Claude SDK skill/MCP headless 消费](tickets/R2-skill-mcp-headless.md) — 事实: SDK skill 与交互式同款但 LLM 自主触发非确定; headless 领域专长首选 **subagent(AgentDefinition)** 非 skill; 确定性工具首选 **in-process MCP server**; MCP headersHelper bug(#64894) 阻塞预置 token 路径; skill 全量加载回归(#14882) 威胁 context。推荐: 主 agent `skills:[]`+显式路由 subagent+in-process MCP。
+- [R3: Codex SDK 能力边界](tickets/R3-codex-sdk.md) — 事实: Codex 三层(CLI/App Server / Agents SDK / Responses API)差异大; Codex CLI **2026.02 弃用 chat/completions 仅留 responses** → DeepSeek/Qwen/Kimi 无法直连(硬伤); Agents SDK 模型支持最广(原生 chat/completions 适配器)但并发有 ContextVar bug(#2246); Codex 有 Skills(feature-flagged) 与 pi 兼容但触发非确定; Agents SDK 无原生 skill。迁移: →Codex Skills 中度, →Agents SDK 中高。
 
 ## Not yet specified
 

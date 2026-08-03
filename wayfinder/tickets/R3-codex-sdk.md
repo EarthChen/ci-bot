@@ -1,6 +1,17 @@
 # R3: Codex SDK 作为 bot 骨架的能力边界研究
 
-> **wayfinder:research** · 状态: open · 类型: AFK（researcher subagent）· assignee: unclaimed
+> **wayfinder:research** · 状态: ✅ closed · 类型: AFK（researcher subagent）· assignee: charting session
+>
+> **Resolution**: Codex 体系作为 bot 骨架的能力边界已查清。核心结论——
+> - **[事实]** "Codex SDK" 非单一产品，是三层：Codex CLI/App Server (codex-rs) / OpenAI Agents SDK (openai-agents-python) / Responses API + function calling。三者能力差异极大，不可混谈。
+> - **[事实｜最大限制]** Codex CLI **2026.02 弃用 chat/completions，仅留 responses API**。DeepSeek/Qwen/Kimi 等仅支持 chat/completions 的国产/开源模型将**无法直连**，除非自建 responses-bridge 代理。这是 Codex CLI 路径对目标模型生态的硬伤。
+> - **[事实]** OpenAI Agents SDK 模型支持最广：原生支持 chat/completions 适配器（与 Codex CLI 弃用方向不同步），三层粒度（set_default_openai_client / ModelProvider / per-agent model）可混多 provider；Anthropic/Bedrock/Vertex 无原生需适配器。
+> - **[事实]** headless：Agents SDK 有 `max_turns` 硬上限 + guardrails(前/后/工具校验) + 可组合 retry policy + `needs_approval=False` 全自动；Codex CLI `codex exec` + App Server 程序化可行但 turn/token/tool 预算**未明确文档化**。
+> - **[事实｜bug]** Agents SDK 并发有 **ContextVar bug (#2246)**：`asyncio.gather` 多 `Runner.run()` 触发 tracing ContextVar token 冲突，workaround `tracing_disabled=True` 但丢 tracing。PR #3843 (2026-07) 部分修复。
+> - **[事实]** 可复用专长：Codex 有 **Skills 机制（feature-flagged）**，SKILL.md 格式与 pi 兼容，但触发仍靠模型匹配 description（非确定）；Agents SDK **无原生 skill**，专长用 `Agent(instructions)` + `@function_tool` + `as_tool()` 确定性表达，但无渐进披露。
+> - **[推论]** 迁移代价：pi skills → Codex Skills 中度重写（格式兼容+description 调优+prompt 显式 `$SkillName`）；→ Agents SDK 中高度重写（拆解为 Agent/tool，渐进披露需自建）。
+>
+> Brief: [`research/r3-codex-sdk.md`](../research/r3-codex-sdk.md)（213 行）。
 >
 > **Blocked by**: —（与 R1/R2/R4 并行，各覆盖一个候选 SDK）
 

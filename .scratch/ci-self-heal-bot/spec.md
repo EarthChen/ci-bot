@@ -82,7 +82,7 @@ CI 单元测试失败后，开发者必须手动介入：判断失败根因、�
 43. 作为 DevOps 工程师，我希望 bot 隔离每个 worker 的目录、session、配置（PI_CODING_AGENT_DIR + --session-dir + cwd），这样并发 worker 不泄漏状态。
 44. 作为安全工程师，我希望 bot 把 secret 存 .env（chmod 600、gitignore、永不提交），这样凭证不被暴露。
 45. 作为安全工程师，我希望 bot 只写测试/文档目录，这样生产源码受保护。
-46. 作为安全工程师，我希望 bot 只读复用 .m2，这样 Maven 缓存共享但不被写污染。
+46. 作为安全工程师，我希望 bot 复用宿主 .m2 缓存（v1 共享可写），这样跨 pipeline 复用省下载；防污染靠审计归档（ticket 06）+ 威胁模型 B 而非只读。（原"只读复用"已在 ticket 06 修正：Maven 写语义下只读不成立。）
 47. 作为安全工程师，我希望 bot 归档所有 diff 和 LLM 推理痕迹，这样坏修复可事后追溯。
 48. 作为安全工程师，我希望 bot 锁依赖版本 + 跑 pnpm audit，这样供应链攻击被缓解。
 49. 作为安全工程师，我希望 bot 在受限 OS 用户（v1）或容器非 root 用户（docker 演进）下跑，这样 FS 访问被收窄。
@@ -164,7 +164,7 @@ GitLab webhook（pipeline 失败）
   → bot：spawn worker（per-worker PI_CODING_AGENT_DIR + --session-dir + cwd）
   → bot：glab 取 CI 日志 + MR diff + pipeline 状态
   → bot：粗筛 class 5（关键词）？→ 早转交 + 钉钉
-  → bot：本地 clone + 受限用户 + .m2 只读挂载
+  → bot：本地 clone + 受限用户（部署级）
   → bot：起 pi agent session（createAgentSession，预算软上限已设）
   → agent：读 CI 日志 + diff + 源码，分类（G1 1/2/3）
       ├─ class 4 flaky/环境 → 转交不修 + 钉钉
@@ -190,6 +190,15 @@ GitLab webhook（pipeline 失败）
 
 ### 沙箱与安全（G5）
 
+> **Amendment（ticket 06 实现期修正）**：原 G5 resolution 的".m2 只读挂载复用"在 Maven
+> 写入语义下不成立。`.m2/repository` 既是读缓存也是写目标：`mvn test` 未命中依赖
+> 会下载写入；多模块项目 `mvn install` 会写入主模块产物供 test 模块消费。只读 .m2
+> 会导致 install 失败、缺依赖时验证假红与误导信号。**v1 修正决策**：使用宿主共享
+> 可写 .m2，无只读挂载。v1 并发=1（G4）无 .m2 写竞态；agent 跑 `mvn install`/
+> `mvn test` 写入合法，跨 pipeline 缓存复用是共享宿主 home 的天然结果。防 agent 污
+> 染 .m2 不靠只读，靠威胁模型 B（产错非恶意）+ G3（agent 只在 worktree git 操作）+
+> 审计归档（ticket 06）事后追溯。演进接缝：并发>1 或威胁模型 A 升级 → per-project
+> 隔离 .m2（部署配置 user.home 覆写，非 bot 代码）。
 - **沙箱**：目录隔离 + 受限 OS 用户，不用容器（v1）。威胁模型 B：内部可信项目，LLM 产错非恶意。演进接缝：威胁升级到 A（prompt 注入实质化）→ 加容器/microVM。
 - **Secret**：.env 优先 + 环境变量。GitLab token、模型 API key、MCP auth 存 .env（chmod 600、.gitignore、永不提交）。bot 读 .env，不持久化 secret。
 - **LLM 审计**：全归档 diff + MR 描述 + LLM 推理痕迹（诊断结论、根因、修复理由）到日志/对象存储。坏修复可事后追溯。
@@ -201,7 +210,7 @@ GitLab webhook（pipeline 失败）
 |------|----|----|------|
 | 项目 checkout | ✅ | ✅（测试/文档目录） | G3 禁 src 写 |
 | spec 目录 | ✅ | ✅（class 2 行为变更） | G1 定 |
-| .m2 | ✅ | ❌ | 只读复用 |
+| .m2 | ✅ | ✅ | v1 共享可写复用（原"只读"修正，见 G5 amendment） |
 | ~/.ssh、~/.aws 等 | ❌ | ❌ | 受限用户 + chmod |
 | .env（secret） | ✅ | ❌ | chmod 600 + .gitignore |
 

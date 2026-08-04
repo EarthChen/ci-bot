@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "audit": "pnpm audit --prod",
     "start": "node --enable-source-maps dist/main.js",
     "dev": "tsx src/main.ts"
   },

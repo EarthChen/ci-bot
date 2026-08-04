@@ -23,7 +23,7 @@
 > |---|---|---|---|
 > | 项目 checkout | ✅ | ✅(测试/文档目录) | G3 禁 src 写 |
 > | spec 目录 | ✅ | ✅(类别2行为变更时) | G1 定 |
-> | .m2 | ✅ | ❌(仅复用缓存) | 读复用省下载 |
+> | .m2 | ✅ | ✅ | v1 共享可写复用（见 ticket 06 amendment 修正） |
 > | ~/.ssh, ~/.aws 等 | ❌ | ❌ | 受限用户+chmod 隔离 |
 > | .env (secret) | ✅ | ❌ | chmod 600 + .gitignore |
 >
@@ -34,6 +34,8 @@
 bot 执行 LLM 生成的代码、测试、可能改被测代码与文档——安全是硬约束。本 ticket grilling 出沙箱化与权限边界，写入 spec 的安全章节。
 
 1. **代码执行隔离**：跑 LLM 生成的测试/被测代码在什么沙箱（容器、microVM、namespace）？网络/文件系统/secret 访问怎么切。**与本地 .m2 复用的张力**：用户要求本地执行时复用宿主 .m2/依赖（省下载），但沙箱要隔离 FS 防 LLM 代码乱写——grilling 只读挂载 .m2 + 写隔离方案，还是放弃复用全量隔离。
+>
+> **Amendment（ticket 06 实现期修正）**：原 resolution "只读挂载 .m2" 在 Maven 写语义下不成立（.m2 既是读缓存也是写目标：`mvn test` 缺依赖会下载写入，多模块 `mvn install` 写主模块产物）。v1 修正为**宿主共享可写 .m2**，并发=1 无竞态，防污染靠威胁模型 B + G3 + 审计归档，非只读。详见 spec.md G5 amendment。
 2. **写权限**：bot 对仓库的写权限范围——只能动测试目录、还是允许动 src、允许动文档？按项目可配？
 3. **secret 与凭据**：bot 持有的 GitLab token、模型 API key、MCP auth 怎么存、怎么注入 worker、怎么轮转。**触发 security-reviewer**。
 4. **LLM 输出审计**：bot 产出的 diff/MR 描述是否记录 LLM 的推理痕迹（便于事后追溯坏修复根因）？

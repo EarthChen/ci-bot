@@ -16,8 +16,18 @@
  * Cleanup: worktrees are removed by the worker manager's per-event cwd
  * cleanup. The shared bare clone persists across events (incremental).
  *
- * Sandbox (ticket 06 hardens): v1 uses a normal clone with the worker's
- * restricted env. Ticket 06 adds read-only .m2 mount + restricted user.
+ * Sandbox (ticket 06 decision record):
+ *   - .m2: v1 uses the host's shared writable .m2 (no read-only mount).
+ *     Maven's .m2 is BOTH a read cache AND a write target (downloads +
+ *     `mvn install` for multi-module projects write to it). A read-only .m2
+ *     breaks `install` and causes spurious verify failures on missing deps.
+ *     v1 concurrency=1 (G4) means no .m2 write contention. The agent running
+ *     `mvn install`/`mvn test` writes legitimately; cross-pipeline cache reuse
+ *     is a natural consequence of the shared host home. Evolution seam:
+ *     concurrency>1 or threat model A upgrade → per-project isolated .m2 via
+ *     deployment config (user.home override), not bot code.
+ *   - Restricted OS user: deployment-level (v1 host restricted user; docker
+ *     evolution = non-root container USER). Not asserted in e2e — documented.
  */
 
 import { execFile } from "node:child_process";

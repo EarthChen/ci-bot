@@ -1,18 +1,18 @@
-# 01 — Tracer bullet: webhook → stub fix → MR + DingTalk
+# 01 — Tracer bullet：webhook → stub 修复 → MR + 钉钉
 
-**What to build:** Send a fake GitLab pipeline-failed webhook; the bot verifies the signature, deduplicates by pipeline id, spawns one worker (cwd-isolated), runs a stub agent that returns a canned fix diff, opens an MR with a fix summary, and pushes a DingTalk success notification. The entire pipeline is wired end-to-end with stubs at the agent and verification layers. This establishes the single end-to-end test seam and the first fixture row.
+**要构建什么：** 发一个假的 GitLab pipeline 失败 webhook；bot 校验签名、按 pipeline id 幂等去重、spawn 一个 worker（cwd 隔离）、跑一个 stub agent 返回 canned 修复 diff、开带修复摘要的 MR、推钉钉成功通知。整条管道端到端打通，agent 和验证层用 stub。这建立单一端到端测试接缝 + 第一行 fixture。
 
-**Blocked by:** None — can start immediately.
+**Blocked by:** 无 — 可立即开始。
 
 **Status:** ready-for-agent
 
-- [ ] GitLab webhook receiver accepts pipeline-failed events, verifies `X-Gitlab-Token` signature, applies IP allowlist + rate limit
-- [ ] Pipeline-id idempotent dedup (retried webhook triggers only one fix)
-- [ ] In-memory queue with global concurrency cap N=1
-- [ ] Worker supervisor spawns one worker subprocess with per-worker cwd isolation
-- [ ] Stub agent runner returns canned diagnosis + fix diff (no real pi SDK yet)
-- [ ] glab CLI wrapper creates MR with fix summary (no real MR opened in test — glab calls intercepted by fixture)
-- [ ] DingTalk notification sent on fix success (deterministic node, bot code calls DingTalk, agent holds no DingTalk tool)
-- [ ] .env config loader reads GitLab token + DingTalk webhook + model API key (chmod 600, gitignored)
-- [ ] TS project skeleton (pnpm + tsconfig + src layout) committed
-- [ ] End-to-end test exercises webhook → MR creation → DingTalk with stub agent fixture; first test-seam row green
+- [ ] GitLab webhook 接收器接受 pipeline 失败事件，校验 `X-Gitlab-Token` 签名，应用 IP 白名单 + 限流
+- [ ] pipeline-id 幂等去重（重试的 webhook 只触发一次修复）
+- [ ] 内存队列，全局并发上限 N=1
+- [ ] Worker 管理器 spawn 一个 worker 子进程，per-worker cwd 隔离
+- [ ] Stub agent runner 返回 canned 诊断 + 修复 diff（暂不接真实 pi SDK）
+- [ ] glab CLI 封装创建带修复摘要的 MR（测试中不开真 MR——glab 调用被 fixture 拦截）
+- [ ] 修复成功发钉钉通知（确定性节点，bot 代码调钉钉，agent 不持钉钉工具）
+- [ ] .env 配置加载器读 GitLab token + 钉钉 webhook + 模型 API key（chmod 600，gitignore）
+- [ ] TS 项目骨架提交（pnpm + tsconfig + src 结构）
+- [ ] 端到端测试跑通 webhook → MR 创建 → 钉钉（用 stub agent fixture）；测试接缝首行绿灯

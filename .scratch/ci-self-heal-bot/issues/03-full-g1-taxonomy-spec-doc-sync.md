@@ -1,17 +1,17 @@
-# 03 — Full G1 taxonomy (1/2/3 repair, 4/5 handoff) + spec read + doc sync
+# 03 — 全 G1 分类（1/2/3 修，4/5 转交）+ spec 读 + 文档同步
 
-**What to build:** Extend the agent's diagnosis to all five G1 root-cause classes. Class 2 (tested-code change made test stale): update expectations/mock + light test refactor + sync related spec paragraphs when behavior changed. Class 3 (test missing): read in-repo spec/PRD, add spec-conformance test for the failed path only (narrow→wide); if code behavior ≠ spec or spec unreadable → handoff. Class 4 (flaky/environment): handoff, no fix. Class 5 (non-unit-test root cause: compile/dependency): bot code coarse-filters by keyword before spawning agent, early handoff saving budget. Spec read during diagnosis (class 3), spec write during post-fix (class 2 behavior change) — timing naturally separated in the pipeline.
+**要构建什么：** 把 agent 诊断扩展到全部五类 G1 根因。class 2（被测代码变更致测试过时）：更新期望/mock + 轻量测试重构 + 行为变更时同步相关 spec 段落。class 3（测试缺失）：读仓库内 spec/PRD，按规格补符合性测试，只针对失败路径（窄→宽）；代码行为 ≠ spec 或 spec 不可读 → 转交。class 4（flaky/环境）：转交不修。class 5（非单测根因：编译/依赖）：bot 代码在 spawn agent 前用关键词粗筛，早转交省预算。spec 诊断阶段读（class 3）、修复后阶段写（class 2 行为变更）——时序在 pipeline 内自然分离。
 
-**Blocked by:** 02 (real pi agent + class 1)
+**Blocked by:** 02（真实 pi agent + class 1）
 
 **Status:** ready-for-agent
 
-- [ ] Agent classifies failures into all 5 G1 classes (not just class 1)
-- [ ] Class 2: update assertions/expectations/mock + light test structure refactor (split oversized methods, fix mock placement); sync only directly-related spec paragraphs (API desc/params/return semantics) on behavior change
-- [ ] Class 3: read in-repo spec directory (e.g. docs/spec/), add spec-conformance test asserting correct behavior per spec (NOT current code behavior); only failed-path-related scope
-- [ ] Class 3 boundary: code behavior ≠ spec → handoff; spec unreadable/absent → handoff
-- [ ] Class 4: handoff, no fix, DingTalk notify
-- [ ] Class 5: bot code keyword coarse-filter (compile error / dependency resolution) before agent spawn → early handoff + DingTalk (saves budget)
-- [ ] Spec read/write timing: diagnosis stage reads spec (class 3), post-fix stage writes spec (class 2 behavior change)
-- [ ] Permission boundary enforced: only test/docs written, src/main banned; production-code bug discovered → handoff
-- [ ] End-to-end fixtures: class 2 (stale+behavior change → test+spec sync), class 3 (spec readable → conformance test), class 3 (spec unreadable → handoff), class 3 (code≠spec → handoff), class 4 (flaky → handoff), class 5 (compile error → early handoff no agent spawn)
+- [ ] agent 把失败分到全部 5 类 G1（不只 class 1）
+- [ ] class 2：改断言/期望/mock + 轻量测试结构重构（拆过大方法、修 mock 位置）；行为变更时只同步直接相关 spec 段落（API 描述/参数/返回语义）
+- [ ] class 3：读仓库内 spec 目录（如 docs/spec/），补规格符合性测试，断言 spec 规定的正确行为（非当前代码行为）；只补失败相关路径
+- [ ] class 3 边界：代码行为 ≠ spec → 转交；spec 不可读/缺失 → 转交
+- [ ] class 4：转交不修，钉钉通知
+- [ ] class 5：bot 代码关键词粗筛（编译错/依赖解析）在 spawn agent 前 → 早转交 + 钉钉（省预算）
+- [ ] spec 读写时序：诊断阶段读 spec（class 3），修复后阶段写 spec（class 2 行为变更）
+- [ ] 权限边界强制：只写测试/文档，src/main 禁；发现生产代码 bug → 转交
+- [ ] 端到端 fixture：class 2（过时+行为变更 → 测试+spec 同步）、class 3（spec 可读 → 符合性测试）、class 3（spec 不可读 → 转交）、class 3（代码≠spec → 转交）、class 4（flaky → 转交）、class 5（编译错 → 早转交不起 agent）

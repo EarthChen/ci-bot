@@ -14,43 +14,50 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 async function main(): Promise<void> {
-  loadEnvFile(".env");
-  const config = loadConfig();
+	loadEnvFile(".env");
+	const config = loadConfig();
 
-  const app = Fastify({ logger: false });
+	const app = Fastify({ logger: false });
 
-  const workRoot = process.env.CIHEAL_WORK_ROOT ?? join(tmpdir(), "ci-self-heal-work");
-  const workerManager = new SubprocessWorkerManager({
-    timeoutMs: 5 * 60 * 1000,
-  });
-  const scheduler = new Scheduler({
-    workerManager,
-    workRoot,
-    concurrency: config.concurrency,
-  });
+	const workRoot =
+		process.env.CIHEAL_WORK_ROOT ?? join(tmpdir(), "ci-self-heal-work");
+	const workerManager = new SubprocessWorkerManager({
+		timeoutMs: 5 * 60 * 1000,
+		env: {
+			// Production: real agent (pi SDK) + real glab + real dingtalk.
+			CIHEAL_AGENT_MODE: "real",
+			CIHEAL_GLAB_MODE: "real",
+			CIHEAL_DINGTALK_MODE: "real",
+		},
+	});
+	const scheduler = new Scheduler({
+		workerManager,
+		workRoot,
+		concurrency: config.concurrency,
+	});
 
-  await mountWebhook(app, {
-    scheduler,
-    config: {
-      webhookSecret: config.gitlabWebhookSecret,
-      ipAllowlist: config.ipAllowlist,
-      rateLimitMax: 30,
-      rateLimitWindowMs: 60_000,
-    },
-  });
+	await mountWebhook(app, {
+		scheduler,
+		config: {
+			webhookSecret: config.gitlabWebhookSecret,
+			ipAllowlist: config.ipAllowlist,
+			rateLimitMax: 30,
+			rateLimitWindowMs: 60_000,
+		},
+	});
 
-  await app.listen({ port: config.port, host: "0.0.0.0" });
-  logger.info({ port: config.port }, "ci-self-heal bot listening");
+	await app.listen({ port: config.port, host: "0.0.0.0" });
+	logger.info({ port: config.port }, "ci-self-heal bot listening");
 
-  const shutdown = async () => {
-    await app.close();
-    process.exit(0);
-  };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+	const shutdown = async () => {
+		await app.close();
+		process.exit(0);
+	};
+	process.on("SIGTERM", shutdown);
+	process.on("SIGINT", shutdown);
 }
 
 main().catch((err) => {
-  logger.error({ err }, "bot crashed");
-  process.exit(1);
+	logger.error({ err }, "bot crashed");
+	process.exit(1);
 });

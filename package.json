@@ -16,6 +16,7 @@
     "dev": "tsx src/main.ts"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.83.0",
     "fastify": "^5.2.0",
     "pino": "^9.5.0"
   },
@@ -24,5 +25,12 @@
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@google/genai",
+      "protobufjs",
+      "esbuild"
+    ]
   }
 }

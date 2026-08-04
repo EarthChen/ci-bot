@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-	RealAgentRunner,
-	tryParseAgentJson,
-} from "../../src/agent/real-runner.js";
+import { RealAgentRunner } from "../../src/agent/real-runner.js";
+import { tryParseAgentJson } from "../../src/agents/ci-repair/result-parser.js";
 
 const input = {
 	projectId: "group/project",

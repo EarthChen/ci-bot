@@ -5,8 +5,8 @@
  * runtime uses to create a session. Business logic (result parsing, G3, MR)
  * stays in the CI domain (RealAgentRunner), not in the shared runtime.
  *
- * The definition is responsible for writing spill files (CI log, MR diff)
- * to the worker cwd before building the prompt, keeping the prompt thin.
+ * All agent-facing resources (APPEND_SYSTEM.md, ci-self-heal-playbook skill)
+ * live under src/agents/ci-repair/resources/ — not in bot-level shared paths.
  */
 
 import type { AgentDefinition } from "../agent-runtime/runtime.js";
@@ -14,6 +14,17 @@ import type { AgentRunInput } from "./runner.js";
 import { join as joinPath } from "node:path";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+
+/**
+ * Resolve the CI Repair agent's resource directory (bundled with the bot release).
+ * Called lazily — only when the definition's resources are actually consumed.
+ */
+function resolveCiRepairResources(): string {
+	const botRoot = process.env.CIHEAL_BOT_ROOT;
+	if (!botRoot)
+		throw new Error("CIHEAL_BOT_ROOT is required for CI Repair resources");
+	return joinPath(botRoot, "src", "agents", "ci-repair", "resources");
+}
 
 /** Write spill files to cwd and return the task prompt. */
 function buildCiPrompt(input: AgentRunInput, cwd: string): string {
@@ -41,8 +52,8 @@ function writeText(abs: string, content: string): void {
 
 /**
  * Create a CI repair definition bound to a specific worker cwd.
- * The cwd is captured in the prompt builder so spill files are written
- * to the correct location before the prompt references them.
+ * Resource paths are resolved lazily when accessed (not at creation time),
+ * so that tests injecting their own sessionFactory don't need CIHEAL_BOT_ROOT.
  */
 export function createCiRepairDefinition(
 	cwd: string,
@@ -51,9 +62,12 @@ export function createCiRepairDefinition(
 		id: "ci-repair",
 		modelPolicy: "default",
 		capabilityProfile: "workspace-coding",
-		resources: {
-			appendSystemPromptPath: ".pi/APPEND_SYSTEM.md",
-			skillPaths: [".agents/skills/ci-self-heal-playbook"],
+		get resources() {
+			const resources = resolveCiRepairResources();
+			return {
+				appendSystemPromptPath: joinPath(resources, "APPEND_SYSTEM.md"),
+				skillPaths: [joinPath(resources, "skills", "ci-self-heal-playbook")],
+			};
 		},
 		buildPrompt: (input) => buildCiPrompt(input, cwd),
 	};

@@ -10,7 +10,7 @@
  * Test seam: `sessionFactory` DI (unchanged from ticket 02).
  */
 
-import type { AgentResult, Diagnosis, FailureClass } from "../types.js";
+import type { AgentResult } from "../types.js";
 import type { AgentRunner, AgentRunInput } from "./runner.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import { logger } from "../util/log.js";
@@ -23,6 +23,7 @@ import type {
 } from "../agent-runtime/runtime.js";
 import { SharedAgentRuntime } from "../agent-runtime/runtime.js";
 import { createCiRepairDefinition } from "./ci-repair-definition.js";
+import { tryParseAgentJson } from "../agents/ci-repair/result-parser.js";
 
 // Re-export for backward compatibility
 export type { BudgetConfig };
@@ -126,11 +127,15 @@ export class RealAgentRunner implements AgentRunner {
 	}
 }
 
-/** The default session factory: real `createAgentSession`. */
+/** The default session factory: real `createAgentSession`.
+ *
+ * Creates the CI Repair definition and passes its resources into the session.
+ */
 async function defaultSessionFactory(
 	input: AgentRunInput,
 ): Promise<RuntimeSessionBundle> {
-	const session = await createDefaultSession(input);
+	const definition = createCiRepairDefinition(input.cwd);
+	const session = await createDefaultSession(input, definition);
 	return {
 		session,
 		dispose: () => session.dispose(),
@@ -139,6 +144,7 @@ async function defaultSessionFactory(
 
 async function createDefaultSession(
 	input: AgentRunInput,
+	definition: import("../agent-runtime/runtime.js").AgentDefinition<AgentRunInput>,
 ): Promise<AgentSession> {
 	const {
 		createAgentSession,
@@ -187,10 +193,10 @@ async function createDefaultSession(
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,
-		additionalSkillPaths: [resolveBotSkillPath(botRoot)],
+		additionalSkillPaths: [...definition.resources.skillPaths],
 		// Keep Pi's built-in tool guidance; target worktree SYSTEM.md is not trusted.
 		systemPromptOverride: () => undefined,
-		appendSystemPrompt: [joinPath(botRoot, ".pi", "APPEND_SYSTEM.md")],
+		appendSystemPrompt: [definition.resources.appendSystemPromptPath],
 	});
 	await resourceLoader.reload();
 
@@ -219,18 +225,7 @@ function resolveBotRoot(): string {
 	return botRoot;
 }
 
-function resolveBotSkillPath(botRoot: string): string {
-	const skillPath = joinPath(
-		botRoot,
-		".agents",
-		"skills",
-		"ci-self-heal-playbook",
-	);
-	if (!existsSync(skillPath)) {
-		throw new Error("CIHEAL_BOT_ROOT does not contain ci-self-heal-playbook");
-	}
-	return skillPath;
-}
+
 
 /** Keep provider responses and credential details out of MR and DingTalk output. */
 function safeExternalErrorMessage(err: unknown): string {
@@ -243,43 +238,4 @@ function safeExternalErrorMessage(err: unknown): string {
 	return "agent 运行失败；详情见服务日志";
 }
 
-/** Parse the JSON block the agent is instructed to output. */
-export function tryParseAgentJson(text: string): AgentResult | null {
-	// Try the raw text first.
-	let candidate = text;
-	// Extract from a ```json ... ``` fenced block if present.
-	const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-	if (fenceMatch?.[1]) candidate = fenceMatch[1];
-	try {
-		const obj = JSON.parse(candidate) as Partial<AgentResult>;
-		return normalizeAgentResult(obj);
-	} catch {
-		return null;
-	}
-}
 
-/** Validate + normalize a parsed object into a well-formed AgentResult. */
-function normalizeAgentResult(obj: Partial<AgentResult>): AgentResult | null {
-	const diagnosis = normalizeDiagnosis(obj.diagnosis);
-	if (obj.kind === "fixed" && diagnosis && typeof obj.summary === "string") {
-		return { kind: "fixed", diagnosis, summary: obj.summary };
-	}
-	if (obj.kind === "escalated" && diagnosis && typeof obj.reason === "string") {
-		return { kind: "escalated", diagnosis, reason: obj.reason };
-	}
-	return null;
-}
-
-function normalizeDiagnosis(value: unknown): Diagnosis | null {
-	if (!value || typeof value !== "object") return null;
-	const candidate = value as { failureClass?: unknown; summary?: unknown };
-	if (!isFailureClass(candidate.failureClass)) return null;
-	if (typeof candidate.summary !== "string") return null;
-	return { failureClass: candidate.failureClass, summary: candidate.summary };
-}
-
-function isFailureClass(value: unknown): value is FailureClass {
-	return (
-		value === 1 || value === 2 || value === 3 || value === 4 || value === 5
-	);
-}

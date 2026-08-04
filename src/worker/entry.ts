@@ -216,13 +216,14 @@ class StubVerifyRunner implements TestRunner {
 		await this.record("related", "green");
 		return { status: "green" };
 	}
-	async runFull(_cwd: string): Promise<TestRunResult> {
+	async runFull(repoCwd: string): Promise<TestRunResult> {
 		if (this.mode === "flaky") {
-			// Simulate the agent having marked @Skip on FlakyTest.java during its
-			// session. The bot's discardSkipEdits will revert it.
-			await this.writeSkipAnnotation();
+			// Simulate the agent having marked @Disabled on FlakyTest.java during
+			// its session. Written to repoCwd (the worktree) so the bot's
+			// findSkipAnnotations + discardSkipEdits actually scan + revert it.
+			await this.writeSkipAnnotation(repoCwd);
 			await this.record("full", "flaky");
-			return { status: "flaky", flakyTests: ["src/test/java/com/example/FlakyTest.java"] };
+			return { status: "flaky" };
 		}
 		await this.record("full", "green");
 		return { status: "green" };
@@ -239,10 +240,10 @@ class StubVerifyRunner implements TestRunner {
 		calls.push({ layer, status });
 		await writeJSON(file, calls);
 	}
-	/** Write a @Skip annotation to FlakyTest.java (simulates agent behavior). */
-	private async writeSkipAnnotation(): Promise<void> {
+	/** Write a @Disabled annotation to FlakyTest.java in the worktree (simulates agent). */
+	private async writeSkipAnnotation(repoCwd: string): Promise<void> {
 		const { mkdirSync, writeFileSync } = await import("node:fs");
-		const path = joinPath(this.cwd, "src/test/java/com/example/FlakyTest.java");
+		const path = joinPath(repoCwd, "src/test/java/com/example/FlakyTest.java");
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(
 			path,

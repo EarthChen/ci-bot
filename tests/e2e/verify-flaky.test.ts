@@ -187,9 +187,16 @@ describe("verification two-layer + flaky @Skip (ticket 04)", () => {
 			expect(mrs).not.toBeNull();
 			expect(mrs!.length).toBe(1);
 
-			// MR diff is clean: no @Skip / @Disabled in the fix files.
-			// (The @Skip edit was discarded from the worktree before MR creation.)
-			for (const f of mrs![0].fixFiles) {
+			// The @Disabled FlakyTest.java was discarded (reverted to HEAD) — it
+			// must NOT appear in the MR patch. The fix files (CalculatorTest +
+			// docs/api.md from class2 stub) must be preserved.
+			const fixFiles = mrs![0].fixFiles;
+			expect(fixFiles.some((f) => f.includes("FlakyTest"))).toBe(false);
+			expect(fixFiles.some((f) => f.includes("CalculatorTest"))).toBe(true);
+			expect(fixFiles.some((f) => f.startsWith("docs/"))).toBe(true);
+
+			// MR diff is clean: no @Skip / @Disabled in the fix file paths.
+			for (const f of fixFiles) {
 				expect(f).not.toMatch(/@Skip|@Disabled/);
 			}
 

@@ -20,11 +20,9 @@ import { createWorktree, removeWorktree } from "./worktree.js";
 /** Result of one verification layer (related or full regression). */
 export type TestRunStatus = "green" | "flaky" | "fail";
 
-/** A test run outcome with optional flaky test class names. */
+/** A test run outcome. */
 export interface TestRunResult {
 	readonly status: TestRunStatus;
-	/** Flaky test class names (only when status === "flaky"). */
-	readonly flakyTests?: readonly string[];
 }
 
 /**
@@ -153,9 +151,14 @@ export async function runRepair(
 	);
 	if (verifyOutcome !== "green") {
 		await removeWorktree(deps.cwd).catch(() => {});
+		const reason =
+			verifyOutcome === "flaky"
+				? "相关测试 flaky——修复本身不稳定，转交人工"
+				: "验证未绿（重跑测试失败，疑似 agent 改了生产代码让测试假绿）";
+		await notifyEscalation(dingtalk, event, reason);
 		return {
 			kind: "escalated",
-			summary: `verification failed: ${verifyOutcome}`,
+			summary: `verification ${verifyOutcome}: ${reason}`,
 		};
 	}
 
@@ -298,11 +301,14 @@ async function extractPatch(cwd: string, summary: string): Promise<Patch> {
 
 /**
  * Two-layer verification (ticket 04): related tests first, then full
- * regression. Flaky in layer 2 → @Skip discarded + independent DingTalk.
+ * regression. Flaky in layer 2 → bot scans the staged diff for @Skip/@Disabled
+ * annotations the agent added and reverts those files (git diff is
+ * authoritative — we don't trust runner-reported test paths), then sends
+ * an independent flaky DingTalk. Repair proceeds (flaky doesn't block).
  *
- * Returns "green" only when both layers pass (or layer 2 is flaky-but-
- * handled: @Skip discarded, flaky DingTalk sent, repair proceeds). Returns
- * "fail"/"flaky-unhandled" to escalate when tests genuinely break.
+ * Returns "green" (both pass, or full-regression flaky handled), "fail"
+ * (genuine breakage), or "flaky-related" (layer 1 flaky — the fix itself is
+ * unstable, must escalate: don't @Skip the very tests we're fixing).
  */
 async function verifyTwoLayer(
 	cwd: string,
@@ -317,8 +323,8 @@ async function verifyTwoLayer(
 	const related = await r.runRelated(cwd, patch);
 	if (related.status === "fail") return "fail";
 	if (related.status === "flaky") {
-		// Related-test flaky is unexpected (the fix should make them green).
-		// Escalate — don't @Skip the very tests we're trying to fix.
+		// Related-test flaky means the fix itself is unstable — escalate,
+		// don't @Skip the very tests we're trying to fix.
 		return "flaky";
 	}
 
@@ -327,34 +333,96 @@ async function verifyTwoLayer(
 	if (full.status === "green") return "green";
 	if (full.status === "fail") return "fail";
 
-	// Flaky in full regression: the agent has already marked @Skip on the
-	// flaky tests (per skill). Bot DISCARDS the @Skip edit (per design: no
-	// @Skip in the repair MR) and sends an independent flaky DingTalk so
-	// humans can decide whether to @Skip, without polluting the repair MR.
-	await discardSkipEdits(cwd, full.flakyTests ?? []);
-	await notifyFlaky(dingtalk, event, full.flakyTests ?? []);
+	// Flaky in full regression: the agent has already marked @Skip/@Disabled
+	// on the flaky tests (per skill). Bot scans the staged diff for those
+	// annotations and reverts the files (per design: no @Skip in repair MR),
+	// then sends an independent flaky DingTalk so humans can decide.
+	const skippedFiles = await findSkipAnnotations(cwd);
+	await discardSkipEdits(cwd, skippedFiles);
+	await notifyFlaky(dingtalk, event, skippedFiles);
 	return "green";
 }
 
 /**
- * Discard @Skip/@Disabled edits the agent made on flaky tests, so they don't
- * enter the repair MR. Uses `git checkout` on the affected test files to
- * revert any @Skip annotations back to the committed (pre-agent) state.
+ * Scan the staged diff for @Skip/@Disabled annotations the agent added on
+ * test files. Returns the repo-relative paths of files whose staged diff
+ * adds a @Skip/@Disabled annotation.
  *
- * Best-effort: if git checkout fails (e.g. new untracked file), leave it —
+ * This is the git-diff-authoritative approach to flaky handling: we don't
+ * trust the runner to report flaky test paths (fragile parsing), we inspect
+ * what the agent actually wrote.
+ */
+async function findSkipAnnotations(cwd: string): Promise<string[]> {
+	const { execFile } = await import("node:child_process");
+	const { promisify } = await import("node:util");
+	const exec = promisify(execFile);
+	try {
+		const { stdout: namesOut } = await exec(
+			"git",
+			["diff", "--name-only", "--cached"],
+			{ cwd },
+		);
+		const paths = namesOut
+			.split("\n")
+			.map((s) => s.trim())
+			.filter(Boolean)
+			.filter((p) => TEST_PATH_RE.test(p));
+		const skipped: string[] = [];
+		for (const p of paths) {
+			const { stdout: diff } = await exec(
+				"git",
+				["diff", "--no-color", "--cached", "--", p],
+				{ cwd },
+			);
+			// Added lines (diff hunk lines starting with '+') that contain a
+			// @Skip or @Disabled annotation.
+			if (/^\+.*@(?:Skip|Disabled)\b/m.test(diff)) {
+				skipped.push(p);
+			}
+		}
+		return skipped;
+	} catch (err) {
+		logger.warn({ err }, "find-skip-annotations failed");
+		return [];
+	}
+}
+
+/** Send an independent flaky DingTalk notification (decoupled from repair MR). */
+function notifyFlaky(
+	dingtalk: DingTalkNotifier,
+	event: PipelineEvent,
+	skippedFiles: readonly string[],
+): Promise<void> {
+	const list =
+		skippedFiles.length > 0 ? skippedFiles.join(", ") : "(未扫描到 @Skip 改动)";
+	return dingtalk.send({
+		title: "CI 自愈遇 flaky",
+		text: [
+			`项目 ${event.projectId}`,
+			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
+			`全量回归遇 flaky，agent 已标 @Skip/@Disabled 于：${list}`,
+			`已丢弃 @Skip 改动，修复 MR 不含；请人工确认是否需 @Skip。`,
+		].join("\n"),
+	});
+}
+
+/**
+ * Revert test files where the agent added @Skip/@Disabled, so the repair MR
+ * stays clean. `git checkout HEAD -- <file>` reverts to the pre-agent state.
+ *
+ * Best-effort: if git checkout fails (e.g. untracked new file), log + continue;
  * the G3 path filter already ensures only test/doc paths, and a stray @Skip
  * on a new file is caught by the MR diff review.
  */
 async function discardSkipEdits(
 	cwd: string,
-	flakyTests: readonly string[],
+	skippedFiles: readonly string[],
 ): Promise<void> {
-	if (flakyTests.length === 0) return;
+	if (skippedFiles.length === 0) return;
 	const { execFile } = await import("node:child_process");
 	const { promisify } = await import("node:util");
 	const exec = promisify(execFile);
-	for (const testFile of flakyTests) {
-		// Revert the file to HEAD state, discarding any @Skip annotation.
+	for (const testFile of skippedFiles) {
 		await exec("git", ["checkout", "HEAD", "--", testFile], { cwd }).catch(
 			(err) => {
 				logger.warn(
@@ -364,24 +432,6 @@ async function discardSkipEdits(
 			},
 		);
 	}
-}
-
-/** Send an independent flaky DingTalk notification (decoupled from repair MR). */
-function notifyFlaky(
-	dingtalk: DingTalkNotifier,
-	event: PipelineEvent,
-	flakyTests: readonly string[],
-): Promise<void> {
-	const list = flakyTests.length > 0 ? flakyTests.join(", ") : "(未知)";
-	return dingtalk.send({
-		title: "CI 自愈遇 flaky",
-		text: [
-			`项目 ${event.projectId}`,
-			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
-			`全量回归遇 flaky 测试：${list}`,
-			`已丢弃 @Skip 改动，修复 MR 不含；请人工确认是否需 @Skip。`,
-		].join("\n"),
-	});
 }
 
 /**
@@ -419,20 +469,7 @@ class MvnGradleTestRunner implements TestRunner {
 				.then(() => true)
 				.catch(() => false);
 			if (hasMvn) {
-				const testClasses = isFull
-					? []
-					: patch!.paths
-							.filter((p) => TEST_PATH_RE.test(p))
-							.map((p) =>
-								p
-									.replace(/^.*\/(?:test|it)\//, "")
-									.replace(/\.java$/, "")
-									.replace(/\//g, "."),
-							);
-				const testArg =
-					!isFull && testClasses.length > 0
-						? `-Dtest=${testClasses.join(",")}`
-						: "";
+				const testArg = !isFull ? mavenTestArg(patch!.paths) : "";
 				const args = ["test", ...(testArg ? [testArg] : [])];
 				await exec("mvn", args, { cwd, env: { ...process.env } });
 				return { status: "green" };
@@ -441,29 +478,19 @@ class MvnGradleTestRunner implements TestRunner {
 				.then(() => true)
 				.catch(() => false);
 			if (hasGradle) {
-				const testTasks = isFull
-					? []
-					: patch!.paths
-							.filter((p) => TEST_PATH_RE.test(p))
-							.map((p) =>
-								p
-									.replace(/^.*\/(?:test|it)\//, "")
-									.replace(/\.java$/, "")
-									.replace(/\//g, "."),
-							);
-				const taskArg =
-					!isFull && testTasks.length > 0
-						? `--tests ${testTasks.join(" --tests ")}`
-						: "";
+				const taskArg = !isFull ? gradleTaskArg(patch!.paths) : "";
 				const args = ["test", ...taskArg.split(" ").filter(Boolean)];
 				await exec("./gradlew", args, { cwd, env: { ...process.env } });
 				return { status: "green" };
 			}
 		} catch (err) {
 			const output = err instanceof Error ? `${err.message}\n${(err as { stderr?: string }).stderr ?? ""}` : String(err);
+			// v1 coarse flaky detection: non-zero exit + flaky/intermittent/retry
+			// signal in output. Ticket 08 (replay/trace) hardens with real
+			// flaky-detection heuristics. Bot scans git diff for @Skip annotations
+			// the agent added — does NOT rely on runner-reported test paths.
 			if (/flaky|intermittent|retry/i.test(output)) {
-				const flakyTests = this.extractFlakyTests(output);
-				return { status: "flaky", flakyTests };
+				return { status: "flaky" };
 			}
 			logger.warn({ err }, isFull ? "verify-full failed" : "verify-related failed");
 			return { status: "fail" };
@@ -472,19 +499,40 @@ class MvnGradleTestRunner implements TestRunner {
 		logger.warn({ cwd }, "no test runner detected; skipping verification");
 		return { status: "green" };
 	}
+}
 
-	/** Best-effort flaky test extraction from test runner output. */
-	private extractFlakyTests(output: string): string[] {
-		const tests: string[] = [];
-		// Maven surefire reports per-test failures; extract class names.
-			const m = output.matchAll(/Tests run:.*Failures.*\n([^]*)/g);
-			for (const match of m) {
-				const line = match[1];
-				const cm = line.match(/([A-Z]\w+Test)/);
-				if (cm) tests.push(cm[1]);
-			}
-		return tests;
-	}
+/**
+ * Map patch test paths to dot-separated Maven test class names.
+ * e.g. "src/test/java/com/example/FooTest.java" → "com.example.FooTest".
+ * Returns "" (run all) if no test paths are discoverable.
+ */
+function mavenTestArg(paths: readonly string[]): string {
+	const testClasses = paths
+		.filter((p) => TEST_PATH_RE.test(p))
+		.map((p) =>
+			p
+				.replace(/^.*\/(?:test|it)\//, "")
+				.replace(/\.java$/, "")
+				.replace(/\//g, "."),
+		);
+	return testClasses.length > 0 ? `-Dtest=${testClasses.join(",")}` : "";
+}
+
+/**
+ * Map patch test paths to Gradle --tests args.
+ * e.g. "src/test/java/com/example/FooTest.java" → "--tests com.example.FooTest".
+ * Returns "" (run all) if no test paths are discoverable.
+ */
+function gradleTaskArg(paths: readonly string[]): string {
+	const testTasks = paths
+		.filter((p) => TEST_PATH_RE.test(p))
+		.map((p) =>
+			p
+				.replace(/^.*\/(?:test|it)\//, "")
+				.replace(/\.java$/, "")
+				.replace(/\//g, "."),
+		);
+	return testTasks.length > 0 ? `--tests ${testTasks.join(" --tests ")}` : "";
 }
 
 /**

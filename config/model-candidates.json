@@ -1,0 +1,14 @@
+[
+	{
+		"provider": "deepseek",
+		"model": "deepseek-chat",
+		"keyEnv": "DEEPSEEK_API_KEY",
+		"profile": "deepseek-chat"
+	},
+	{
+		"provider": "deepseek",
+		"model": "deepseek-reasoner",
+		"keyEnv": "DEEPSEEK_API_KEY",
+		"profile": "deepseek-reasoner"
+	}
+]

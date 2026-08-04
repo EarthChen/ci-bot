@@ -1,0 +1,24 @@
+{
+	"deepseek-chat": {
+		"defaultThinkingLevel": "medium",
+		"thinkingBudgets": {
+			"medium": 16384
+		},
+		"compaction": {
+			"enabled": true,
+			"reserveTokens": 16384,
+			"keepRecentTokens": 20000
+		}
+	},
+	"deepseek-reasoner": {
+		"defaultThinkingLevel": "high",
+		"thinkingBudgets": {
+			"high": 32768
+		},
+		"compaction": {
+			"enabled": true,
+			"reserveTokens": 32768,
+			"keepRecentTokens": 24000
+		}
+	}
+}

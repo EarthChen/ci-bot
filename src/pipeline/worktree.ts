@@ -49,7 +49,8 @@ interface BareClone {
 }
 
 const bareClones = new Map<string, BareClone>();
-const bareRoot = process.env.CIHEAL_BARE_ROOT ?? join(tmpdir(), "ci-self-heal-bare");
+const bareRoot =
+	process.env.CIHEAL_BARE_ROOT ?? join(tmpdir(), "ci-self-heal-bare");
 
 /**
  * Ensure the shared bare clone for a project exists and is up-to-date.
@@ -61,7 +62,8 @@ async function ensureBareClone(
 	projectUrl: string,
 ): Promise<string> {
 	let clone = bareClones.get(projectId);
-	const barePath = clone?.barePath ?? join(bareRoot, projectId.replace(/[\/:]/g, "-"));
+	const barePath =
+		clone?.barePath ?? join(bareRoot, projectId.replace(/[\/:]/g, "-"));
 
 	if (!clone) {
 		await mkdir(bareRoot, { recursive: true });
@@ -80,9 +82,13 @@ async function ensureBareClone(
 		clone.fetchPromise = (async () => {
 			try {
 				logger.info({ projectId, barePath }, "bare clone: fetch");
-				await exec("git", ["--git-dir", barePath, "fetch", "--prune", "origin"], {
-					env: gitEnv(),
-				});
+				await exec(
+					"git",
+					["--git-dir", barePath, "fetch", "--prune", "origin"],
+					{
+						env: gitEnv(),
+					},
+				);
 			} finally {
 				clone!.fetchPromise = null;
 			}
@@ -115,7 +121,10 @@ export async function createWorktree(
 	return realWorktree(workDir, event);
 }
 
-async function realWorktree(workDir: string, event: PipelineEvent): Promise<string> {
+async function realWorktree(
+	workDir: string,
+	event: PipelineEvent,
+): Promise<string> {
 	const repoPath = join(workDir, "repo");
 	const barePath = await ensureBareClone(event.projectId, event.projectUrl);
 	const branch = `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`;
@@ -145,13 +154,20 @@ async function realWorktree(workDir: string, event: PipelineEvent): Promise<stri
  * Fake worktree for e2e tests: `git init` + seed a canned Java repo so the
  * stub agent has a realistic tree to edit + `git diff` against.
  */
-async function fakeWorktree(workDir: string, event: PipelineEvent): Promise<string> {
+async function fakeWorktree(
+	workDir: string,
+	event: PipelineEvent,
+): Promise<string> {
 	const repoPath = join(workDir, "repo");
 	await mkdir(repoPath, { recursive: true });
 	// Init a real git repo so extractPatch's `git add` + `git diff --cached` work.
 	await exec("git", ["init", "--quiet"], { cwd: repoPath });
-	await exec("git", ["config", "user.email", "ci-self-heal@bot"], { cwd: repoPath });
-	await exec("git", ["config", "user.name", "ci-self-heal bot"], { cwd: repoPath });
+	await exec("git", ["config", "user.email", "ci-self-heal@bot"], {
+		cwd: repoPath,
+	});
+	await exec("git", ["config", "user.name", "ci-self-heal bot"], {
+		cwd: repoPath,
+	});
 	// Seed a canned Calculator (production code) + a failing CalculatorTest.
 	await mkdir(join(repoPath, "src/main/java/com/example"), { recursive: true });
 	await mkdir(join(repoPath, "src/test/java/com/example"), { recursive: true });
@@ -164,7 +180,16 @@ async function fakeWorktree(workDir: string, event: PipelineEvent): Promise<stri
 		"package com.example;\n// stale test: asserts add(2,3)==4\n",
 	);
 	await exec("git", ["add", "-A"], { cwd: repoPath });
-	await exec("git", ["commit", "--quiet", "-m", `baseline for ${event.projectId}/${event.pipelineId}`], { cwd: repoPath });
+	await exec(
+		"git",
+		[
+			"commit",
+			"--quiet",
+			"-m",
+			`baseline for ${event.projectId}/${event.pipelineId}`,
+		],
+		{ cwd: repoPath },
+	);
 	return repoPath;
 }
 
@@ -197,6 +222,8 @@ function gitEnv(): Record<string, string> {
 		GITLAB_HOST: url,
 		GIT_TERMINAL_PROMPT: "0",
 		// Bearer auth via extraHeader — GitLab accepts personal/acess tokens here.
-		...(token ? { GIT_HTTP_EXTRA_HEADER: `Authorization: Bearer ${token}` } : {}),
+		...(token
+			? { GIT_HTTP_EXTRA_HEADER: `Authorization: Bearer ${token}` }
+			: {}),
 	};
 }

@@ -13,11 +13,7 @@
 import type { AgentRunner } from "../agent/runner.js";
 import type { GitLabClient } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
-import type {
-	PipelineEvent,
-	RepairOutcome,
-	Patch,
-} from "../types.js";
+import type { PipelineEvent, RepairOutcome, Patch } from "../types.js";
 import { logger } from "../util/log.js";
 import { createWorktree, removeWorktree } from "./worktree.js";
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -41,7 +37,10 @@ interface AuditTrace {
 	/** Repair outcome: "mr" | "escalated" | "failed". */
 	readonly outcome: string;
 	/** LLM diagnosis (failure class + root-cause summary); absent for class-5. */
-	readonly diagnosis?: { readonly failureClass: number; readonly summary: string };
+	readonly diagnosis?: {
+		readonly failureClass: number;
+		readonly summary: string;
+	};
 	/** Real git diff (authoritative; empty for escalations with no patch). */
 	readonly diff: string;
 	/** The bot's recorded rationale for the outcome (fix summary or escalation reason). */
@@ -56,7 +55,11 @@ interface AuditTrace {
 function writeAuditTrace(cwd: string, trace: AuditTrace): void {
 	try {
 		mkdirSync(cwd, { recursive: true });
-		writeFileSync(joinPath(cwd, "audit-trace.json"), JSON.stringify(trace, null, 2), "utf8");
+		writeFileSync(
+			joinPath(cwd, "audit-trace.json"),
+			JSON.stringify(trace, null, 2),
+			"utf8",
+		);
 	} catch (err) {
 		logger.warn({ cwd, err }, "audit-trace write failed");
 	}
@@ -206,7 +209,10 @@ export async function runRepair(
 			reasoning: reason,
 			createdAt: new Date().toISOString(),
 		});
-		return { kind: "escalated", summary: "empty patch after agent reported fixed" };
+		return {
+			kind: "escalated",
+			summary: "empty patch after agent reported fixed",
+		};
 	}
 	// G3 permission boundary: only test/doc files; src/main forbidden.
 	const violation = validatePatchPaths(patch);

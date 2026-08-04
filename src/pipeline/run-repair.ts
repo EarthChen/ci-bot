@@ -17,11 +17,37 @@ import type { PipelineEvent, RepairOutcome, Patch } from "../types.js";
 import { logger } from "../util/log.js";
 import { createWorktree, removeWorktree } from "./worktree.js";
 
+/** Result of one verification layer (related or full regression). */
+export type TestRunStatus = "green" | "flaky" | "fail";
+
+/** A test run outcome with optional flaky test class names. */
+export interface TestRunResult {
+	readonly status: TestRunStatus;
+	/** Flaky test class names (only when status === "flaky"). */
+	readonly flakyTests?: readonly string[];
+}
+
+/**
+ * Test runner seam — the verification gate is injectable so e2e fixtures
+ * can control two-layer verify outcomes without a real Maven/Gradle.
+ *
+ * Two layers (per ticket 04):
+ *   1. runRelated — only the test classes the patch touches (fast feedback)
+ *   2. runFull   — full regression (catches breakage elsewhere)
+ * Layer 2 runs only if layer 1 is green.
+ */
+export interface TestRunner {
+	runRelated(cwd: string, patch: Patch): Promise<TestRunResult>;
+	runFull(cwd: string): Promise<TestRunResult>;
+}
+
 export interface WorkerDeps {
 	readonly agent: AgentRunner;
 	readonly glab: GitLabClient;
 	readonly dingtalk: DingTalkNotifier;
 	readonly cwd: string;
+	/** Optional test runner for two-layer verification. Defaults to mvn/gradle. */
+	readonly verifyRunner?: TestRunner;
 }
 
 export async function runRepair(
@@ -114,19 +140,22 @@ export async function runRepair(
 		await notifyEscalation(dingtalk, event, `G3 权限越界：${violation}`);
 		return { kind: "escalated", summary: `G3 violation: ${violation}` };
 	}
-	// Re-run tests on the extracted patch to catch illegitimate-green (agent
-	// may have touched src/main to make tests pass; we discarded those edits,
-	// so the test-only diff must still pass on its own).
-	if (!(await verifyTestsGreen(repoCwd, patch))) {
-		await notifyEscalation(
-			dingtalk,
-			event,
-			"提取的 test-only patch 重跑测试未绿，疑似 agent 改了生产代码让测试假绿",
-		);
+	// Re-run tests: two-layer verification (ticket 04). Layer 1 = related
+	// tests only (fast feedback); layer 2 = full regression (catches
+	// breakage elsewhere). Flaky in layer 2 → @Skip discarded + independent
+	// DingTalk (per design decision: discard + notify, no @Skip in MR).
+	const verifyOutcome = await verifyTwoLayer(
+		repoCwd,
+		patch,
+		deps.verifyRunner,
+		dingtalk,
+		event,
+	);
+	if (verifyOutcome !== "green") {
+		await removeWorktree(deps.cwd).catch(() => {});
 		return {
 			kind: "escalated",
-			summary:
-				"re-run tests failed on extracted patch (possible stray src/main edit)",
+			summary: `verification failed: ${verifyOutcome}`,
 		};
 	}
 
@@ -268,66 +297,194 @@ async function extractPatch(cwd: string, summary: string): Promise<Patch> {
 }
 
 /**
- * Verify the extracted test-only patch makes the relevant tests pass on a
- * clean checkout. Catches the illegitimate-green case where the agent edited
- * src/main (discarded by G3) to make tests pass — the test-only diff alone
- * must still be green.
+ * Two-layer verification (ticket 04): related tests first, then full
+ * regression. Flaky in layer 2 → @Skip discarded + independent DingTalk.
  *
- * v1 best-effort: if no test command is detectable, return true (don't block
- * a valid fix on a missing test runner). Ticket 04 hardens this.
+ * Returns "green" only when both layers pass (or layer 2 is flaky-but-
+ * handled: @Skip discarded, flaky DingTalk sent, repair proceeds). Returns
+ * "fail"/"flaky-unhandled" to escalate when tests genuinely break.
  */
-async function verifyTestsGreen(cwd: string, patch: Patch): Promise<boolean> {
-	// Only relevant if the patch touches test files; pure-doc fixes skip this.
-	if (!patch.paths.some((p) => TEST_PATH_RE.test(p))) return true;
+async function verifyTwoLayer(
+	cwd: string,
+	patch: Patch,
+	runner: TestRunner | undefined,
+	dingtalk: DingTalkNotifier,
+	event: PipelineEvent,
+): Promise<TestRunStatus> {
+	const r = runner ?? new MvnGradleTestRunner();
+
+	// Layer 1: related tests only (fast feedback on the fix).
+	const related = await r.runRelated(cwd, patch);
+	if (related.status === "fail") return "fail";
+	if (related.status === "flaky") {
+		// Related-test flaky is unexpected (the fix should make them green).
+		// Escalate — don't @Skip the very tests we're trying to fix.
+		return "flaky";
+	}
+
+	// Layer 2: full regression (catches breakage elsewhere in the suite).
+	const full = await r.runFull(cwd);
+	if (full.status === "green") return "green";
+	if (full.status === "fail") return "fail";
+
+	// Flaky in full regression: the agent has already marked @Skip on the
+	// flaky tests (per skill). Bot DISCARDS the @Skip edit (per design: no
+	// @Skip in the repair MR) and sends an independent flaky DingTalk so
+	// humans can decide whether to @Skip, without polluting the repair MR.
+	await discardSkipEdits(cwd, full.flakyTests ?? []);
+	await notifyFlaky(dingtalk, event, full.flakyTests ?? []);
+	return "green";
+}
+
+/**
+ * Discard @Skip/@Disabled edits the agent made on flaky tests, so they don't
+ * enter the repair MR. Uses `git checkout` on the affected test files to
+ * revert any @Skip annotations back to the committed (pre-agent) state.
+ *
+ * Best-effort: if git checkout fails (e.g. new untracked file), leave it —
+ * the G3 path filter already ensures only test/doc paths, and a stray @Skip
+ * on a new file is caught by the MR diff review.
+ */
+async function discardSkipEdits(
+	cwd: string,
+	flakyTests: readonly string[],
+): Promise<void> {
+	if (flakyTests.length === 0) return;
 	const { execFile } = await import("node:child_process");
 	const { promisify } = await import("node:util");
 	const exec = promisify(execFile);
-	try {
-		// Try Maven then Gradle; both are common in the target Java ecosystem.
-		const hasMvn = await exec("test", ["-f", "pom.xml"], { cwd })
-			.then(() => true)
-			.catch(() => false);
-		if (hasMvn) {
-			// Run only the test classes the patch touches, if discoverable.
-			const testClasses = patch.paths
-				.filter((p) => TEST_PATH_RE.test(p))
-				.map((p) =>
-					p
-						.replace(/^.*\/(?:test|it)\//, "")
-						.replace(/\.java$/, "")
-						.replace(/\//g, "."),
+	for (const testFile of flakyTests) {
+		// Revert the file to HEAD state, discarding any @Skip annotation.
+		await exec("git", ["checkout", "HEAD", "--", testFile], { cwd }).catch(
+			(err) => {
+				logger.warn(
+					{ testFile, err },
+					"discard-skip: git checkout failed (new file?)",
 				);
-			const testArg =
-				testClasses.length > 0 ? `-Dtest=${testClasses.join(",")}` : "";
-			const args = ["test", ...(testArg ? [testArg] : [])];
-			await exec("mvn", args, { cwd, env: { ...process.env } });
-			return true;
-		}
-		const hasGradle = await exec("test", ["-f", "build.gradle"], { cwd })
-			.then(() => true)
-			.catch(() => false);
-		if (hasGradle) {
-			const testTasks = patch.paths
-				.filter((p) => TEST_PATH_RE.test(p))
-				.map((p) =>
-					p
-						.replace(/^.*\/(?:test|it)\//, "")
-						.replace(/\.java$/, "")
-						.replace(/\//g, "."),
-				);
-			const taskArg =
-				testTasks.length > 0 ? `--tests ${testTasks.join(" --tests ")}` : "";
-			const args = ["test", ...taskArg.split(" ").filter(Boolean)];
-			await exec("./gradlew", args, { cwd, env: { ...process.env } });
-			return true;
-		}
-	} catch (err) {
-		logger.warn({ err }, "verify-tests-green failed");
-		return false;
+			},
+		);
 	}
-	// No recognizable test runner — don't block (ticket 04 hardens).
-	logger.warn({ cwd }, "no test runner detected; skipping re-run verification");
-	return true;
+}
+
+/** Send an independent flaky DingTalk notification (decoupled from repair MR). */
+function notifyFlaky(
+	dingtalk: DingTalkNotifier,
+	event: PipelineEvent,
+	flakyTests: readonly string[],
+): Promise<void> {
+	const list = flakyTests.length > 0 ? flakyTests.join(", ") : "(未知)";
+	return dingtalk.send({
+		title: "CI 自愈遇 flaky",
+		text: [
+			`项目 ${event.projectId}`,
+			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
+			`全量回归遇 flaky 测试：${list}`,
+			`已丢弃 @Skip 改动，修复 MR 不含；请人工确认是否需 @Skip。`,
+		].join("\n"),
+	});
+}
+
+/**
+ * Default test runner: Maven then Gradle, real subprocess. Used when no
+ * verifyRunner is injected (production). Layer 1 runs only the patch's test
+ * classes; layer 2 runs the full suite.
+ *
+ * Flaky detection (v1 best-effort): a non-zero exit from full regression is
+ * classified as "fail" unless the stderr/stdout contains flaky signals
+ * ("flaky", "intermittent", test retries). This is coarse — ticket 08
+ * (replay/trace) can harden with real flaky-detection heuristics.
+ */
+class MvnGradleTestRunner implements TestRunner {
+	async runRelated(cwd: string, patch: Patch): Promise<TestRunResult> {
+		if (!patch.paths.some((p) => TEST_PATH_RE.test(p))) {
+			return { status: "green" };
+		}
+		return this.runMavenOrGradle(cwd, patch);
+	}
+
+	async runFull(cwd: string): Promise<TestRunResult> {
+		return this.runMavenOrGradle(cwd, undefined);
+	}
+
+	private async runMavenOrGradle(
+		cwd: string,
+		patch: Patch | undefined,
+	): Promise<TestRunResult> {
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const exec = promisify(execFile);
+		const isFull = patch === undefined;
+		try {
+			const hasMvn = await exec("test", ["-f", "pom.xml"], { cwd })
+				.then(() => true)
+				.catch(() => false);
+			if (hasMvn) {
+				const testClasses = isFull
+					? []
+					: patch!.paths
+							.filter((p) => TEST_PATH_RE.test(p))
+							.map((p) =>
+								p
+									.replace(/^.*\/(?:test|it)\//, "")
+									.replace(/\.java$/, "")
+									.replace(/\//g, "."),
+							);
+				const testArg =
+					!isFull && testClasses.length > 0
+						? `-Dtest=${testClasses.join(",")}`
+						: "";
+				const args = ["test", ...(testArg ? [testArg] : [])];
+				await exec("mvn", args, { cwd, env: { ...process.env } });
+				return { status: "green" };
+			}
+			const hasGradle = await exec("test", ["-f", "build.gradle"], { cwd })
+				.then(() => true)
+				.catch(() => false);
+			if (hasGradle) {
+				const testTasks = isFull
+					? []
+					: patch!.paths
+							.filter((p) => TEST_PATH_RE.test(p))
+							.map((p) =>
+								p
+									.replace(/^.*\/(?:test|it)\//, "")
+									.replace(/\.java$/, "")
+									.replace(/\//g, "."),
+							);
+				const taskArg =
+					!isFull && testTasks.length > 0
+						? `--tests ${testTasks.join(" --tests ")}`
+						: "";
+				const args = ["test", ...taskArg.split(" ").filter(Boolean)];
+				await exec("./gradlew", args, { cwd, env: { ...process.env } });
+				return { status: "green" };
+			}
+		} catch (err) {
+			const output = err instanceof Error ? `${err.message}\n${(err as { stderr?: string }).stderr ?? ""}` : String(err);
+			if (/flaky|intermittent|retry/i.test(output)) {
+				const flakyTests = this.extractFlakyTests(output);
+				return { status: "flaky", flakyTests };
+			}
+			logger.warn({ err }, isFull ? "verify-full failed" : "verify-related failed");
+			return { status: "fail" };
+		}
+		// No recognizable test runner — don't block (treat as green).
+		logger.warn({ cwd }, "no test runner detected; skipping verification");
+		return { status: "green" };
+	}
+
+	/** Best-effort flaky test extraction from test runner output. */
+	private extractFlakyTests(output: string): string[] {
+		const tests: string[] = [];
+		// Maven surefire reports per-test failures; extract class names.
+			const m = output.matchAll(/Tests run:.*Failures.*\n([^]*)/g);
+			for (const match of m) {
+				const line = match[1];
+				const cm = line.match(/([A-Z]\w+Test)/);
+				if (cm) tests.push(cm[1]);
+			}
+		return tests;
+	}
 }
 
 /**

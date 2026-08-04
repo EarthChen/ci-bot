@@ -28,8 +28,9 @@ import { GlabGitLabClient } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import { HttpDingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
+import type { Patch } from "../types.js";
 import { logger } from "../util/log.js";
-import { runRepair, type WorkerDeps } from "../pipeline/run-repair.js";
+import { runRepair, type WorkerDeps, type TestRunner, type TestRunResult } from "../pipeline/run-repair.js";
 
 /** Write JSON to a path, creating parent dirs (best-effort, never throws in caller). */
 async function writeJSON(path: string, value: unknown): Promise<void> {
@@ -74,6 +75,13 @@ function pickGlab(cwd: string): GitLabClient {
 	const mode = process.env.CIHEAL_GLAB_MODE ?? "fake";
 	if (mode === "fake") return makeFakeGlab(cwd);
 	return new GlabGitLabClient(realGlabRunner);
+}
+
+/** Pick the verification runner. CIHEAL_STUB_VERIFY controls fixture behavior. */
+function pickVerify(cwd: string): TestRunner | undefined {
+	const mode = process.env.CIHEAL_STUB_VERIFY;
+	if (!mode) return undefined; // production default: MvnGradleTestRunner
+	return new StubVerifyRunner(cwd, mode);
 }
 
 function pickDingTalk(cwd: string): DingTalkNotifier {
@@ -189,11 +197,67 @@ function makeFakeDingtalk(cwd: string): DingTalkNotifier & { sent: unknown[] } {
 	};
 }
 
+/**
+ * Stub verify runner for e2e fixtures. CIHEAL_STUB_VERIFY controls behavior:
+ *   "all-green" — both layers green, records calls to verify-calls.json sidecar
+ *   "flaky"     — related green, full flaky; simulates agent @Skip on FlakyTest
+ *
+ * Records each layer call to verify-calls.json so the test can assert both
+ * layers ran (the two-layer invariant).
+ */
+class StubVerifyRunner implements TestRunner {
+	private readonly cwd: string;
+	private readonly mode: string;
+	constructor(cwd: string, mode: string) {
+		this.cwd = cwd;
+		this.mode = mode;
+	}
+	async runRelated(_cwd: string, _patch: Patch): Promise<TestRunResult> {
+		await this.record("related", "green");
+		return { status: "green" };
+	}
+	async runFull(_cwd: string): Promise<TestRunResult> {
+		if (this.mode === "flaky") {
+			// Simulate the agent having marked @Skip on FlakyTest.java during its
+			// session. The bot's discardSkipEdits will revert it.
+			await this.writeSkipAnnotation();
+			await this.record("full", "flaky");
+			return { status: "flaky", flakyTests: ["src/test/java/com/example/FlakyTest.java"] };
+		}
+		await this.record("full", "green");
+		return { status: "green" };
+	}
+	private async record(layer: string, status: string): Promise<void> {
+		const file = joinPath(this.cwd, "verify-calls.json");
+		let calls: Array<{ layer: string; status: string }> = [];
+		try {
+			const raw = await import("node:fs").then((m) => m.readFileSync(file, "utf8"));
+			calls = JSON.parse(raw) as typeof calls;
+		} catch {
+			void 0; // first call — file doesn't exist yet
+		}
+		calls.push({ layer, status });
+		await writeJSON(file, calls);
+	}
+	/** Write a @Skip annotation to FlakyTest.java (simulates agent behavior). */
+	private async writeSkipAnnotation(): Promise<void> {
+		const { mkdirSync, writeFileSync } = await import("node:fs");
+		const path = joinPath(this.cwd, "src/test/java/com/example/FlakyTest.java");
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(
+			path,
+			"package com.example;\nimport org.junit.jupiter.api.Disabled;\n@Disabled\npublic class FlakyTest {}\n",
+			"utf8",
+		);
+	}
+}
+
 export async function runWorker(task: WorkerTask): Promise<RepairOutcome> {
 	const dingtalk = pickDingTalk(task.cwd);
 	const agent = pickAgent(dingtalk);
 	const glab = pickGlab(task.cwd);
-	const deps: WorkerDeps = { agent, glab, dingtalk, cwd: task.cwd };
+	const verifyRunner = pickVerify(task.cwd);
+	const deps: WorkerDeps = { agent, glab, dingtalk, cwd: task.cwd, verifyRunner };
 	return runRepair(deps, task.event);
 }
 

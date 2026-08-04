@@ -12,7 +12,7 @@ description: CI 单元测试失败自愈 playbook。当 GitLab pipeline 单测�
 1. **只改测试 + 文档**。`src/main/`（生产代码）绝对禁止触碰。发现失败根因在生产代码 → class 2/5 → 转交。
 2. **class 3（缺失测试）按 spec/PRD 断言正确行为**，不得按当前代码行为断言（否则会把 bug 固化成测试）。
 3. **不猜测修复**。诊断未达 class 1/2/3 确信 → 转交，不多次重试烧预算。
-4. **结构化输出**。session 结束必须输出 `fixed`（diagnosis + fix）或 `escalated`（diagnosis + reason）。
+4. **结构化输出**。session 结束必须输出 `fixed`（diagnosis + summary）或 `escalated`（diagnosis + reason）。
 
 ---
 
@@ -82,7 +82,7 @@ session 结束前，最后一条 assistant message 必须是 JSON（代码块包
 {
   "kind": "fixed",
   "diagnosis": { "failureClass": 1, "summary": "CalculatorTest 断言期望 4，实际应为 5（2+3）。修正断言。" },
-  "fix": { "files": [{ "path": "src/test/java/.../CalculatorTest.java", "content": "..." }], "summary": "修正断言期望值为 5" }
+  "summary": "修正断言期望值为 5"
 }
 ```
 
@@ -95,6 +95,8 @@ session 结束前，最后一条 assistant message 必须是 JSON（代码块包
   "reason": "class 4 flaky，转交人工确认"
 }
 ```
+
+**注意**：`fixed` 只有 `diagnosis` + `summary`，**没有** `fix` 字段。你的文件改动已经通过 bash（git add/commit）应用到工作区，bot 代码从 `git diff` 提取真实 patch，不信任你自报的内容。只报 `summary` 描述你做了什么即可。
 
 bot 代码解析此 JSON 驱动 MR 创建 / 转交 / 钉钉通知。未输出合法 JSON → bot 视为失败。
 

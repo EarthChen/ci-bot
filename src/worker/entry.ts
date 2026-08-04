@@ -136,6 +136,18 @@ function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
 	const client: GitLabClient & FakeGlabRecorder = {
 		createdMrs,
 		async fetchCiLog(): Promise<string> {
+			// CIHEAL_STUB_CI_LOG controls the canned CI log shape.
+			//   "class5" — a compile/dependency failure log (triggers class-5 early filter)
+			//   default  — a class-1 assertion failure log
+			const logKind = process.env.CIHEAL_STUB_CI_LOG ?? "class1";
+			if (logKind === "class5") {
+				return [
+								"Running build...",
+								"[ERROR] Compilation failure:",
+								"[ERROR] /src/main/java/com/example/Calculator.java:[10,20] cannot find symbol",
+								"BUILD FAILURE",
+				].join("\n");
+			}
 			return [
 				"Running com.example.CalculatorTest",
 				"  CalculatorTest.addsTwoPlusThree()",

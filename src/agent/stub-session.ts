@@ -10,9 +10,14 @@
  * `subscribe`, `prompt`, `abort`, `dispose`, `messages`.
  *
  * CIHEAL_STUB_FIX_KIND controls the canned result:
- *   "test"     (default) — class-1 fix touching only a test file (happy path)
- *   "src-main" — a fix touching src/main (exercises G3 boundary enforcement)
- *   "escalate" — an escalated result (exercises escalation DingTalk path)
+ *   "test"          (default) — class-1 fix touching only a test file (happy path)
+ *   "src-main"      — a fix touching src/main (exercises G3 boundary enforcement)
+ *   "escalate"      — an escalated result (class 4 flaky, exercises escalation DingTalk path)
+ *   "class2"        — class-2 fix: test file + docs file (behavior change → doc sync)
+ *   "class3-spec"   — class-3 fix: new conformance test file (spec readable)
+ *   "class3-no-spec" — escalated (spec unreadable/missing)
+ *   "class3-mismatch" — escalated (code behavior ≠ spec)
+ *   "class4"        — escalated (flaky, alias of escalate)
  *
  * CIHEAL_STUB_TURN_TOKENS controls the per-turn usage reported in turn_end,
  * for testing the budget soft limit (set high to trip the per-turn abort).
@@ -93,24 +98,50 @@ class StubSession {
 /** Build the canned AgentResult from env switches. */
 function cannedResultFromEnv(): AgentResult {
 	const kind = process.env.CIHEAL_STUB_FIX_KIND ?? "test";
-	if (kind === "escalate") {
+	// Escalation variants (class 3 boundaries + class 4 flaky).
+	if (kind === "escalate" || kind === "class4") {
 		return {
 			kind: "escalated",
 			diagnosis: { failureClass: 4, summary: "（stub）flaky，转交人工" },
 			reason: "stub escalation: flaky test",
 		};
 	}
+	if (kind === "class3-no-spec") {
+		return {
+			kind: "escalated",
+			diagnosis: { failureClass: 3, summary: "（stub）spec 不可读/缺失，转交人工" },
+			reason: "stub escalation: spec unreadable",
+		};
+	}
+	if (kind === "class3-mismatch") {
+		return {
+			kind: "escalated",
+			diagnosis: { failureClass: 3, summary: "（stub）代码行为 ≠ spec，转交人工" },
+			reason: "stub escalation: code ≠ spec",
+		};
+	}
+	// Fixed variants (class 1/2/3).
+	const classMap: Record<string, 1 | 2 | 3> = {
+		test: 1,
+		"src-main": 1,
+		class2: 2,
+		"class3-spec": 3,
+	};
+	const failureClass = classMap[kind] ?? 1;
+	const summaryMap: Record<string, string> = {
+		test: "测试断言写错：CalculatorTest 期望 4 但实际应为 5（2+3）。",
+		"src-main": "（stub）试图改生产代码——应被 G3 拦截。",
+		class2: "被测代码 add() 返回值变更，测试断言过时；同步文档。",
+		"class3-spec": "按 spec 补符合性测试：Calculator.add(2,3) 应返回 5。",
+	};
 	const diagnosis: Diagnosis = {
-		failureClass: 1,
-		summary: "测试断言写错：CalculatorTest 期望 4 但实际应为 5（2+3）。",
+		failureClass,
+		summary: summaryMap[kind] ?? summaryMap.test,
 	};
 	return {
 		kind: "fixed",
 		diagnosis,
-		summary:
-			kind === "src-main"
-				? "（stub）试图改生产代码——应被 G3 拦截。"
-				: "修正 CalculatorTest 断言为期望值 5。",
+		summary: summaryMap[kind] ?? "修正 CalculatorTest 断言为期望值 5。",
 	};
 }
 
@@ -129,6 +160,27 @@ function applyStubEdits(cwd: string, result: AgentResult): void {
 		);
 		return;
 	}
+	if (kind === "class2") {
+		// class 2: update stale test assertion + sync relevant doc paragraph.
+		writeFile(
+			joinPath(cwd, "src/test/java/com/example/CalculatorTest.java"),
+			"package com.example;\n// updated: assertEquals(5, calc.add(2,3))\n",
+		);
+		writeFile(
+			joinPath(cwd, "docs/api.md"),
+			"# Calculator API\n\n`add(a, b)` returns the sum. `add(2,3)` returns 5.\n",
+		);
+		return;
+	}
+	if (kind === "class3-spec") {
+		// class 3: add a new conformance test asserting spec-defined behavior.
+		writeFile(
+			joinPath(cwd, "src/test/java/com/example/CalculatorConformanceTest.java"),
+			"package com.example;\n// spec conformance: add(2,3)==5 per spec\n",
+		);
+		return;
+	}
+	// Default (class 1): fix the test assertion.
 	writeFile(
 		joinPath(cwd, "src/test/java/com/example/CalculatorTest.java"),
 		"package com.example;\n// fixed assertion: assertEquals(5, ...)\n",

@@ -110,14 +110,20 @@ function cannedResultFromEnv(): AgentResult {
 	if (kind === "class3-no-spec") {
 		return {
 			kind: "escalated",
-			diagnosis: { failureClass: 3, summary: "（stub）spec 不可读/缺失，转交人工" },
+			diagnosis: {
+				failureClass: 3,
+				summary: "（stub）spec 不可读/缺失，转交人工",
+			},
 			reason: "stub escalation: spec unreadable",
 		};
 	}
 	if (kind === "class3-mismatch") {
 		return {
 			kind: "escalated",
-			diagnosis: { failureClass: 3, summary: "（stub）代码行为 ≠ spec，转交人工" },
+			diagnosis: {
+				failureClass: 3,
+				summary: "（stub）代码行为 ≠ spec，转交人工",
+			},
 			reason: "stub escalation: code ≠ spec",
 		};
 	}

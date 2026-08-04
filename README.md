@@ -10,6 +10,8 @@
 - **agent 自行执行**：bash 改文件 + 跑测试，bot 从 `git diff` 提取真实 patch（不信任 agent 自述）
 - **极薄 prompt**：CI log/MR diff 写文件到工作区，agent 用 read 工具读，不拼进 prompt
 - **钉钉解耦**：agent 永不持有钉钉工具，bot 在确定性节点调钉钉
+- **模型候选链**：bot 按 `config/model-candidates.json` 顺序选择同族的首个可用 provider/model，运行中失败直接转人工
+- **Pi 配置隔离**：只加载 bot 自带 settings 与 playbook，不加载目标 worktree 的 `.pi` 配置或扩展
 
 ## 安装
 
@@ -46,16 +48,25 @@ pnpm start
 关键环境变量（`.env`，完整模板见 `.env.example`）：
 
 | 变量 | 说明 |
-|---|---|
+| --- | --- |
 | `GITLAB_WEBHOOK_SECRET` | GitLab webhook 验签 token（X-Gitlab-Token） |
 | `GITLAB_TOKEN` | GitLab 项目访问令牌（read_repository + api） |
 | `GITLAB_URL` | 自托管 GitLab 地址（gitlab.com 省略） |
 | `DINGTALK_WEBHOOK_URL` | 钉钉自定义机器人 webhook |
-| `MODEL_PROVIDER` | pi 模型 provider（anthropic/openai/deepseek 等） |
-| `MODEL_API_KEY` | 模型 API key |
+| `config/model-candidates.json` | bot-owned 的同族 provider/model 有序候选（非敏感） |
+| `config/model-profiles.json` | 按候选绑定的 Pi settings 子集：`defaultThinkingLevel`、`thinkingBudgets`、`compaction` |
+| `CIHEAL_BOT_ROOT` | bot 发布根目录的绝对路径；worker 从此加载配置和 playbook，生产环境必填 |
+| `CIHEAL_PI_BASE_DIR` | deployment-owned 的绝对目录；每个 worker 从中复制 Pi 原生 `auth.json` / `models.json`，生产环境必填 |
+| `DEEPSEEK_API_KEY` | provider-specific API key，仅由部署环境注入 |
+| `MODEL_PROVIDER` / `MODEL_API_KEY` | 旧版单 provider 兼容配置，可选 |
 | `BOT_BUDGET_TOKENS` | 单 session 总 token 上限（默认 200000） |
 | `BOT_BUDGET_PER_TURN_TOKENS` | 单 turn token 上限（默认 50000） |
 | `BOT_CONCURRENCY` | 并发数（v1=1） |
+
+`model-profiles.json` 复用 Pi `settings.json` 字段名，但只允许
+`defaultThinkingLevel`、`thinkingBudgets` 与 `compaction`。模型的
+`contextWindow`、`maxTokens` 和 reasoning 能力始终以 Pi 的 model catalog 为准，
+不在 bot 配置中重复声明。
 
 ## 测试
 

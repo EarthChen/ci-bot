@@ -17,7 +17,10 @@ import { logger } from "../util/log.js";
 import { join as joinPath } from "node:path";
 import { existsSync } from "node:fs";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import type { BudgetConfig, RuntimeSessionBundle } from "../agent-runtime/runtime.js";
+import type {
+	BudgetConfig,
+	RuntimeSessionBundle,
+} from "../agent-runtime/runtime.js";
 import { SharedAgentRuntime } from "../agent-runtime/runtime.js";
 import { createCiRepairDefinition } from "./ci-repair-definition.js";
 
@@ -25,7 +28,9 @@ import { createCiRepairDefinition } from "./ci-repair-definition.js";
 export type { BudgetConfig };
 
 /** Factory for creating a session bundle (DI seam for tests). */
-export type SessionFactory = (input: AgentRunInput) => Promise<RuntimeSessionBundle>;
+export type SessionFactory = (
+	input: AgentRunInput,
+) => Promise<RuntimeSessionBundle>;
 
 /**
  * Real agent runner backed by the shared Pi Agent Runtime.
@@ -142,11 +147,8 @@ async function createDefaultSession(
 		SettingsManager,
 		ModelRuntime,
 	} = await import("@earendil-works/pi-coding-agent");
-	const {
-		loadModelCandidates,
-		loadModelProfiles,
-		selectModelCandidate,
-	} = await import("./model-selection.js");
+	const { loadModelCandidates, loadModelProfiles, selectModelCandidate } =
+		await import("./model-selection.js");
 
 	const agentDir = process.env.PI_CODING_AGENT_DIR;
 	if (!agentDir) {

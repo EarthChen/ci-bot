@@ -1,0 +1,3 @@
+# Use bot-owned Pi runtime configuration
+
+The self-heal bot loads Pi settings and its playbook from the bot release, not from the target worktree or the operator's user directory. Model selection uses an ordered, non-secret candidate list within one model family plus provider-specific deployment environment keys; the first usable candidate is selected before a session starts, and runtime provider failures escalate instead of switching models mid-session. Each candidate references a Pi-compatible profile limited to thinking and compaction settings; model catalog facts remain owned by Pi. This preserves reproducibility, keeps fallback behavior consistent with G6, and prevents untrusted target-project Pi resources from changing worker behavior.

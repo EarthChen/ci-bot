@@ -13,9 +13,64 @@
 import type { AgentRunner } from "../agent/runner.js";
 import type { GitLabClient } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
-import type { PipelineEvent, RepairOutcome, Patch } from "../types.js";
+import type {
+	PipelineEvent,
+	RepairOutcome,
+	Patch,
+} from "../types.js";
 import { logger } from "../util/log.js";
 import { createWorktree, removeWorktree } from "./worktree.js";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join as joinPath } from "node:path";
+
+/**
+ * G5 audit record — persisted per repair so a bad fix can be traced back
+ * afterward. Written as audit-trace.json in the worker cwd (sidecar pattern,
+ * same as glab-mr-creates.json / dingtalk-sent.json) so the e2e test observes
+ * it across the process seam. Production deployment ships these to log/object
+ * storage (ticket 07 evolution seam).
+ */
+interface AuditTrace {
+	/** The pipeline event this repair handled (ties a trace to a pipeline). */
+	readonly event: {
+		readonly projectId: string;
+		readonly pipelineId: number;
+		readonly ref: string;
+		readonly sha: string;
+	};
+	/** Repair outcome: "mr" | "escalated" | "failed". */
+	readonly outcome: string;
+	/** LLM diagnosis (failure class + root-cause summary); absent for class-5. */
+	readonly diagnosis?: { readonly failureClass: number; readonly summary: string };
+	/** Real git diff (authoritative; empty for escalations with no patch). */
+	readonly diff: string;
+	/** The bot's recorded rationale for the outcome (fix summary or escalation reason). */
+	readonly reasoning: string;
+	/** MR url when outcome === "mr"; absent otherwise. */
+	readonly mrUrl?: string;
+	/** ISO timestamp for audit ordering / retention. */
+	readonly createdAt: string;
+}
+
+/** Write the audit trace sidecar to the worker cwd (best-effort, never throws in caller). */
+function writeAuditTrace(cwd: string, trace: AuditTrace): void {
+	try {
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(joinPath(cwd, "audit-trace.json"), JSON.stringify(trace, null, 2), "utf8");
+	} catch (err) {
+		logger.warn({ cwd, err }, "audit-trace write failed");
+	}
+}
+
+/** Build the event slice of an audit trace. */
+function auditEvent(event: PipelineEvent): AuditTrace["event"] {
+	return {
+		projectId: event.projectId,
+		pipelineId: event.pipelineId,
+		ref: event.ref,
+		sha: event.sha,
+	};
+}
 
 /** Result of one verification layer (related or full regression). */
 export type TestRunStatus = "green" | "flaky" | "fail";
@@ -72,6 +127,13 @@ export async function runRepair(
 	if (class5Reason) {
 		const reason = `class 5 非单测失败：${class5Reason}，转交人工（不起 agent）`;
 		await notifyEscalation(dingtalk, event, reason);
+		writeAuditTrace(deps.cwd, {
+			event: auditEvent(event),
+			outcome: "escalated",
+			diff: "",
+			reasoning: reason,
+			createdAt: new Date().toISOString(),
+		});
 		return { kind: "escalated", summary: reason };
 	}
 
@@ -110,6 +172,14 @@ export async function runRepair(
 	// 3. Branch on the structured agent result.
 	if (result.kind === "escalated") {
 		await notifyEscalation(dingtalk, event, result.reason);
+		writeAuditTrace(deps.cwd, {
+			event: auditEvent(event),
+			outcome: "escalated",
+			diagnosis: result.diagnosis,
+			diff: "",
+			reasoning: result.reason,
+			createdAt: new Date().toISOString(),
+		});
 		return { kind: "escalated", summary: result.reason };
 	}
 
@@ -126,16 +196,31 @@ export async function runRepair(
 		return fail(event, dingtalk, "extract-patch", err);
 	}
 	if (patch.paths.length === 0) {
-		await notifyEscalation(dingtalk, event, "agent 报告 fixed 但工作区无改动");
-		return {
-			kind: "escalated",
-			summary: "empty patch after agent reported fixed",
-		};
+		const reason = "agent 报告 fixed 但工作区无改动";
+		await notifyEscalation(dingtalk, event, reason);
+		writeAuditTrace(deps.cwd, {
+			event: auditEvent(event),
+			outcome: "escalated",
+			diagnosis: result.diagnosis,
+			diff: patch.diff,
+			reasoning: reason,
+			createdAt: new Date().toISOString(),
+		});
+		return { kind: "escalated", summary: "empty patch after agent reported fixed" };
 	}
 	// G3 permission boundary: only test/doc files; src/main forbidden.
 	const violation = validatePatchPaths(patch);
 	if (violation) {
-		await notifyEscalation(dingtalk, event, `G3 权限越界：${violation}`);
+		const reason = `G3 权限越界：${violation}`;
+		await notifyEscalation(dingtalk, event, reason);
+		writeAuditTrace(deps.cwd, {
+			event: auditEvent(event),
+			outcome: "escalated",
+			diagnosis: result.diagnosis,
+			diff: patch.diff,
+			reasoning: reason,
+			createdAt: new Date().toISOString(),
+		});
 		return { kind: "escalated", summary: `G3 violation: ${violation}` };
 	}
 	// Re-run tests: two-layer verification (ticket 04). Layer 1 = related
@@ -156,6 +241,14 @@ export async function runRepair(
 				? "相关测试 flaky——修复本身不稳定，转交人工"
 				: "验证未绿（重跑测试失败，疑似 agent 改了生产代码让测试假绿）";
 		await notifyEscalation(dingtalk, event, reason);
+		writeAuditTrace(deps.cwd, {
+			event: auditEvent(event),
+			outcome: "escalated",
+			diagnosis: result.diagnosis,
+			diff: patch.diff,
+			reasoning: `verification ${verifyOutcome}: ${reason}`,
+			createdAt: new Date().toISOString(),
+		});
 		return {
 			kind: "escalated",
 			summary: `verification ${verifyOutcome}: ${reason}`,
@@ -177,6 +270,15 @@ export async function runRepair(
 		return fail(event, dingtalk, "create-mr", err);
 	}
 	await notifySuccess(dingtalk, event, mr.url, result.diagnosis.summary);
+	writeAuditTrace(deps.cwd, {
+		event: auditEvent(event),
+		outcome: "mr",
+		diagnosis: result.diagnosis,
+		diff: patch.diff,
+		reasoning: result.summary,
+		mrUrl: mr.url,
+		createdAt: new Date().toISOString(),
+	});
 	const outcome: RepairOutcome = {
 		kind: "mr",
 		mrUrl: mr.url,

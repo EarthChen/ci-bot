@@ -13,6 +13,7 @@ import { logger } from "../util/log.js";
 import type { PipelineEvent } from "../types.js";
 import type { WorkerManager } from "../worker/manager.js";
 import { workerWorkDir } from "../worker/manager.js";
+import type { DingTalkNotifier } from "../notify/dingtalk.js";
 
 export interface SchedulerDeps {
   readonly workerManager: WorkerManager;
@@ -20,6 +21,10 @@ export interface SchedulerDeps {
   readonly workRoot: string;
   /** Global concurrency cap. v1 = 1. */
   readonly concurrency: number;
+  /** Ticket 07: notifier for worker-crash self-fault alerts. Optional. */
+  readonly notifier?: DingTalkNotifier;
+  /** Ticket 07: consecutive worker crashes before a self-fault alert. */
+  readonly workerCrashThreshold?: number;
 }
 
 export type EnqueueStatus = "queued" | "duplicate";
@@ -33,6 +38,8 @@ export class Scheduler {
   private running = 0;
   /** Pipeline ids currently enqueued or in-flight (idempotent dedup). */
   private readonly inflight = new Set<string>();
+  /** Ticket 07: consecutive worker-crash counter (reset on success). */
+  private crashCount = 0;
 
   constructor(private readonly deps: SchedulerDeps) {}
 
@@ -76,10 +83,30 @@ export class Scheduler {
     const cwd = workerWorkDir(this.deps.workRoot, event);
     try {
       const outcome = await this.deps.workerManager.run(event, cwd);
+      this.crashCount = 0; // reset on success — transient crashes don't accumulate.
       logger.info({ event, outcome: outcome.kind }, "repair completed");
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       logger.error({ event, error }, "worker crashed");
+      // Ticket 07: self-fault alert after N consecutive worker crashes.
+      this.crashCount++;
+      const threshold = this.deps.workerCrashThreshold ?? 3;
+      if (this.deps.notifier && this.crashCount >= threshold) {
+        void this.deps.notifier
+          .send({
+            title: "CI 自愈 Bot 自故障",
+            text: [
+              `连续 ${this.crashCount} 次 worker 崩溃，bot 可能无法修复。`,
+              `最近一次：项目 ${event.projectId} pipeline ${event.pipelineId}：${error}`,
+              `请人工检查 worker 运行环境（Node/tsx/依赖/磁盘）。`,
+            ].join("\n"),
+          })
+          .catch((notifyErr) =>
+            logger.warn({ notifyErr }, "crash alert failed"),
+          );
+        // Reset after alerting to avoid flooding one alert per crash.
+        this.crashCount = 0;
+      }
     } finally {
       this.inflight.delete(dedupKey(event));
     }

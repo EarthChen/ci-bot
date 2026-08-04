@@ -9,6 +9,7 @@ import { loadEnvFile, loadConfig } from "./config/index.js";
 import { Scheduler } from "./queue/scheduler.js";
 import { SubprocessWorkerManager } from "./worker/manager.js";
 import { mountWebhook } from "./webhook/receiver.js";
+import { HttpDingTalkNotifier } from "./notify/dingtalk.js";
 import { logger } from "./util/log.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,6 +35,9 @@ async function main(): Promise<void> {
 		workerManager,
 		workRoot,
 		concurrency: config.concurrency,
+		// Ticket 07: self-fault DingTalk alert on repeated worker crashes.
+		notifier: new HttpDingTalkNotifier(config.dingtalkWebhookUrl, httpPost),
+		workerCrashThreshold: Number(process.env.BOT_WORKER_CRASH_THRESHOLD ?? "3"),
 	});
 
 	await mountWebhook(app, {
@@ -55,6 +59,18 @@ async function main(): Promise<void> {
 	};
 	process.on("SIGTERM", shutdown);
 	process.on("SIGINT", shutdown);
+}
+
+/** HTTP POST used by the DingTalk notifier (fetch wrapper). */
+async function httpPost(url: string, body: unknown): Promise<void> {
+	const res = await fetch(url, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) {
+		throw new Error(`dingtalk webhook failed: ${res.status} ${res.statusText}`);
+	}
 }
 
 main().catch((err) => {

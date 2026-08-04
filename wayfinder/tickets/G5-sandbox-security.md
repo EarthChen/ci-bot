@@ -1,8 +1,32 @@
 # G5: 沙箱化与安全边界
 
-> **wayfinder:grilling** · 状态: open · 类型: HITL（需用户在线，/grilling）· assignee: unclaimed
+> **wayfinder:grilling** · 状态: ✅ closed · 类型: HITL（需用户在线，/grilling）· assignee: 当前 session
 >
 > **Blocked by**: —
+>
+> **Resolution**: 沙箱化与安全边界已定。核心约束: G3 定 bot 只改测试/文档, src 禁写(写权限不重 grill); G2 定 GitLab token 注入 worker; G4 定全显式配 R1 四条泄漏通道 + per-worker cwd。
+>
+> ## 子决策
+>
+> 1. **沙箱形态**: **目录隔离 + 受限用户，不用容器**(用户选 B 威胁模型)。每项目独立 cwd(G4 已定) + OS 用户/chmod 收窄 FS 访问轻量防线。LLM 测试代码跑在 worker 进程, 能读宿主但目录隔离+权限收窄。
+>    - **威胁模型 B**: 内部项目, CI 内容可信, LLM 产出错误而非恶意。用户判定 prompt injection 低威胁。
+>    - **演进接缝**: 威胁升级到 A(prompt injection 成实质风险) → 加容器/microVM 做执行隔离(R1 说 layer-7 不够要内核级)。
+> 2. **写权限(G3 已定)**: 只改测试目录 + 文档目录, src/main 禁写。不重 grill。
+> 3. **Secret 管理**: **.env 优先 + 环境变量两种方式**(用户选, 偏离推荐)。GitLab token/模型 API key/MCP auth 优先 .env 文件, 备环境变量。**风险标注**: .env 是落盘文件(与"不落盘"相反), 需 chmod 600 + .gitignore + 不提交仓库 + 机器访问控制缓解。轮转: 人工/CI 定期换, bot 读 .env 不持久 secret。
+> 4. **LLM 审计**: **全归档 diff + 推理痕迹**。每次修复产出 diff + MR 描述 + LLM 推理痕迹(诊断结论/根因/修复思路) 归档到日志/对象存储。坏修复可事后追溯。与 G2 'MR 带诊断摘要'一致。
+> 5. **供应链**: **版本锁 + pnpm audit**。bot 依赖(Claude SDK TS 包 + MCP server) pin 版本 + pnpm-lock + 定期 pnpm audit。MCP server 来源限定官方/可信。
+>
+> ## 权限矩阵(汇总)
+>
+> | 对象 | 读 | 写 | 备注 |
+> |---|---|---|---|
+> | 项目 checkout | ✅ | ✅(测试/文档目录) | G3 禁 src 写 |
+> | spec 目录 | ✅ | ✅(类别2行为变更时) | G1 定 |
+> | .m2 | ✅ | ❌(仅复用缓存) | 读复用省下载 |
+> | ~/.ssh, ~/.aws 等 | ❌ | ❌ | 受限用户+chmod 隔离 |
+> | .env (secret) | ✅ | ❌ | chmod 600 + .gitignore |
+>
+> Resolution 详情存本票; 无单独 brief 文件(安全边界 spec 即产出)。
 
 ## Question
 

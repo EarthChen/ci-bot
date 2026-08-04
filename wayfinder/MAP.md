@@ -30,14 +30,15 @@
 - [G2: 诊断与修复路由/编排](tickets/G2-routing-orchestration.md) — 决策: v1 单连续 session(bot 代码做前后确定性事+agent 中间连续跑)。渠道=**混合**(glab 取元数据+本地 clone 执行)。pipeline: webhook→glab取日志/diff→粗筛类别5早转交→起 ClaudeSDKClient→agent 诊断+修复+文档→验证(相关测试+全量双层)→开 MR。验证遇 flaky=标记 skip+独立钉钉通知。修不动=直接转人工(MR 带诊断摘要)。**新维度**: 钉钉主动推送(转人工/异常/成功三类, 与 MR 解耦)。spec 读写时序: 诊断阶段读/修复后阶段写。
 - [G3: 每类失败的修复策略](tickets/G3-repair-strategies.md) — 决策: **权限边界=只改测试和文档，绝不改被测代码**(与 G1 原则一致; 被测代码 bug→转交)。类别1/2: 改断言/期望/mock值+**轻量重构测试结构**(用户选, 风险: LLM 重构引入新 bug, 演进接缝=频发则收回)。类别3: 按 spec 补规格符合性测试, 只补失败相关路径。类别2文档同步: 只动变更相关段落。review 强度=强制人工(G6定)。验证=相关+全量双层(G2定)。
 - [G4: 每项目独立 worker 并发模型](tickets/G4-concurrency-model.md) — 决策: **按需 spawn**(事件来→spawn worker 跑 G2 pipeline→退出)。触发源=**Pipeline 事件**(非 job, 一个 pipeline 只触发一次, 无需去重合并)。跨 pipeline 过期=串行队列跑完取最新, 旧 commit MR 标注+钉钉。隔离=**全显式配 R1 四条泄漏通道**(settingSources:[]+CLAUDE_CONFIG_DIR+DISABLE_AUTO_MEMORY+cwd)。背压=**全局并发上限 N+超出排队**(N 具体值依赖 G5/G7)。
+- [G5: 沙箱化与安全边界](tickets/G5-sandbox-security.md) — 决策: 沙箱=**目录隔离+受限用户，不用容器**(用户判威胁模型 B=内部可信+LLM 产错非恶意; 演进接缝: 威胁升级到 A→加容器/microVM)。secret=**.env 优先+环境变量**(偏程实践, 风险标注: 落盘需 chmod600+gitignore+不提交)。LLM 审计=**全归档 diff+推理痕迹**。供应链=**版本锁+pnpm audit**。写权限(G3定)=测试/文档, src 禁写。权限矩阵: checkout 读写(测试/文档)/spec 读写(行为变更时)/.m2 只读复用/secret 文件 600。
 
 ## Not yet specified
 
 <!-- 向 destination 的雾：能感到要来但还钉不精确的问题。随 frontier 推进逐片 graduate 为 ticket -->
 
 - **语言适配层具体设计**：G6 已定调 v1=单 agent + skills 启用 + prompt 点名(挂载已有 java-coding-standards/springboot-tdd); 演进=拆 subagent, skill 迁到 AgentDefinition.skills。具体设计依赖 G2 pipeline 形状, 作为 G2 下游处理。R2 #14882 未知(subagent 内 skill 是否受全量加载回归影响)待实测。
-- **本地执行形态的依赖复用**：用户要求本地执行时复用 .m2。G6 选 Claude SDK(TS), bot 本地 clone+起容器跑 mvn test; .m2 通过容器挂载复用。Claude SDK 无沙箱(R1), 隔离靠外部容器。具体方案依赖 G5(沙箱)+G7(部署) grilling。
-- **成本估算**：依赖模型选型(G6)+ 并发规模(G4)。模型选型已落地(G6: 单主模型+provider配置), 但并发规模未定。G4 落地后 graduate; 单次修复 token 量级 + 并发峰值成本两项可同时算。
+- **本地执行形态的依赖复用**：G5 已定不用容器(目录隔离+受限用户), .m2 **只读复用**(读缓存省下载, 不写污染宿主); 仅复用 .m2 缓存读, 新依赖缺失时 worker 钉钉告知转人工。具体部署形态(机器/编排)依赖 G7。
+- **成本估算**：G6(单主模型+provider)+G4(并发上限 N)已落地。单次修复 token 量级+并发峰值成本可同时算; 具体 token 预算值依赖实测(G6 max_budget_usd + 单次诊断+修复 turn 量)。G7 落地后定具体值。
 - **每类失败的具体修复策略**: G1 分类法 + G2 路由均已落地。具体修复策略(每类的改动边界/验证要求/禁止动作)已 graduate 为 **G3**, 不再是 fog。
 - **部署形态细节**（runtime/容器/编排栈）：长驻服务大方向已定，具体栈依赖 G4（worker 供给）+ G6（模型，影响 runtime）落地。G7 会先搭框架。
 - **文档不一致检测的精度**：大方向"仅行为变更时顺带",但"行为变更"如何判定（签名 diff? 语义比对?)依赖 G2 路由结论。

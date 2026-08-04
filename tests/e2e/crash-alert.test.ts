@@ -62,7 +62,10 @@ async function postWebhook(
 	return { status: res.status, json };
 }
 
-async function setupBot(opts: { threshold?: number }): Promise<{
+async function setupBot(opts: {
+	threshold?: number;
+	workerError?: string;
+}): Promise<{
 	app: FastifyInstance;
 	scheduler: Scheduler;
 	base: string;
@@ -74,7 +77,9 @@ async function setupBot(opts: { threshold?: number }): Promise<{
 	// (e.g. the worker binary is broken, or the runtime is missing).
 	const crashManager = {
 		run(): Promise<never> {
-			return Promise.reject(new Error("worker subprocess crashed"));
+			return Promise.reject(
+				new Error(opts.workerError ?? "worker subprocess crashed"),
+			);
 		},
 	};
 	const notifier = new InMemoryDingTalkNotifier();
@@ -133,6 +138,26 @@ describe("worker-crash self-fault alert (ticket 07)", () => {
 			const alert = bot.notifier.sent.find((m) => m.title.includes("自故障"));
 			expect(alert).toBeTruthy();
 			expect(alert!.text).toContain("worker");
+		} finally {
+			await bot.cleanup();
+		}
+	});
+
+	it("does not expose worker error details in the DingTalk alert", async () => {
+		const bot = await setupBot({
+			threshold: 1,
+			workerError: "provider failed: token=leaked-secret",
+		});
+		try {
+			await postWebhook(
+				bot.base,
+				pipelineFailedBody("proj-crash-secret", 950_100),
+			);
+			await bot.scheduler.idle();
+
+			const alert = bot.notifier.sent.find((m) => m.title.includes("自故障"));
+			expect(alert).toBeTruthy();
+			expect(alert!.text).not.toContain("leaked-secret");
 		} finally {
 			await bot.cleanup();
 		}

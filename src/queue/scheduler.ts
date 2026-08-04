@@ -97,7 +97,7 @@ export class Scheduler {
 						title: "CI 自愈 Bot 自故障",
 						text: [
 							`连续 ${this.crashCount} 次 worker 崩溃，bot 可能无法修复。`,
-							`最近一次：项目 ${event.projectId} pipeline ${event.pipelineId}：${error}`,
+							`最近一次：项目 ${event.projectId} pipeline ${event.pipelineId}：worker 异常，详情见服务日志`,
 							`请人工检查 worker 运行环境（Node/tsx/依赖/磁盘）。`,
 						].join("\n"),
 					})

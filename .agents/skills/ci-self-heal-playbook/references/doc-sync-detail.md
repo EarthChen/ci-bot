@@ -51,6 +51,6 @@
 
 ## 输出
 
-文档改动与测试修复一并放入 `fix.files`（path 含 `docs/` 或 `*.md`）。bot 代码的 G3 校验放行文档路径。
+文档改动与测试修复一并通过 bash 应用到工作区（git add/commit），bot 代码从 `git diff` 提取真实 patch。你只需在 `summary` 里描述改了什么，不需要在结构化结果里放文件内容。
 
-若 class 2 但无相关文档 → `fix.files` 只含测试文件，summary 注明"无相关文档需同步"。
+若 class 2 但无相关文档 → patch 只含测试文件，summary 注明“无相关文档需同步”。

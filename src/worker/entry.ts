@@ -3,8 +3,7 @@
  *
  * Per-worker isolation (G4): each worker gets its own cwd + session dir + env.
  * The worker runs the full G2 pipeline for one event:
- *   fetch CI log → (class 5 early-filter TODO in ticket 03) → run agent →
- *   create MR → notify DingTalk → write outcome.
+ *   fetch CI log → class-5 early filter → run agent → create MR → notify DingTalk → write outcome.
  *
  * Dependency injection via env switches lets the e2e test drive a REAL
  * subprocess while intercepting external side effects (glab/dingtalk/agent):

@@ -14,7 +14,7 @@
 - `pom.xml`、`build.gradle`、`settings.gradle`（构建配置）
 - 仓库根的 `Dockerfile`、`ci/`、`.gitlab-ci.yml`（CI 配置）
 
-任何 fix 的 file path 命中禁止路径 → **立即转交人工**，不得开 MR。bot 代码有 G3 校验兜底（`validateFixPaths`），但 agent 应在输出前自检。
+任何 fix 的 file path 命中禁止路径 → **立即转交人工**，不得开 MR。bot 代码有 G3 校验兜底（`validatePatchPaths`），但 agent 应在输出前自检。
 
 ## class 1 修复 playbook（测试 bug）
 
@@ -49,9 +49,9 @@
 
 ## class 3 修复 playbook（缺失测试）
 
-1. **读 spec/PRD**，确定期望的正确行为。
+1. **读 spec/PRD**，确定期望的正确行为。spec 目录位置：优先查 `docs/spec/`、`specs/`、`docs/adr/`；若无则读仓库根的 `README.md` / `CONTEXT.md`。
 2. 写测试断言该行为。**关键**：断言 spec 定义的，不是当前代码的。
-3. 若当前代码行为与 spec 不符 → **转交**（不得改生产代码，也不得按 bug 写测试固化它）。
+3. **spec 不可读/缺失 → 转交**（不得猜规格瞎写测试）。当前代码行为与 spec 不符 → **转交**（不得改生产代码，也不得按 bug 写测试固化它）。
 4. 跑新测试：
    - 绿 → fixed。
    - 红 → 可能是被测代码实现漏了 spec（生产 bug）→ 转交。也可能误判 class 3 实为 class 2（被测代码改漏了）→ 重新诊断。

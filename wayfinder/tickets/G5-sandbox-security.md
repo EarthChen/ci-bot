@@ -10,7 +10,8 @@
 >
 > 1. **沙箱形态**: **目录隔离 + 受限用户，不用容器**(用户选 B 威胁模型)。每项目独立 cwd(G4 已定) + OS 用户/chmod 收窄 FS 访问轻量防线。LLM 测试代码跑在 worker 进程, 能读宿主但目录隔离+权限收窄。
 >    - **威胁模型 B**: 内部项目, CI 内容可信, LLM 产出错误而非恶意。用户判定 prompt injection 低威胁。
->    - **演进接缝**: 威胁升级到 A(prompt injection 成实质风险) → 加容器/microVM 做执行隔离(R1 说 layer-7 不够要内核级)。
+>    - **演进接缝 1(威胁升级)**: 威胁升级到 A(prompt injection 成实质风险) → 加容器/microVM 做执行隔离(R1 说 layer-7 不够要内核级)。
+>    - **演进接缝 2(docker 部署)**: bot 服务 docker 部署时(G7 演进), 受限用户调整为容器内统一非 root 用户(Dockerfile `USER`), 替代宿主 per-worker 用户; 目录隔离(cwd)+chmod 不变; 多一层容器边界(额外收益)。注意: 此处 docker 是 bot 服务打包边界, 非 worker 额外容器化(G5 的"不用容器"=worker 执行隔离不额外套容器, 不冲突)。
 > 2. **写权限(G3 已定)**: 只改测试目录 + 文档目录, src/main 禁写。不重 grill。
 > 3. **Secret 管理**: **.env 优先 + 环境变量两种方式**(用户选, 偏离推荐)。GitLab token/模型 API key/MCP auth 优先 .env 文件, 备环境变量。**风险标注**: .env 是落盘文件(与"不落盘"相反), 需 chmod 600 + .gitignore + 不提交仓库 + 机器访问控制缓解。轮转: 人工/CI 定期换, bot 读 .env 不持久 secret。
 > 4. **LLM 审计**: **全归档 diff + 推理痕迹**。每次修复产出 diff + MR 描述 + LLM 推理痕迹(诊断结论/根因/修复思路) 归档到日志/对象存储。坏修复可事后追溯。与 G2 'MR 带诊断摘要'一致。

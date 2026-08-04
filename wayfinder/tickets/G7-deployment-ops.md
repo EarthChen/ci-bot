@@ -8,7 +8,8 @@
 >
 > ## 子决策
 >
-> 1. **runtime 形态(G4/G5 已收敛)**: **单进程 bot 主进程(TS) + 按需 spawn worker 子进程**。不用容器(G5), 不用 k8s 编排(G5 无容器)。worker=TS 子进程跑 Claude SDK `ClaudeSDKClient`(每 worker 独立 cwd + R1 四条隔离配置, G4 已定)。
+> 1. **runtime 形态(G4/G5 已收敛)**: **v1 MVP 本机目录部署** — 单进程 bot 主进程(TS) + 按需 spawn worker 子进程(同机 fork/exec)。不用容器(G5 worker 隔离走目录级), 不用 k8s。worker=TS 子进程跑 Claude SDK `ClaudeSDKClient`(每 worker 独立 cwd + R1 四条隔离配置, G4 已定)。宿主预装 Node+pnpm+JDK+Maven。
+>    - **演进接缝(docker 部署)**: bot 服务 docker 部署作后续。docker 下 worker 拉起=容器内 spawn TS 子进程(同容器 fork/exec), 非 docker-in-docker/DooD。G5 受限用户调为容器内非 root 用户(Dockerfile `USER`), 目录隔离+chmod 不变, 多容器边界(额外收益)。worker 隔离仍走 G5 目录级(容器内), 非靠额外容器。进一步演进到每 worker 独立容器(DooD)需重开 G5(与"worker 不额外容器化"冲突)。
 > 2. **GitLab webhook 接入**: **公网 webhook + 签名校验**(GitLab `X-Gitlab-Token` header) + IP 白名单(GitLab 出口 IP) + 限流。**幂等去重**: pipeline id 去重(G4 已定 pipeline 级触发, 天然防 job 重发; 跨重发靠 pipeline id 幂等)。GitLab webhook 默认重试 4 次, bot 长挂会丢事件(best-effort 自愈, 非关键路径, 丢事件=不修人可手补)。
 > 3. **可观测性**: **结构化 JSON 日志 + 轻量指标**(SQLite/文件, 无外部依赖)。每修复一个 trace: 项目/失败类/turn数/token/成本/结果/MR链接。指标: 成功率/平均修复时长/成本/修复。反例: 查询聚合不如专业栈, v1 够用, 留演进到 Prometheus+Grafana。
 > 4. **告警**: **钉钉统一**(扩展现有 G2 修复结果钉钉)。bot 自身故障(webhook 收不到/worker 全死/配额耗尽) 也发钉钉。单一通道, 简单。演进接缝: 多通道(钉钉+邮件)留后续。

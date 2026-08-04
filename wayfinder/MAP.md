@@ -31,17 +31,17 @@
 - [G3: 每类失败的修复策略](tickets/G3-repair-strategies.md) — 决策: **权限边界=只改测试和文档，绝不改被测代码**(与 G1 原则一致; 被测代码 bug→转交)。类别1/2: 改断言/期望/mock值+**轻量重构测试结构**(用户选, 风险: LLM 重构引入新 bug, 演进接缝=频发则收回)。类别3: 按 spec 补规格符合性测试, 只补失败相关路径。类别2文档同步: 只动变更相关段落。review 强度=强制人工(G6定)。验证=相关+全量双层(G2定)。
 - [G4: 每项目独立 worker 并发模型](tickets/G4-concurrency-model.md) — 决策: **按需 spawn**(事件来→spawn worker 跑 G2 pipeline→退出)。触发源=**Pipeline 事件**(非 job, 一个 pipeline 只触发一次, 无需去重合并)。跨 pipeline 过期=串行队列跑完取最新, 旧 commit MR 标注+钉钉。隔离=**全显式配 R1 四条泄漏通道**(settingSources:[]+CLAUDE_CONFIG_DIR+DISABLE_AUTO_MEMORY+cwd)。背压=**全局并发上限 N+超出排队**(N 具体值依赖 G5/G7)。
 - [G5: 沙箱化与安全边界](tickets/G5-sandbox-security.md) — 决策: 沙箱=**目录隔离+受限用户，不用容器**(用户判威胁模型 B=内部可信+LLM 产错非恶意; 演进接缝: 威胁升级到 A→加容器/microVM)。secret=**.env 优先+环境变量**(偏程实践, 风险标注: 落盘需 chmod600+gitignore+不提交)。LLM 审计=**全归档 diff+推理痕迹**。供应链=**版本锁+pnpm audit**。写权限(G3定)=测试/文档, src 禁写。权限矩阵: checkout 读写(测试/文档)/spec 读写(行为变更时)/.m2 只读复用/secret 文件 600。
-- [G7: 部署运维设计](tickets/G7-deployment-ops.md) — 决策: runtime=**单进程 bot(TS)+按需 spawn worker 子进程**(G4/G5 收敛, 无容器无 k8s)。webhook=**公网+签名校验+IP白名单+限流**(pipeline id 幂等去重)。可观测=**结构化日志+轻量指标**(SQLite/文件, 无外部依赖)。告警=**钉钉统一**(扩展 G2, bot 自身故障也发)。成本=**公式+量级数值待实测**(单次 5k-20k token; 月峰值=N×日均×token×单价×30; max_budget_usd 兜底)。
+- [G7: 部署运维设计](tickets/G7-deployment-ops.md) — 决策: runtime=**v1 本机目录部署**(单进程 bot(TS)+按需 spawn worker 子进程, 宿主预装 Node/pnpm/JDK/Maven); docker 作演进接缝(worker=容器内 fork/exec 非 DooD, G5 受限用户调为容器内非 root)。webhook=**公网+签名校验+IP白名单+限流**(pipeline id 幂等去重)。可观测=**结构化日志+轻量指标**(SQLite/文件, 无外部依赖)。告警=**钉钉统一**(扩展 G2, bot 自身故障也发)。成本=**公式+量级数值待实测**(单次 5k-20k token; 月峰值=N×日均×token×单价×30; max_budget_usd 兜底)。
 
 ## Not yet specified
 
 <!-- 向 destination 的雾：能感到要来但还钉不精确的问题。随 frontier 推进逐片 graduate 为 ticket -->
 
 - **语言适配层具体设计**：G6 已定调 v1=单 agent + skills 启用 + prompt 点名(挂载已有 java-coding-standards/springboot-tdd); 演进=拆 subagent, skill 迁到 AgentDefinition.skills。具体设计依赖 G2 pipeline 形状, 作为 G2 下游处理。R2 #14882 未知(subagent 内 skill 是否受全量加载回归影响)待实测。
-- **本地执行形态的依赖复用**: G5+G7 已落地。.m2 只读复用(目录隔离+受限用户, 无容器); 新依赖缺失 worker 钉钉转人工。部署形态=单进程 bot(TS)+按需 spawn worker 子进程。不再是 fog。
+- **本地执行形态的依赖复用**: G5+G7 已落地。v1 本机部署, .m2 只读复用(目录隔离+受限用户); docker 演进下 .m2 通过 volume 只读挂载。新依赖缺失 worker 钉钉转人工。不再是 fog。
 - **成本估算**: G7 已落地。公式: 单次 5k-20k token; 月峰值=N×日均×token×单价×30; max_budget_usd 兜底。具体数值待实测(单次诊断+修复 turn 量 + 并发 N)。不再是 fog。
 - **每类失败的具体修复策略**: G1 分类法 + G2 路由均已落地。具体修复策略(每类的改动边界/验证要求/禁止动作)已 graduate 为 **G3**, 不再是 fog。
-- **部署形态细节**（runtime/容器/编排栈）：G7 已落地。单进程 bot(TS)+按需 spawn worker 子进程, 无容器无 k8s(G5 定), webhook 公网+签名校验, 可观测=结构化日志+SQLite。不再是 fog。
+- **部署形态细节**（runtime/容器/编排栈）：G7 已落地。v1 本机目录部署(单进程 bot+worker 子进程); docker 作演进接缝。不再是 fog。
 - **文档不一致检测的精度**：大方向"仅行为变更时顺带",但"行为变更"如何判定（签名 diff? 语义比对?)依赖 G2 路由结论。
 - **spec/PRD 格式与可读性判定**: 类别 3 要求按 spec 补测试, spec 位置已定(仓库内 spec 目录), 但格式(结构化 Markdown? OpenSpec? 自由文档?)与"spec 可读"的判定信号未定。依赖 G2 pipeline 设计。
 

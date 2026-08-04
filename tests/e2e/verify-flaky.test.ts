@@ -37,7 +37,10 @@ function pipelineFailedBody(
 	return {
 		object_kind: "pipeline",
 		object_attributes: { id: pipelineId, ref, sha, status: "failed" },
-		project: { id: projectId, web_url: `https://gitlab.example.com/${projectId}` },
+		project: {
+			id: projectId,
+			web_url: `https://gitlab.example.com/${projectId}`,
+		},
 	};
 }
 
@@ -141,9 +144,10 @@ describe("verification two-layer + flaky @Skip (ticket 04)", () => {
 			await bot.scheduler.idle();
 
 			// MR created (two-layer verify both green → not blocked).
-			const mrs = await readSidecar<
-				Array<{ fixFiles: readonly string[] }>
-			>(bot.workRoot, "glab-mr-creates.json");
+			const mrs = await readSidecar<Array<{ fixFiles: readonly string[] }>>(
+				bot.workRoot,
+				"glab-mr-creates.json",
+			);
 			expect(mrs).not.toBeNull();
 			expect(mrs!.length).toBe(1);
 
@@ -157,9 +161,10 @@ describe("verification two-layer + flaky @Skip (ticket 04)", () => {
 			expect(layers).toContain("full");
 
 			// Success DingTalk (not escalation).
-			const dingtalk = await readSidecar<
-				Array<{ title: string }>
-			>(bot.workRoot, "dingtalk-sent.json");
+			const dingtalk = await readSidecar<Array<{ title: string }>>(
+				bot.workRoot,
+				"dingtalk-sent.json",
+			);
 			expect(dingtalk).not.toBeNull();
 			expect(dingtalk!.some((d) => d.title.includes("成功"))).toBe(true);
 		} finally {
@@ -181,9 +186,10 @@ describe("verification two-layer + flaky @Skip (ticket 04)", () => {
 			await bot.scheduler.idle();
 
 			// Repair MR still created (flaky doesn't block the fix).
-			const mrs = await readSidecar<
-				Array<{ fixFiles: readonly string[] }>
-			>(bot.workRoot, "glab-mr-creates.json");
+			const mrs = await readSidecar<Array<{ fixFiles: readonly string[] }>>(
+				bot.workRoot,
+				"glab-mr-creates.json",
+			);
 			expect(mrs).not.toBeNull();
 			expect(mrs!.length).toBe(1);
 

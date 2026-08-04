@@ -30,7 +30,12 @@ import { HttpDingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
 import type { Patch } from "../types.js";
 import { logger } from "../util/log.js";
-import { runRepair, type WorkerDeps, type TestRunner, type TestRunResult } from "../pipeline/run-repair.js";
+import {
+	runRepair,
+	type WorkerDeps,
+	type TestRunner,
+	type TestRunResult,
+} from "../pipeline/run-repair.js";
 
 /** Write JSON to a path, creating parent dirs (best-effort, never throws in caller). */
 async function writeJSON(path: string, value: unknown): Promise<void> {
@@ -149,10 +154,10 @@ function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
 			const logKind = process.env.CIHEAL_STUB_CI_LOG ?? "class1";
 			if (logKind === "class5") {
 				return [
-								"Running build...",
-								"[ERROR] Compilation failure:",
-								"[ERROR] /src/main/java/com/example/Calculator.java:[10,20] cannot find symbol",
-								"BUILD FAILURE",
+					"Running build...",
+					"[ERROR] Compilation failure:",
+					"[ERROR] /src/main/java/com/example/Calculator.java:[10,20] cannot find symbol",
+					"BUILD FAILURE",
 				].join("\n");
 			}
 			return [
@@ -232,7 +237,9 @@ class StubVerifyRunner implements TestRunner {
 		const file = joinPath(this.cwd, "verify-calls.json");
 		let calls: Array<{ layer: string; status: string }> = [];
 		try {
-			const raw = await import("node:fs").then((m) => m.readFileSync(file, "utf8"));
+			const raw = await import("node:fs").then((m) =>
+				m.readFileSync(file, "utf8"),
+			);
 			calls = JSON.parse(raw) as typeof calls;
 		} catch {
 			void 0; // first call — file doesn't exist yet
@@ -258,7 +265,13 @@ export async function runWorker(task: WorkerTask): Promise<RepairOutcome> {
 	const agent = pickAgent(dingtalk);
 	const glab = pickGlab(task.cwd);
 	const verifyRunner = pickVerify(task.cwd);
-	const deps: WorkerDeps = { agent, glab, dingtalk, cwd: task.cwd, verifyRunner };
+	const deps: WorkerDeps = {
+		agent,
+		glab,
+		dingtalk,
+		cwd: task.cwd,
+		verifyRunner,
+	};
 	return runRepair(deps, task.event);
 }
 

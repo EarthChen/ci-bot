@@ -31,11 +31,11 @@
 > ## 子决策
 >
 > 1. **信息获取渠道**: **混合** — glab 取结构化元数据(CI 日志/MR diff/pipeline 状态, 快判定), 本地 clone+执行做复现/读源码/spec/git blame/跑测试(深诊断)。两套认证(GitLab token 注入 worker, G5 处理)。本地复现失败→类别4转交路径。
-> 2. **session 形态**: **单连续 session** — bot 调一次 ClaudeSDKClient, agent 在同一 context 完成诊断+修复+文档。诊断结论在 context 内天然传递, 无跨模型脱节风险。演进触发条件: 诊断耗大半预算致修复被截断 / 失败涉及多模块 → 拆 subagent(演进接缝已定于 G6)。
+> 2. **session 形态**: **单连续 session** — bot 调一次 ClaudeSDKClient, agent 在同一 context 完成诊断+修复+文档。诊断结论在 context 内天然传递, 无跨模型脱节风险。agent session 结束时输出**结构化结果**(成功/转交/flaky/诊断摘要), bot 代码读结果后执行后续动作(开 MR/通知钉钉)。演进触发条件: 诊断耗大半预算致修复被截断 / 失败涉及多模块 → 拆 subagent(演进接缝已定于 G6)。
 > 3. **skill 触发(v1, G6 已定调)**: 单 agent + skills 启用, prompt 显式点名"处理 Java 单测失败时先读 java-coding-standards"。LLM 匹配+点名兑底。风险: headless 无人接住"模型没读 skill"→靠验证关卡+MR review 兑底。
 > 4. **验证关卡**: **双层** — 先跑失败相关测试模块快反馈, 绿了再跑全量单测兑底防回归。flaky 处理: 标记 @Skip/@Disabled + 独立钉钉通知, 不混入本次修复 MR。
 > 5. **失败回退**: **修不动直接转人工** — LLM 主动放弃/max_turns 到/重试 1 次仍失败 → 立即转人工, 不多次重试。MR 仍开(带未完成标记+诊断摘要)供人接手。
-> 6. **通知机制(新维度, 用户补充)**: **钉钉主动推送**, 与 MR 解耦。转人工/异常/修复成功三类事件都发钉钉。spec 单列"通知机制"章节。
+> 6. **通知机制(新维度, 用户补充 + 细化)**: **钉钉主动推送, 与 MR 解耦**。转人工/异常/修复成功三类事件都发钉钉。**通知路径**: **纯 bot 代码调钉钉**(用户定 A) — agent 只输出结构化结果(成功/转交/flaky/诊断摘要), bot 代码在 pipeline 确定性节点(修复成功/转交/验证遇 flaky/bot 自身故障) 直接调钉钉 SDK。**agent 不持有钉钉 MCP 工具**(避免 headless 下 LLM 忘发/错发; 保证终态通知一定发出)。spec 单列"通知机制"章节。
 >
 > ## spec 读写时序
 >

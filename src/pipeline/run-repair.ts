@@ -15,7 +15,7 @@
 import type { AgentRunner } from "../agent/runner.js";
 import type { GitLabClient } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
-import type { PipelineEvent, RepairOutcome } from "../types.js";
+import type { PipelineEvent, RepairOutcome, FixDiff } from "../types.js";
 import { logger } from "../util/log.js";
 
 export interface WorkerDeps {
@@ -59,6 +59,14 @@ export async function runRepair(
 
   // 3 + 4. Branch on the structured agent result.
   if (result.kind === "fixed") {
+    // G3 permission boundary: the bot may ONLY touch test/doc files.
+    // src/main is forbidden. Validate before creating any MR — a stray
+    // src/main path from the agent must never reach glab.
+    const violation = validateFixPaths(result.fix);
+    if (violation) {
+      await notifyEscalation(dingtalk, event, `G3 权限越界：${violation}`);
+      return { kind: "escalated", summary: `G3 violation: ${violation}` };
+    }
     const sourceBranch = `ci-self-heal/${event.ref}-${shortSha(event.sha)}`;
     let mr;
     try {
@@ -95,13 +103,15 @@ function fail(
   const error = err instanceof Error ? err.message : String(err);
   logger.error({ event, stage, error }, "repair failed");
   // Best-effort: notify even on failure. Do not let a notify failure mask
-  // the real error — swallow + log.
+  // the real error — log it explicitly so it is never silently swallowed.
   void dingtalk
     .send({
       title: "CI 自愈 Bot 异常",
       text: `项目 ${event.projectId} pipeline ${event.pipelineId} 在 ${stage} 阶段失败：${error}`,
     })
-    .catch(() => {});
+    .catch((notifyErr) => {
+      logger.warn({ event, stage, notifyErr }, "failure-notify failed");
+    });
   return { kind: "failed", summary: `${stage} failed`, error };
 }
 
@@ -139,6 +149,40 @@ function notifyEscalation(
 
 function shortSha(sha: string): string {
   return sha.slice(0, 8);
+}
+
+/**
+ * G3 permission boundary: the bot may ONLY write test + doc files.
+ * Any path under a production source tree (src/main for Java/Maven, or
+ * a generic src path not under a test directory) is forbidden and causes
+ * the repair to escalate instead of creating an MR.
+ *
+ * Returns a human-readable violation reason, or null if all paths are safe.
+ */
+function validateFixPaths(fix: FixDiff): string | null {
+  for (const f of fix.files) {
+    const p = f.path;
+    if (isProductionPath(p)) {
+      return `fix touches production code: ${p}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * True if a path points at production source (forbidden by G3).
+ * Permissive on purpose: only clearly-production paths are blocked, so a
+ * misclassified test path doesn't block a legit fix.
+ */
+function isProductionPath(p: string): boolean {
+  const norm = p.replace(/\\/g, "/");
+  // Java/Maven: src/main/java, src/main/kotlin, src/main/resources
+  if (/^src\/main\//.test(norm)) return true;
+  // Generic: src/ that is NOT under a test dir. (src/test/, src/it/ allowed.)
+  if (/^src\//.test(norm) && !/\/test\//.test(norm) && !/\/it\//.test(norm)) {
+    return true;
+  }
+  return false;
 }
 
 function log(stage: string, event: PipelineEvent): void {

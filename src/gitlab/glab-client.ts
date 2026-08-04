@@ -11,7 +11,6 @@ import type { FixDiff, Diagnosis } from "../types.js";
 /** Result of a glab mr create call. */
 export interface CreatedMr {
   readonly url: string;
-  readonly webUrl: string;
 }
 
 /**
@@ -92,8 +91,7 @@ export class GlabGitLabClient implements GitLabClient {
     ]);
     const parsed = safeParse(out);
     const url = parsed?.web_url ?? parsed?.url ?? "";
-    const webUrl = typeof url === "string" ? url : "";
-    return { url: webUrl, webUrl };
+    return { url: typeof url === "string" ? url : "" };
   }
 }
 

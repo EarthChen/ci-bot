@@ -89,6 +89,8 @@ export interface FakeGlabRecorder {
     targetBranch: string;
     title: string;
     body: string;
+    diagnosis: { failureClass: number; summary: string };
+    fixFiles: readonly string[];
   }>;
 }
 
@@ -107,7 +109,7 @@ function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
     async fetchMrDiff(): Promise<string> {
       return "";
     },
-    async createMr(params): Promise<{ url: string; webUrl: string }> {
+    async createMr(params): Promise<{ url: string }> {
       const rec = {
         projectId: params.projectId,
         sourceBranch: params.sourceBranch,
@@ -115,13 +117,13 @@ function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
         title: params.title,
         body: params.fix.summary,
         diagnosis: params.diagnosis,
+        fixFiles: params.fix.files.map((f) => f.path),
       };
       createdMrs.push(rec);
       // Persist to cwd so the parent test can observe across the process seam.
       await writeJSON(joinPath(cwd, "glab-mr-creates.json"), createdMrs);
       return {
         url: `https://gitlab.example.com/fake/-/merge_requests/${createdMrs.length}`,
-        webUrl: `https://gitlab.example.com/fake/-/merge_requests/${createdMrs.length}`,
       };
     },
   };

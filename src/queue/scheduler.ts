@@ -10,7 +10,7 @@
  */
 
 import { logger } from "../util/log.js";
-import type { PipelineEvent, RepairOutcome } from "../types.js";
+import type { PipelineEvent } from "../types.js";
 import type { WorkerManager } from "../worker/manager.js";
 import { workerWorkDir } from "../worker/manager.js";
 
@@ -33,8 +33,6 @@ export class Scheduler {
   private running = 0;
   /** Pipeline ids currently enqueued or in-flight (idempotent dedup). */
   private readonly inflight = new Set<string>();
-  /** Per-project serial slot counters (one event per project at a time). */
-  private readonly perProjectCount: Record<string, number> = {};
 
   constructor(private readonly deps: SchedulerDeps) {}
 
@@ -52,7 +50,6 @@ export class Scheduler {
       return "duplicate";
     }
     this.inflight.add(key);
-    this.perProjectCount[event.projectId] = (this.perProjectCount[event.projectId] ?? 0) + 1;
     this.queue.push({ event });
     void this.pump();
     return "queued";
@@ -84,12 +81,7 @@ export class Scheduler {
       const error = err instanceof Error ? err.message : String(err);
       logger.error({ event, error }, "worker crashed");
     } finally {
-      const key = dedupKey(event);
-      this.inflight.delete(key);
-      this.perProjectCount[event.projectId] -= 1;
-      if (this.perProjectCount[event.projectId] <= 0) {
-        delete this.perProjectCount[event.projectId];
-      }
+      this.inflight.delete(dedupKey(event));
     }
   }
 
@@ -113,5 +105,3 @@ export class Scheduler {
 function dedupKey(event: PipelineEvent): string {
   return `${event.projectId}:${event.pipelineId}`;
 }
-
-export type { RepairOutcome };

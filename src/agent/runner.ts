@@ -38,6 +38,10 @@ export interface AgentRunner {
  * Returns a fixed class-1 (test bug) diagnosis + a canned fix diff touching
  * only a test file. This lets the end-to-end pipe prove out without a real
  * LLM; ticket 02 replaces this with a real pi session.
+ *
+ * CIHEAL_STUB_FIX_KIND controls the returned fix:
+ *   "test"      (default) — a safe test-file fix (class 1 happy path)
+ *   "src-main"  — a fix that touches src/main (G3 violation → must escalate)
  */
 export class StubAgentRunner implements AgentRunner {
   async run(): Promise<AgentResult> {
@@ -45,28 +49,40 @@ export class StubAgentRunner implements AgentRunner {
       failureClass: 1,
       summary: "测试断言写错：CalculatorTest 期望 4 但实际应为 5（2+3）。",
     };
-    const fix: FixDiff = {
-      summary: "修正 CalculatorTest 断言为期望值 5。",
-      files: [
-        {
-          path: "src/test/java/com/example/CalculatorTest.java",
-          content: [
-            "package com.example;",
-            "",
-            "import org.junit.jupiter.api.Test;",
-            "import static org.junit.jupiter.api.Assertions.assertEquals;",
-            "",
-            "class CalculatorTest {",
-            "    @Test",
-            "    void addsTwoPlusThree() {",
-            "        assertEquals(5, new Calculator().add(2, 3));",
-            "    }",
-            "}",
-            "",
-          ].join("\n"),
-        },
-      ],
-    };
+    const kind = process.env.CIHEAL_STUB_FIX_KIND ?? "test";
+    const fix: FixDiff =
+      kind === "src-main"
+        ? {
+            summary: "（stub）试图改生产代码——应被 G3 拦截。",
+            files: [
+              {
+                path: "src/main/java/com/example/Calculator.java",
+                content: "// stub production change — must be rejected by G3",
+              },
+            ],
+          }
+        : {
+            summary: "修正 CalculatorTest 断言为期望值 5。",
+            files: [
+              {
+                path: "src/test/java/com/example/CalculatorTest.java",
+                content: [
+                  "package com.example;",
+                  "",
+                  "import org.junit.jupiter.api.Test;",
+                  "import static org.junit.jupiter.api.Assertions.assertEquals;",
+                  "",
+                  "class CalculatorTest {",
+                  "    @Test",
+                  "    void addsTwoPlusThree() {",
+                  "        assertEquals(5, new Calculator().add(2, 3));",
+                  "    }",
+                  "}",
+                  "",
+                ].join("\n"),
+              },
+            ],
+          };
     return { kind: "fixed", diagnosis, fix };
   }
 }

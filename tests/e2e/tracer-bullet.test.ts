@@ -176,6 +176,7 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
         title: string;
         body: string;
         diagnosis: { failureClass: number; summary: string };
+        fixFiles: readonly string[];
       }>
     >("glab-mr-creates.json");
     expect(mrs).not.toBeNull();
@@ -185,9 +186,15 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
     expect(mrs![0].diagnosis.failureClass).toBe(1);
 
     // G3 permission boundary: the fix touches ONLY test files (src/main
-    // forbidden). This encodes WHY the bot is safe to run, not just that
-    // "a fix was produced".
-    expect(mrs![0].body).toContain("CalculatorTest");
+    // forbidden). Assert on the actual recorded fix file paths, not just
+    // the MR body text — this is the safety invariant that keeps the bot
+    // safe to run unsupervised. A stub returning a src/main path would fail
+    // here (and is covered by the G3-violation case below).
+    expect(mrs![0].fixFiles.length).toBe(1);
+    expect(mrs![0].fixFiles[0]).toContain("CalculatorTest");
+    for (const p of mrs![0].fixFiles) {
+      expect(p).not.toMatch(/^src\/main\//);
+    }
     expect(mrs![0].title).toContain("[ci-self-heal]");
   });
 
@@ -226,5 +233,87 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
     expect(json).toEqual({ status: "ignored" });
     // Give the scheduler a beat; nothing should have run.
     expect(scheduler.stats().inflight).toBe(0);
+  });
+
+  it("enforces G3: a fix touching src/main escalates instead of creating an MR", async () => {
+    // Separate worker manager + scheduler for this case: the stub returns a
+    // production-path fix, which G3 must reject before any MR is created.
+    const g3WorkRoot = await mkdtemp(join(tmpdir(), "ciheal-g3-"));
+    const g3Manager = new SubprocessWorkerManager({
+      timeoutMs: 60_000,
+      keepWork: true,
+      env: { CIHEAL_STUB_FIX_KIND: "src-main" },
+    });
+    const g3Scheduler = new Scheduler({
+      workerManager: g3Manager,
+      workRoot: g3WorkRoot,
+      concurrency: 1,
+    });
+    const g3App = Fastify({ logger: false });
+    await mountWebhook(g3App, {
+      scheduler: g3Scheduler,
+      config: {
+        webhookSecret: WEBHOOK_SECRET,
+        ipAllowlist: [],
+        rateLimitMax: 1000,
+        rateLimitWindowMs: 60_000,
+      },
+    });
+    await g3App.listen({ port: 0, host: "127.0.0.1" });
+    const addr = g3App.server.address();
+    const g3Base = `http://127.0.0.1:${(addr as { port: number }).port}`;
+
+    try {
+      const res = await fetch(`${g3Base}/webhook`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-gitlab-token": WEBHOOK_SECRET,
+        },
+        body: JSON.stringify(
+          pipelineFailedBody("proj-g3", 900_400, "main", "feedface0011223344"),
+        ),
+      });
+      expect(res.status).toBe(202);
+      await g3Scheduler.idle();
+
+      // Read sidecars from the G3 work root.
+      const { readdir } = await import("node:fs/promises");
+      const dirs = (await readdir(g3WorkRoot, { withFileTypes: true }))
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+      let dingtalk: Array<{ title: string }> | null = null;
+      let mrs: Array<{ projectId: string }> | null = null;
+      for (const d of [...dirs].reverse()) {
+        if (!dingtalk) {
+          try {
+            dingtalk = JSON.parse(
+              await readFile(join(g3WorkRoot, d, "dingtalk-sent.json"), "utf8"),
+            );
+          } catch (e) {
+            void e; // sidecar may not exist in this dir; try the next
+          }
+        }
+        if (!mrs) {
+          try {
+            mrs = JSON.parse(
+              await readFile(join(g3WorkRoot, d, "glab-mr-creates.json"), "utf8"),
+            );
+          } catch (e) {
+            void e; // sidecar may not exist in this dir; try the next
+          }
+        }
+      }
+
+      // No MR created — G3 blocked the production-path fix.
+      expect(mrs).toBeNull();
+      // Escalation DingTalk was sent (转交人工), proving the block surfaces.
+      expect(dingtalk).not.toBeNull();
+      expect(dingtalk!.length).toBe(1);
+      expect(dingtalk![0].title).toContain("转交");
+    } finally {
+      await g3App.close();
+      await rm(g3WorkRoot, { recursive: true, force: true }).catch(() => {});
+    }
   });
 });

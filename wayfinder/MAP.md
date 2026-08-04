@@ -6,14 +6,14 @@
 
 ## Destination
 
-一份**完整的 spec / 设计文档**，覆盖：GitLab webhook 触发 → 单测失败诊断 →（经 skill/MCP 的）修复/补全单测 → 行为变更时顺带同步文档 → 开 MR（人工 review）的全闭环；含 agent SDK 层（候选：Claude Agents SDK / Codex SDK / pi 本身——选型开放，待 R1–R4 对比矩阵后于 G6 决策）+ 第三方模型层、每项目独立 worker 并发模型、部署与运维、安全边界。实现（跑起来的 bot）是**后续 effort**，不在本 map 范围。
+一份**完整的 spec / 设计文档**，覆盖：GitLab webhook 触发 → 单测失败诊断 →（经 skill/MCP 的）修复/补全单测 → 行为变更时顺带同步文档 → 开 MR（人工 review）的全闭环；含 agent SDK 层(**pi** v1 核心, TS 实现, G6 决策; 切回 Claude SDK 成本可控) + 第三方模型层、每项目独立 worker 并发模型、部署与运维、安全边界。实现（跑起来的 bot）是**后续 effort**，不在本 map 范围。
 
 ## Notes
 
 - **领域**：CI 自愈 / 自动作单测修复 / 文档同步。
 - **迭代偏好（用户明确）**：窄→宽。v1 先单测失败，lint/build/typecheck/integration 是后续扩展；先 spec(B) 再实现(A)。
 - **每个 session 应consult的 skill**：`/grilling`（HITL 决策）、`/domain-modeling`（术语与 ADR）、`/research`（research ticket）。语言专长经 **pi skill + MCP** 注入，相关：java-coding-standards / springboot-tdd / springboot-patterns / python-patterns / python-testing（按目标语言）。
-- **关键技术约束**：bot 跑在 **agent SDK** 上（候选：Claude Agents SDK / Codex SDK / pi 本身——选型开放，待 R1–R4 对比）；headless、无人值守、多项目并发；模型走第三方 OpenAI 兼容协议方向（各候选 SDK 支持度待研究）；本地执行形态须能复用宿主 .m2/依赖（与沙箱隔离有张力，G5 grilling）。
+- **关键技术约束**：bot 跑在 **pi SDK** 上(v1 核心, TS 实现, G6 翻转自 Claude SDK; 切回 Claude SDK 成本可控见 G6 演进接缝); headless、无人值守、多项目并发; 模型走第三方 OpenAI 兼容协议方向(pi 原生覆盖 DeepSeek/Kimi/Qwen/Bedrock/Vertex/Ollama/vLLM); 本地执行形态须能复用宿主 .m2/依赖(与沙箱隔离有张力, G5 grilling)。
 - **反例提醒**：交互式 pi session 的 skill 是"人按需加载 markdown 进 context"；headless 并发 bot 要确定性选 skill、控 context 预算、处理 MCP 的 auth/rate-limit/状态——这是工程问题，R1 专门研究。
 - **安全前提**：bot 执行 LLM 生成的代码/测试，须沙箱化（G5）。
 
@@ -25,11 +25,11 @@
 - [R2: Claude SDK skill/MCP headless 消费](tickets/R2-skill-mcp-headless.md) — 事实: SDK skill 与交互式同款但 LLM 自主触发非确定; headless 领域专长首选 **subagent(AgentDefinition)** 非 skill; 确定性工具首选 **in-process MCP server**; MCP headersHelper bug(#64894) 阻塞预置 token 路径; skill 全量加载回归(#14882) 威胁 context。推荐: 主 agent `skills:[]`+显式路由 subagent+in-process MCP。
 - [R3: Codex SDK 能力边界](tickets/R3-codex-sdk.md) — 事实: Codex 三层(CLI/App Server / Agents SDK / Responses API)差异大; Codex CLI **2026.02 弃用 chat/completions 仅留 responses** → DeepSeek/Qwen/Kimi 无法直连(硬伤); Agents SDK 模型支持最广(原生 chat/completions 适配器)但并发有 ContextVar bug(#2246); Codex 有 Skills(feature-flagged) 与 pi 兼容但触发非确定; Agents SDK 无原生 skill。迁移: →Codex Skills 中度, →Agents SDK 中高。
 - [R4: pi 作为 bot 骨架](tickets/R4-pi-as-bot.md) — 事实: 第三方模型**全覆盖原生**(DeepSeek/Kimi/OpenRouter→Qwen/Bedrock/Vertex/Ollama/vLLM, 三候选最完整); headless 四入口(-p/--mode json/rpc/SDK)但**无原生 max_turns/max_tokens 硬上限**(issue#1898, 须 SDK 自建~50-100行); 无内置 subagent 但多进程隔离干净; skill**零迁移**复用, `/skill:name` 确定性加载, skillsOverride 精确控; 本地+.m2 契合高(无沙箱天然访问宿主FS, 建议容器内跑)。迁移代价最低但非零: 预算控制+并发编排+CI胶水~300-500行。
-- [G6: SDK+模型选型决策](tickets/G6-model-selection.md) — 决策: SDK=**Claude Agents SDK**; 实现语言=**TypeScript**(跨 SDK 最大公约数, 切 SDK 不换语言); MCP=**外部服务**(stdio/HTTP, 不用 in-process); v1=**单 agent + 单主模型 + skills 启用 + prompt 点名语言专长**(多模型路由降级演进目标); provider=**直连兼容端点**(DeepSeek anthropic/Ollama); fallback=**主→同族备用→转人工**; 预算=**双层(subagent max_turns+全局 max_budget_usd)**; SDK 可换性=**写死 Claude SDK(TS)+演进接缝标 pi 替代**(不抽象到最小公约)。演进接缝: 拆 subagent(context超阈值/多模块); 换 SDK(Claude受限→pi 同进程 import)。待实测: allowed_tools bug/#677/#1378/#41143/#14882-subagent/stdio MCP env token 规避#64894。
+- [G6: SDK+模型选型决策](tickets/G6-model-selection.md) — 决策(翻转): SDK=**pi**(v1 核心); 实现语言=**TypeScript**(跨 SDK 最大公约数, 切 SDK 不换语言); MCP=**外部服务**(stdio/HTTP); v1=**单 agent + skills 启用 + `/skill:name` 确定性加载**(零迁移复用, 比 Claude SDK LLM 语义匹配更确定); provider=**直连**(pi 原生 DeepSeek/Kimi/OpenRouter→Qwen/Ollama); fallback=**主→同族备用→转人工**; 预算=**双层(subagent max_turns + pi 自建 turn_end+abort 软上限, 无原生 max_budget_usd)**; SDK 可换性=**写死 pi(TS)+演进接缝标 Claude SDK 替代**(切回成本: 语言/MCP/通知/pipeline 零, skill 范式转换最大, 预算控制增益)。演进接缝: 拆 subagent(pi-subagents ext); 换 SDK(软上限超支频发→切回 Claude SDK 硬上限)。待实测: pi 自建预算刹车/pi-subagents headless 并发/`/skill:name` RPC 展开/同进程多 session 隔离。
 - [G1: 单测失败分类法](tickets/G1-failure-taxonomy.md) — 决策: 5 类根因分类, v1 **只自动修 1/2/3** (测试 bug/被测变更致过时/测试缺失), **4 环境 flaky + 5 非单测根因 转交不修**(原则: 根因可能不在本服务一律不碰)。判定信号=CI日志摘要+本地执行双源; 渠道选择归 G2。**类别 3 升级**: 按 spec/PRD 补规格符合性测试(非"补到代码能跑", 避免固化 bug); spec=仓库内 spec 目录; 代码不符 spec 或 spec 不可读→转交人工。类别 2 文档同步=行为变更时触发, 判定留给 G2。
-- [G2: 诊断与修复路由/编排](tickets/G2-routing-orchestration.md) — 决策: v1 单连续 session(bot 代码做前后确定性事+agent 中间连续跑)。渠道=**混合**(glab 取元数据+本地 clone 执行)。pipeline: webhook→glab取日志/diff→粗筛类别5早转交→起 ClaudeSDKClient→agent 诊断+修复+文档→验证(相关测试+全量双层)→开 MR。验证遇 flaky=标记 skip+独立钉钉通知。修不动=直接转人工(MR 带诊断摘要)。**新维度**: 钉钉主动推送(转人工/异常/成功三类, 与 MR 解耦)。spec 读写时序: 诊断阶段读/修复后阶段写。**通知路径=纯 bot 代码调钉钉**(agent 输出结构化结果, bot 代码在确定性节点通知; agent 不持钉钉 MCP 工具, 保证终态通知一定发出)。
+- [G2: 诊断与修复路由/编排](tickets/G2-routing-orchestration.md) — 决策: v1 单连续 session(bot 代码做前后确定性事+agent 中间连续跑)。渠道=**混合**(glab 取元数据+本地 clone 执行)。pipeline: webhook→glab取日志/diff→粗筛类别5早转交→起 pi agent session(createAgentSession)→agent 诊断+修复+文档→验证(相关测试+全量双层)→开 MR。验证遇 flaky=标记 skip+独立钉钉通知。修不动=直接转人工(MR 带诊断摘要)。**新维度**: 钉钉主动推送(转人工/异常/成功三类, 与 MR 解耦)。spec 读写时序: 诊断阶段读/修复后阶段写。**通知路径=纯 bot 代码调钉钉**(agent 输出结构化结果, bot 代码在确定性节点通知; agent 不持钉钉 MCP 工具, 保证终态通知一定发出)。
 - [G3: 每类失败的修复策略](tickets/G3-repair-strategies.md) — 决策: **权限边界=只改测试和文档，绝不改被测代码**(与 G1 原则一致; 被测代码 bug→转交)。类别1/2: 改断言/期望/mock值+**轻量重构测试结构**(用户选, 风险: LLM 重构引入新 bug, 演进接缝=频发则收回)。类别3: 按 spec 补规格符合性测试, 只补失败相关路径。类别2文档同步: 只动变更相关段落。review 强度=强制人工(G6定)。验证=相关+全量双层(G2定)。
-- [G4: 每项目独立 worker 并发模型](tickets/G4-concurrency-model.md) — 决策: **按需 spawn**(事件来→spawn worker 跑 G2 pipeline→退出)。触发源=**Pipeline 事件**(非 job, 一个 pipeline 只触发一次, 无需去重合并)。跨 pipeline 过期=串行队列跑完取最新, 旧 commit MR 标注+钉钉。隔离=**全显式配 R1 四条泄漏通道**(settingSources:[]+CLAUDE_CONFIG_DIR+DISABLE_AUTO_MEMORY+cwd)。背压=**全局并发上限 N+超出排队**(N 具体值依赖 G5/G7)。
+- [G4: 每项目独立 worker 并发模型](tickets/G4-concurrency-model.md) — 决策: **按需 spawn**(事件来→spawn worker 跑 G2 pipeline→退出)。触发源=**Pipeline 事件**(非 job, 一个 pipeline 只触发一次, 无需去重合并)。跨 pipeline 过期=串行队列跑完取最新, 旧 commit MR 标注+钉钉。隔离=**per-worker 独立 PI_CODING_AGENT_DIR + --session-dir + cwd**(pi 共享状态隔离, 对应 Claude SDK R1 四条泄漏通道但机制不同)。背压=**全局并发上限 N+超出排队**(N 具体值依赖 G5/G7)。
 - [G5: 沙箱化与安全边界](tickets/G5-sandbox-security.md) — 决策: 沙箱=**目录隔离+受限用户，不用容器**(用户判威胁模型 B=内部可信+LLM 产错非恶意; 演进接缝: 威胁升级到 A→加容器/microVM)。secret=**.env 优先+环境变量**(偏程实践, 风险标注: 落盘需 chmod600+gitignore+不提交)。LLM 审计=**全归档 diff+推理痕迹**。供应链=**版本锁+pnpm audit**。写权限(G3定)=测试/文档, src 禁写。权限矩阵: checkout 读写(测试/文档)/spec 读写(行为变更时)/.m2 只读复用/secret 文件 600。
 - [G7: 部署运维设计](tickets/G7-deployment-ops.md) — 决策: runtime=**v1 本机目录部署**(单进程 bot(TS)+按需 spawn worker 子进程, 宿主预装 Node/pnpm/JDK/Maven); docker 作演进接缝(worker=容器内 fork/exec 非 DooD, G5 受限用户调为容器内非 root)。webhook=**公网+签名校验+IP白名单+限流**(pipeline id 幂等去重)。可观测=**结构化日志+轻量指标**(SQLite/文件, 无外部依赖)。告警=**钉钉统一**(扩展 G2, bot 自身故障也发)。成本=**公式+量级数值待实测**(单次 5k-20k token; 月峰值=N×日均×token×单价×30; max_budget_usd 兜底)。
 
@@ -37,7 +37,7 @@
 
 <!-- 向 destination 的雾：能感到要来但还钉不精确的问题。随 frontier 推进逐片 graduate 为 ticket -->
 
-- **语言适配层具体设计**：G6 已定调 v1=单 agent + skills 启用 + prompt 点名(挂载已有 java-coding-standards/springboot-tdd); 演进=拆 subagent, skill 迁到 AgentDefinition.skills。具体设计依赖 G2 pipeline 形状, 作为 G2 下游处理。R2 #14882 未知(subagent 内 skill 是否受全量加载回归影响)待实测。
+- **语言适配层具体设计**：G6 翻转 pi 后, v1=单 agent + skills 启用 + `/skill:name` 确定性加载(pi 原生, 零迁移复用已有 java-coding-standards/springboot-tdd); 演进=拆 subagent(pi-subagents ext, skill 仍用 `/skill:name` 在 subagent scope 内确定性加载)。具体设计依赖 G2 pipeline 形状, 作为 G2 下游处理。
 - **本地执行形态的依赖复用**: G5+G7 已落地。v1 本机部署, .m2 只读复用(目录隔离+受限用户); docker 演进下 .m2 通过 volume 只读挂载。新依赖缺失 worker 钉钉转人工。不再是 fog。
 - **成本估算**: G7 已落地。公式: 单次 5k-20k token; 月峰值=N×日均×token×单价×30; max_budget_usd 兜底。具体数值待实测(单次诊断+修复 turn 量 + 并发 N)。不再是 fog。
 - **每类失败的具体修复策略**: G1 分类法 + G2 路由均已落地。具体修复策略(每类的改动边界/验证要求/禁止动作)已 graduate 为 **G3**, 不再是 fog。

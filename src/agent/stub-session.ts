@@ -25,7 +25,8 @@
 
 import type { AgentResult, Diagnosis } from "../types.js";
 import type { AgentRunInput } from "./runner.js";
-import type { SessionBundle, SessionFactory } from "./real-runner.js";
+import type { SessionFactory } from "./real-runner.js";
+import type { RuntimeSessionBundle } from "../agent-runtime/runtime.js";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join as joinPath } from "node:path";
@@ -203,7 +204,7 @@ export const stubSessionFactory: SessionFactory = (input: AgentRunInput) => {
 	const turnTokens =
 		Number(process.env.CIHEAL_STUB_TURN_TOKENS ?? "1000") || 1000;
 	const session = new StubSession(result, turnTokens, input.cwd);
-	const bundle: SessionBundle = {
+	const bundle: RuntimeSessionBundle = {
 		session: session as unknown as AgentSession,
 		dispose: () => session.dispose(),
 	};

@@ -1,112 +1,34 @@
 /**
- * Real agent runner — pi SDK `createAgentSession` integration (ticket 02).
+ * Real agent runner — CI Repair Vertical Agent backed by the shared runtime.
  *
- * Replaces the stub runner with a real pi agent session. Per G2:
- *   - One continuous session: diagnosis → fix → (doc sync) → structured result.
- *   - `/skill:ci-self-heal-playbook` deterministic load + prompt naming (dual safety).
- *   - Budget soft limit: turn_end token accumulation + session.abort() + DingTalk alert.
- *   - Agent NEVER holds the DingTalk tool — only bot code notifies.
+ * Delegates Pi session lifecycle, budget monitoring, and execution to
+ * `SharedAgentRuntime`. Retains CI-specific responsibilities:
+ *   - Structured AgentResult parsing (failureClass validation)
+ *   - Budget DingTalk alerts
+ *   - Error message sanitization
  *
- * Test seam: a `sessionFactory` dependency injection. Production passes the real
- * `createAgentSession`; tests pass a stub factory returning a fake session that
- * yields canned diagnosis + fix diff (spec: "fixture 代替 agent，不测实现细节").
- *
- * Per spec: abort fires after turn_end so a single turn may overshoot. Mitigation:
- * an aggressive per-turn token threshold (BOT_BUDGET_TOKENS, default 50k) so the
- * first overshooting turn trips the abort, not the tenth.
+ * Test seam: `sessionFactory` DI (unchanged from ticket 02).
  */
 
-import type { AgentResult, Diagnosis } from "../types.js";
+import type { AgentResult, Diagnosis, FailureClass } from "../types.js";
 import type { AgentRunner, AgentRunInput } from "./runner.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import { logger } from "../util/log.js";
 import { join as joinPath } from "node:path";
-import { writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync } from "node:fs";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import {
-	createAgentSession,
-	SessionManager,
-	ModelRuntime,
-} from "@earendil-works/pi-coding-agent";
+import type { BudgetConfig, RuntimeSessionBundle } from "../agent-runtime/runtime.js";
+import { SharedAgentRuntime } from "../agent-runtime/runtime.js";
+import { createCiRepairDefinition } from "./ci-repair-definition.js";
 
-/** Budget config for a session. */
-export interface BudgetConfig {
-	/** Soft cap on total tokens across the whole session. */
-	readonly totalTokenLimit: number;
-	/** Soft cap on a single turn's tokens (aggressive, to catch overshoot early). */
-	readonly perTurnTokenLimit: number;
-}
-
-/** Default budget: 200k total / 50k per turn. Tunable via
- * BOT_BUDGET_TOKENS (total) + BOT_BUDGET_PER_TURN_TOKENS (per-turn). */
-const DEFAULT_BUDGET: BudgetConfig = {
-	totalTokenLimit: 200_000,
-	perTurnTokenLimit: 50_000,
-};
-
-/** A created session bundle the runner works with. */
-export interface SessionBundle {
-	readonly session: AgentSession;
-	/** Cleanup hook — must dispose the session. */
-	readonly dispose: () => void;
-}
+// Re-export for backward compatibility
+export type { BudgetConfig };
 
 /** Factory for creating a session bundle (DI seam for tests). */
-export type SessionFactory = (input: AgentRunInput) => Promise<SessionBundle>;
+export type SessionFactory = (input: AgentRunInput) => Promise<RuntimeSessionBundle>;
 
 /**
- * The default session factory: real `createAgentSession`.
- *
- * - In-memory session (no disk persistence needed; bot owns outcome via result file).
- * - DefaultResourceLoader discovers `.agents/skills/` from cwd (worker isolation).
- * - Model + auth via ModelRuntime (reads env / auth.json per worker's PI_CODING_AGENT_DIR).
- * - Read-only tools: read, grep, find, ls, bash. The agent must READ to diagnose
- *   and run tests, but production writes are gated by G3 (bot-side validateFixPaths).
- *   edit/write are intentionally excluded — the agent outputs a structured fix
- *   diff that bot code applies via glab, never writing files itself.
- */
-function defaultSessionFactory(input: AgentRunInput): Promise<SessionBundle> {
-	// Lazily constructed per-call so each worker event gets its own ModelRuntime
-	// (auth resolved against the worker's PI_CODING_AGENT_DIR env).
-	return createDefaultSession(input).then((session) => ({
-		session,
-		dispose: () => session.dispose(),
-	}));
-}
-
-async function createDefaultSession(
-	input: AgentRunInput,
-): Promise<AgentSession> {
-	const agentDir = process.env.PI_CODING_AGENT_DIR ?? undefined;
-	const modelRuntime = await ModelRuntime.create(
-		agentDir
-			? {
-					authPath: `${agentDir}/auth.json`,
-					modelsPath: `${agentDir}/models.json`,
-				}
-			: {},
-	);
-	// Inject .env-sourced provider key as a runtime override (not persisted to
-	// disk). Falls back to SDK's own env resolution (ANTHROPIC_API_KEY etc.) when
-	// MODEL_PROVIDER/MODEL_API_KEY are unset.
-	const provider = process.env.MODEL_PROVIDER;
-	const apiKey = process.env.MODEL_API_KEY;
-	if (provider && apiKey) {
-		await modelRuntime.setRuntimeApiKey(provider, apiKey);
-	}
-	const { session } = await createAgentSession({
-		cwd: input.cwd,
-		agentDir,
-		modelRuntime,
-		sessionManager: SessionManager.inMemory(input.cwd),
-		tools: ["read", "grep", "find", "ls", "bash"],
-	});
-	return session;
-}
-
-/**
- * Real agent runner backed by the pi SDK.
+ * Real agent runner backed by the shared Pi Agent Runtime.
  *
  * @param sessionFactory  DI seam — tests inject a stub returning canned results.
  * @param dingtalk        Notifier for budget-breached alerts (bot code, not agent).
@@ -115,7 +37,7 @@ async function createDefaultSession(
 export class RealAgentRunner implements AgentRunner {
 	private readonly sessionFactory: SessionFactory;
 	private readonly dingtalk: DingTalkNotifier | undefined;
-	private readonly budget: BudgetConfig;
+	private readonly budget: Partial<BudgetConfig>;
 
 	constructor(opts: {
 		sessionFactory?: SessionFactory;
@@ -124,125 +46,58 @@ export class RealAgentRunner implements AgentRunner {
 	}) {
 		this.sessionFactory = opts.sessionFactory ?? defaultSessionFactory;
 		this.dingtalk = opts.dingtalk;
-		this.budget = { ...DEFAULT_BUDGET, ...opts.budget };
+		this.budget = opts.budget ?? {};
 	}
 
 	async run(input: AgentRunInput): Promise<AgentResult> {
-		const bundle = await this.sessionFactory(input);
-		const { session, dispose } = bundle;
-
-		let totalTokens = 0;
-		let turnCount = 0;
-		let budgetBreached = false;
-		let breachReason = "";
-
-		const unsubscribe = session.subscribe((event) => {
-			if (event.type !== "turn_end") return;
-			turnCount++;
-			// turn_end.message is always an assistant message; narrow to read usage.
-			const message = event.message as {
-				role?: string;
-				usage?: { totalTokens: number };
-			};
-			const usage = message.usage;
-			if (!usage) return;
-			totalTokens += usage.totalTokens;
-			logger.info(
-				{
-					turnTokens: usage.totalTokens,
-					totalTokens,
-					limit: this.budget.totalTokenLimit,
-				},
-				"turn_end budget",
-			);
-			// Per-turn overshoot: abort this turn's aftermath immediately.
-			if (usage.totalTokens > this.budget.perTurnTokenLimit) {
-				budgetBreached = true;
-				breachReason = `单 turn token ${usage.totalTokens} 超阈值 ${this.budget.perTurnTokenLimit}`;
-				void session.abort().catch((err) => {
-					logger.warn({ err }, "budget abort failed");
-				});
-				return;
-			}
-			// Cumulative overshoot.
-			if (totalTokens > this.budget.totalTokenLimit) {
-				budgetBreached = true;
-				breachReason = `累计 token ${totalTokens} 超阈值 ${this.budget.totalTokenLimit}`;
-				void session.abort().catch((err) => {
-					logger.warn({ err }, "budget abort failed");
-				});
-			}
+		const ciFactory = this.sessionFactory;
+		const runtime = new SharedAgentRuntime({
+			sessionFactory: async () => ciFactory(input),
+			budget: this.budget,
 		});
 
-		// Prompt is thin: /skill deterministic load + ref/sha + file paths.
-		// CI log + MR diff are written to files in the worker cwd and read via
-		// the `read` tool — never inlined into the prompt (large diffs would
-		// bloat the turn input and skew token accounting).
-		const ciLogPath = joinPath(input.cwd, "ci-log.txt");
-		const mrDiffPath = joinPath(input.cwd, "mr-diff.patch");
-		await writeText(ciLogPath, input.ciLog);
-		if (input.mrDiff) await writeText(mrDiffPath, input.mrDiff);
-		const prompt = [
-			`/skill:ci-self-heal-playbook`,
-			``,
-			`# 任务`,
-			`分支 ${input.ref} @ ${input.sha.slice(0, 8)} 的 pipeline 单测失败。`,
-			``,
-			`# 输入文件（用 read 工具读取，不要靠 prompt 里的内容）`,
-			`- CI 日志：${ciLogPath}`,
-			input.mrDiff ? `- MR diff：${mrDiffPath}` : `- MR diff：无`,
-		].join("\n");
+		const definition = createCiRepairDefinition(input.cwd);
+		const result = await runtime.run({ definition, input, cwd: input.cwd });
 
-		let result: AgentResult;
-		try {
-			await session.prompt(prompt);
-			result = budgetBreached
-				? this.escalateBudget(breachReason)
-				: this.parseResult(session);
-		} catch (err) {
-			logger.error({ err }, "agent session failed");
-			result = budgetBreached
-				? this.escalateBudget(breachReason)
-				: this.escalateError(err);
-		} finally {
-			unsubscribe();
-			dispose();
+		let agentResult: AgentResult;
+		switch (result.status) {
+			case "completed":
+				agentResult = this.parseResult(result.finalText);
+				break;
+			case "budget_exceeded":
+				agentResult = this.escalateBudget(result.reason);
+				break;
+			case "failed":
+				agentResult = this.escalateError(
+					new Error(`session ${result.failure}`),
+				);
+				break;
 		}
 
 		// Fire budget DingTalk alert after the session is torn down (best-effort).
-		if (budgetBreached && this.dingtalk) {
+		if (result.status === "budget_exceeded" && this.dingtalk) {
 			void this.dingtalk
 				.send({
 					title: "CI 自愈预算告警",
-					text: `项目 ${input.projectId} pipeline ${input.pipelineId} 预算超限：${breachReason}`,
+					text: `项目 ${input.projectId} pipeline ${input.pipelineId} 预算超限：${result.reason}`,
 				})
 				.catch((err) => logger.warn({ err }, "budget alert failed"));
 		}
 
-		return { ...result, metrics: { turns: turnCount, tokens: totalTokens } };
+		return { ...agentResult, metrics: result.metrics };
 	}
 
-	/** Parse the final assistant message JSON into an AgentResult. */
-	private parseResult(session: AgentSession): AgentResult {
-		const messages = session.messages;
-		// Find the last assistant message with text content.
-		let lastText = "";
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (msg?.role === "assistant") {
-				lastText = extractText(msg);
-				if (lastText) break;
-			}
-		}
-		if (!lastText) {
+	/** Parse the final assistant text JSON into an AgentResult. */
+	private parseResult(text: string): AgentResult {
+		if (!text) {
 			return this.escalateError(new Error("agent produced no assistant text"));
 		}
-		const parsed = tryParseAgentJson(lastText);
+		const parsed = tryParseAgentJson(text);
 		if (!parsed) {
 			return {
 				kind: "escalated",
 				diagnosis: { failureClass: 4, summary: "agent 未输出合法结构化 JSON" },
-				reason: `unparseable result: ${lastText.slice(0, 200)}`,
+				reason: `unparseable result: ${text.slice(0, 200)}`,
 			};
 		}
 		return parsed;
@@ -257,27 +112,133 @@ export class RealAgentRunner implements AgentRunner {
 	}
 
 	private escalateError(err: unknown): AgentResult {
-		const msg = err instanceof Error ? err.message : String(err);
+		const message = safeExternalErrorMessage(err);
 		return {
 			kind: "escalated",
-			diagnosis: { failureClass: 4, summary: `agent session 异常：${msg}` },
-			reason: `agent error: ${msg}`,
+			diagnosis: { failureClass: 4, summary: `agent session 异常：${message}` },
+			reason: `agent error: ${message}`,
 		};
 	}
 }
 
-/** Extract concatenated text content from an AgentMessage (assistant). */
-function extractText(msg: { content?: unknown }): string {
-	const content = msg.content;
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.map((block: { type?: string; text?: string }) =>
-			block?.type === "text" && typeof block.text === "string"
-				? block.text
-				: "",
-		)
-		.join("");
+/** The default session factory: real `createAgentSession`. */
+async function defaultSessionFactory(
+	input: AgentRunInput,
+): Promise<RuntimeSessionBundle> {
+	const session = await createDefaultSession(input);
+	return {
+		session,
+		dispose: () => session.dispose(),
+	};
+}
+
+async function createDefaultSession(
+	input: AgentRunInput,
+): Promise<AgentSession> {
+	const {
+		createAgentSession,
+		DefaultResourceLoader,
+		SessionManager,
+		SettingsManager,
+		ModelRuntime,
+	} = await import("@earendil-works/pi-coding-agent");
+	const {
+		loadModelCandidates,
+		loadModelProfiles,
+		selectModelCandidate,
+	} = await import("./model-selection.js");
+
+	const agentDir = process.env.PI_CODING_AGENT_DIR;
+	if (!agentDir) {
+		throw new Error("PI_CODING_AGENT_DIR is required for an isolated worker");
+	}
+	const modelRuntime = await ModelRuntime.create({
+		authPath: `${agentDir}/auth.json`,
+		modelsPath: `${agentDir}/models.json`,
+	});
+	const botRoot = resolveBotRoot();
+	const configDir = joinPath(botRoot, "config");
+	const selected = await selectModelCandidate(
+		modelRuntime,
+		loadModelCandidates(joinPath(configDir, "model-candidates.json")),
+		process.env,
+	);
+	const profile = loadModelProfiles(joinPath(configDir, "model-profiles.json"))[
+		selected.candidate.profile
+	];
+	if (!profile) {
+		throw new Error(
+			`model candidate profile not found: ${selected.candidate.profile}`,
+		);
+	}
+
+	// The worker owns Pi resources. Do not discover settings, extensions, skills,
+	// prompts, themes, or context files from the target repository worktree.
+	const settingsManager = SettingsManager.create(botRoot, agentDir);
+	settingsManager.applyOverrides(profile);
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: input.cwd,
+		agentDir,
+		settingsManager,
+		noExtensions: true,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+		additionalSkillPaths: [resolveBotSkillPath(botRoot)],
+		// Keep Pi's built-in tool guidance; target worktree SYSTEM.md is not trusted.
+		systemPromptOverride: () => undefined,
+		appendSystemPrompt: [joinPath(botRoot, ".pi", "APPEND_SYSTEM.md")],
+	});
+	await resourceLoader.reload();
+
+	const { session } = await createAgentSession({
+		cwd: input.cwd,
+		agentDir,
+		model: selected.model,
+		thinkingLevel: profile.defaultThinkingLevel,
+		modelRuntime,
+		resourceLoader,
+		settingsManager,
+		sessionManager: SessionManager.inMemory(input.cwd),
+		tools: ["read", "grep", "find", "ls", "bash"],
+	});
+	return session;
+}
+
+/** Resolve the trusted bot release root; never derive it from a target worktree. */
+function resolveBotRoot(): string {
+	const botRoot = process.env.CIHEAL_BOT_ROOT;
+	if (!botRoot)
+		throw new Error("CIHEAL_BOT_ROOT is required for bot-owned resources");
+	if (!existsSync(joinPath(botRoot, "config"))) {
+		throw new Error("CIHEAL_BOT_ROOT does not contain config");
+	}
+	return botRoot;
+}
+
+function resolveBotSkillPath(botRoot: string): string {
+	const skillPath = joinPath(
+		botRoot,
+		".agents",
+		"skills",
+		"ci-self-heal-playbook",
+	);
+	if (!existsSync(skillPath)) {
+		throw new Error("CIHEAL_BOT_ROOT does not contain ci-self-heal-playbook");
+	}
+	return skillPath;
+}
+
+/** Keep provider responses and credential details out of MR and DingTalk output. */
+function safeExternalErrorMessage(err: unknown): string {
+	const message = err instanceof Error ? err.message : "unknown error";
+	if (message.includes("no available model candidate")) {
+		return "没有可用的模型候选";
+	}
+	if (message.includes("PI_CODING_AGENT_DIR")) return "worker 配置目录缺失";
+	if (message.includes("CIHEAL_BOT_ROOT")) return "bot 发布配置缺失";
+	return "agent 运行失败；详情见服务日志";
 }
 
 /** Parse the JSON block the agent is instructed to output. */
@@ -297,38 +258,26 @@ export function tryParseAgentJson(text: string): AgentResult | null {
 
 /** Validate + normalize a parsed object into a well-formed AgentResult. */
 function normalizeAgentResult(obj: Partial<AgentResult>): AgentResult | null {
-	if (
-		obj.kind === "fixed" &&
-		obj.diagnosis &&
-		typeof obj.summary === "string"
-	) {
-		const diag = obj.diagnosis as Diagnosis;
-		if (
-			typeof diag.failureClass === "number" &&
-			typeof diag.summary === "string"
-		) {
-			return { kind: "fixed", diagnosis: diag, summary: obj.summary };
-		}
+	const diagnosis = normalizeDiagnosis(obj.diagnosis);
+	if (obj.kind === "fixed" && diagnosis && typeof obj.summary === "string") {
+		return { kind: "fixed", diagnosis, summary: obj.summary };
 	}
-	if (
-		obj.kind === "escalated" &&
-		obj.diagnosis &&
-		typeof obj.reason === "string"
-	) {
-		const diag = obj.diagnosis as Diagnosis;
-		if (
-			typeof diag.failureClass === "number" &&
-			typeof diag.summary === "string"
-		) {
-			return { kind: "escalated", diagnosis: diag, reason: obj.reason };
-		}
+	if (obj.kind === "escalated" && diagnosis && typeof obj.reason === "string") {
+		return { kind: "escalated", diagnosis, reason: obj.reason };
 	}
 	return null;
 }
 
-/** Write a text file, creating parent dirs. Used to spill CI log / MR diff
- * into the worker cwd so the prompt stays thin. */
-function writeText(abs: string, content: string): void {
-	mkdirSync(dirname(abs), { recursive: true });
-	writeFileSync(abs, content, "utf8");
+function normalizeDiagnosis(value: unknown): Diagnosis | null {
+	if (!value || typeof value !== "object") return null;
+	const candidate = value as { failureClass?: unknown; summary?: unknown };
+	if (!isFailureClass(candidate.failureClass)) return null;
+	if (typeof candidate.summary !== "string") return null;
+	return { failureClass: candidate.failureClass, summary: candidate.summary };
+}
+
+function isFailureClass(value: unknown): value is FailureClass {
+	return (
+		value === 1 || value === 2 || value === 3 || value === 4 || value === 5
+	);
 }

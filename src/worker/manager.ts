@@ -14,8 +14,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import type { Stats } from "node:fs";
+import { chmod, copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
+import { isAbsolute, join, dirname, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { logger } from "../util/log.js";
@@ -64,14 +65,32 @@ export class SubprocessWorkerManager implements WorkerManager {
 		const nodeBin = this.opts.nodeBin ?? process.execPath;
 		const entryScript = this.opts.entryScript ?? defaultEntryScript();
 
+		const agentDir = join(cwd, ".pi-agent");
 		const childEnv: Record<string, string> = {
 			...process.env,
 			...this.opts.env,
 			CIHEAL_WORKER_TASK: JSON.stringify(task),
 			CIHEAL_RESULT_FILE: resultFile,
-			// Per-worker pi isolation (G4): distinct dir so shared state can't leak.
-			PI_CODING_AGENT_DIR: join(cwd, ".pi-agent"),
+			// Per-worker Pi isolation (G4): distinct dir so shared state can't leak.
+			PI_CODING_AGENT_DIR: agentDir,
+			// Bot-owned settings and skills must never be inferred from the target worktree.
+			CIHEAL_BOT_ROOT:
+				this.opts.env?.CIHEAL_BOT_ROOT ?? process.env.CIHEAL_BOT_ROOT ?? "",
 		};
+		if (childEnv.CIHEAL_PI_BASE_DIR) {
+			try {
+				await initializeWorkerPiConfig(
+					childEnv.CIHEAL_PI_BASE_DIR,
+					agentDir,
+					cwd,
+				);
+			} catch (error) {
+				if (!this.opts.keepWork) {
+					await rm(cwd, { recursive: true, force: true }).catch(() => {});
+				}
+				throw error;
+			}
+		}
 
 		logger.info(
 			{ projectId: event.projectId, pipelineId: event.pipelineId, cwd },
@@ -110,6 +129,54 @@ export class SubprocessWorkerManager implements WorkerManager {
 			}
 		}
 	}
+}
+
+/**
+ * Copy Pi's standard configuration files into an isolated worker runtime.
+ * The base directory is deployment-owned; it is never resolved from a target
+ * worktree, and the copied files cannot mutate the shared source directory.
+ */
+async function initializeWorkerPiConfig(
+	baseDir: string,
+	agentDir: string,
+	workerDir: string,
+): Promise<void> {
+	if (!isAbsolute(baseDir)) {
+		throw new Error("CIHEAL_PI_BASE_DIR must be an absolute path");
+	}
+	const resolvedBaseDir = resolve(baseDir);
+	if (isWithin(workerDir, resolvedBaseDir)) {
+		throw new Error("CIHEAL_PI_BASE_DIR must not be inside a worker directory");
+	}
+	let baseStats: Stats;
+	try {
+		baseStats = await stat(resolvedBaseDir);
+	} catch (error) {
+		throw new Error("CIHEAL_PI_BASE_DIR does not exist", { cause: error });
+	}
+	if (!baseStats.isDirectory()) {
+		throw new Error("CIHEAL_PI_BASE_DIR must be a directory");
+	}
+
+	await mkdir(agentDir, { recursive: true, mode: 0o700 });
+	let copied = 0;
+	for (const name of ["auth.json", "models.json"] as const) {
+		try {
+			await copyFile(join(resolvedBaseDir, name), join(agentDir, name));
+			await chmod(join(agentDir, name), 0o600);
+			copied++;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	}
+	if (copied === 0) {
+		throw new Error("CIHEAL_PI_BASE_DIR must contain auth.json or models.json");
+	}
+}
+
+function isWithin(parent: string, candidate: string): boolean {
+	const path = relative(resolve(parent), candidate);
+	return path === "" || (!path.startsWith("..") && !isAbsolute(path));
 }
 
 function defaultEntryScript(): string {

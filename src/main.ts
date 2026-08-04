@@ -29,6 +29,8 @@ async function main(): Promise<void> {
 			CIHEAL_AGENT_MODE: "real",
 			CIHEAL_GLAB_MODE: "real",
 			CIHEAL_DINGTALK_MODE: "real",
+			CIHEAL_BOT_ROOT: config.botRoot,
+			CIHEAL_PI_BASE_DIR: config.piBaseDir,
 		},
 	});
 	const scheduler = new Scheduler({

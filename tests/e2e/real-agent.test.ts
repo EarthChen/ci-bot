@@ -93,6 +93,8 @@ async function setupBot(env: Record<string, string>): Promise<{
 			// Real runner path, but session is a stub returning canned results.
 			CIHEAL_AGENT_MODE: "real",
 			CIHEAL_SESSION_FACTORY: "stub",
+			// Fake worktree: git init + seed canned repo (no real GitLab clone).
+			CIHEAL_WORKTREE_MODE: "fake",
 			...env,
 		},
 	});

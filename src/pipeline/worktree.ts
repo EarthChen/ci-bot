@@ -1,0 +1,192 @@
+/**
+ * Worktree manager — shared bare clone + per-pipeline worktree (G2 local clone).
+ *
+ * Per pipeline:
+ *   1. Ensure a project-level shared **bare** clone exists (first time: full
+ *      clone; subsequent: incremental fetch). Bare clones share git objects
+ *      across worktrees, so N pipelines don't re-clone the repo.
+ *   2. `git worktree add` a branch from the pipeline's ref as the agent's
+ *      working tree at `<workDir>/repo`. This is the agent's cwd.
+ *
+ * Concurrency: a per-project lock guards the bare-clone fetch so concurrent
+ * pipelines don't race on the same remote (git fetch is not concurrency-safe
+ * on a single bare repo without a lock). Worktree creation itself is safe to
+ * parallelize (each worktree is a distinct path + branch).
+ *
+ * Cleanup: worktrees are removed by the worker manager's per-event cwd
+ * cleanup. The shared bare clone persists across events (incremental).
+ *
+ * Sandbox (ticket 06 hardens): v1 uses a normal clone with the worker's
+ * restricted env. Ticket 06 adds read-only .m2 mount + restricted user.
+ */
+
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { logger } from "../util/log.js";
+import type { PipelineEvent } from "../types.js";
+
+const exec = promisify(execFile);
+
+/** A bare-clone cache keyed by project id (shared across pipelines). */
+interface BareClone {
+	/** Absolute path to the bare repo. */
+	readonly barePath: string;
+	/** Promise of the latest fetch (guards concurrent fetches per project). */
+	fetchPromise: Promise<void> | null;
+}
+
+const bareClones = new Map<string, BareClone>();
+const bareRoot = process.env.CIHEAL_BARE_ROOT ?? join(tmpdir(), "ci-self-heal-bare");
+
+/**
+ * Ensure the shared bare clone for a project exists and is up-to-date.
+ * Returns the bare repo path. Concurrent calls for the same project share a
+ * single fetch (deduped via fetchPromise).
+ */
+async function ensureBareClone(
+	projectId: string,
+	projectUrl: string,
+): Promise<string> {
+	let clone = bareClones.get(projectId);
+	const barePath = clone?.barePath ?? join(bareRoot, projectId.replace(/[\/:]/g, "-"));
+
+	if (!clone) {
+		await mkdir(bareRoot, { recursive: true });
+		// First time: full bare clone.
+		logger.info({ projectId, barePath }, "bare clone: initial clone");
+		await exec("git", ["clone", "--bare", projectUrl, barePath], {
+			env: gitEnv(),
+		});
+		clone = { barePath, fetchPromise: null };
+		bareClones.set(projectId, clone);
+	}
+
+	// Incremental fetch, deduped per project (git fetch is not concurrency-safe
+	// on a single bare repo without a lock).
+	if (!clone.fetchPromise) {
+		clone.fetchPromise = (async () => {
+			try {
+				logger.info({ projectId, barePath }, "bare clone: fetch");
+				await exec("git", ["--git-dir", barePath, "fetch", "--prune", "origin"], {
+					env: gitEnv(),
+				});
+			} finally {
+				clone!.fetchPromise = null;
+			}
+		})();
+	}
+	await clone.fetchPromise;
+	return barePath;
+}
+
+/**
+ * Create a worktree at `<workDir>/repo` checked out from the pipeline's ref.
+ *
+ * The worktree is the agent's real working tree — agent edits files here,
+ * runs tests here, and `git diff` here is authoritative.
+ *
+ * CIHEAL_WORKTREE_MODE=fake (tests): skip the real clone, `git init` a local
+ * repo at <workDir>/repo and seed it with a canned Calculator + failing
+ * CalculatorTest so the agent (stub) has a realistic tree to edit.
+ *
+ * @param workDir  The per-event cwd root (worker isolation dir).
+ * @param event    The pipeline event (ref + sha + projectUrl).
+ * @returns The absolute path to the worktree (`<workDir>/repo`).
+ */
+export async function createWorktree(
+	workDir: string,
+	event: PipelineEvent,
+): Promise<string> {
+	const mode = process.env.CIHEAL_WORKTREE_MODE ?? "real";
+	if (mode === "fake") return fakeWorktree(workDir, event);
+	return realWorktree(workDir, event);
+}
+
+async function realWorktree(workDir: string, event: PipelineEvent): Promise<string> {
+	const repoPath = join(workDir, "repo");
+	const barePath = await ensureBareClone(event.projectId, event.projectUrl);
+	const branch = `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`;
+	logger.info(
+		{ projectId: event.projectId, barePath, repoPath, branch, ref: event.ref },
+		"worktree: add",
+	);
+	await exec(
+		"git",
+		[
+			"--git-dir",
+			barePath,
+			"worktree",
+			"add",
+			"--detach",
+			"-b",
+			branch,
+			repoPath,
+			event.sha,
+		],
+		{ env: gitEnv() },
+	);
+	return repoPath;
+}
+
+/**
+ * Fake worktree for e2e tests: `git init` + seed a canned Java repo so the
+ * stub agent has a realistic tree to edit + `git diff` against.
+ */
+async function fakeWorktree(workDir: string, event: PipelineEvent): Promise<string> {
+	const repoPath = join(workDir, "repo");
+	await mkdir(repoPath, { recursive: true });
+	// Init a real git repo so extractPatch's `git add` + `git diff --cached` work.
+	await exec("git", ["init", "--quiet"], { cwd: repoPath });
+	await exec("git", ["config", "user.email", "ci-self-heal@bot"], { cwd: repoPath });
+	await exec("git", ["config", "user.name", "ci-self-heal bot"], { cwd: repoPath });
+	// Seed a canned Calculator (production code) + a failing CalculatorTest.
+	await mkdir(join(repoPath, "src/main/java/com/example"), { recursive: true });
+	await mkdir(join(repoPath, "src/test/java/com/example"), { recursive: true });
+	await writeFileUtf8(
+		join(repoPath, "src/main/java/com/example/Calculator.java"),
+		"package com.example;\npublic class Calculator { public int add(int a, int b) { return a + b; } }\n",
+	);
+	await writeFileUtf8(
+		join(repoPath, "src/test/java/com/example/CalculatorTest.java"),
+		"package com.example;\n// stale test: asserts add(2,3)==4\n",
+	);
+	await exec("git", ["add", "-A"], { cwd: repoPath });
+	await exec("git", ["commit", "--quiet", "-m", `baseline for ${event.projectId}/${event.pipelineId}`], { cwd: repoPath });
+	return repoPath;
+}
+
+async function writeFileUtf8(abs: string, content: string): Promise<void> {
+	const { writeFile } = await import("node:fs/promises");
+	await mkdir(join(abs, ".."), { recursive: true });
+	await writeFile(abs, content, "utf8");
+}
+
+/**
+ * Remove a worktree (best-effort; worker manager also rm -rf's the workDir).
+ */
+export async function removeWorktree(workDir: string): Promise<void> {
+	const repoPath = join(workDir, "repo");
+	// `git worktree remove` needs the bare repo; but the simpler path is to
+	// rm -rf the worktree dir (the bare repo's worktree metadata gets stale,
+	// pruned on next bare-clone operation). Best-effort.
+	await rm(repoPath, { recursive: true, force: true }).catch(() => {});
+}
+
+/** Build the git env with the GitLab token for auth (private repos).
+ * Injects the token via http.extraHeader (Authorization: Bearer) so the bare
+ * clone + fetch authenticate without embedding the token in the remote URL
+ * (which would leak into `.git/config`). Ticket 06 hardens with restricted user. */
+function gitEnv(): Record<string, string> {
+	const token = process.env.GITLAB_TOKEN ?? "";
+	const url = process.env.GITLAB_URL ?? "";
+	return {
+		...process.env,
+		GITLAB_HOST: url,
+		GIT_TERMINAL_PROMPT: "0",
+		// Bearer auth via extraHeader — GitLab accepts personal/acess tokens here.
+		...(token ? { GIT_HTTP_EXTRA_HEADER: `Authorization: Bearer ${token}` } : {}),
+	};
+}

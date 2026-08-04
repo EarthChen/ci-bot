@@ -52,11 +52,16 @@ function pickAgent(dingtalk: DingTalkNotifier): AgentRunner {
 	const mode = process.env.CIHEAL_AGENT_MODE ?? "stub";
 	if (mode === "stub") return new StubAgentRunner();
 	if (mode === "real") {
-		const totalLimit = Number(process.env.BOT_BUDGET_TOKENS ?? "200000") || 200_000;
-		const perTurnLimit = Number(process.env.BOT_BUDGET_PER_TURN_TOKENS ?? "50000") || 50_000;
+		const totalLimit =
+			Number(process.env.BOT_BUDGET_TOKENS ?? "200000") || 200_000;
+		const perTurnLimit =
+			Number(process.env.BOT_BUDGET_PER_TURN_TOKENS ?? "50000") || 50_000;
 		// CIHEAL_SESSION_FACTORY=stub → e2e fixture: drive the real runner path
 		// (budget/parse/G3/MR/DingTalk) with a canned-result stub session, no LLM.
-		const factory = process.env.CIHEAL_SESSION_FACTORY === "stub" ? stubSessionFactory : undefined;
+		const factory =
+			process.env.CIHEAL_SESSION_FACTORY === "stub"
+				? stubSessionFactory
+				: undefined;
 		return new RealAgentRunner({
 			sessionFactory: factory,
 			dingtalk,
@@ -77,7 +82,10 @@ function pickDingTalk(cwd: string): DingTalkNotifier {
 	if (mode === "fake") return makeFakeDingtalk(cwd);
 	if (mode === "real") {
 		const webhookUrl = process.env.DINGTALK_WEBHOOK_URL;
-		if (!webhookUrl) throw new Error("DINGTALK_WEBHOOK_URL required when CIHEAL_DINGTALK_MODE=real");
+		if (!webhookUrl)
+			throw new Error(
+				"DINGTALK_WEBHOOK_URL required when CIHEAL_DINGTALK_MODE=real",
+			);
 		return new HttpDingTalkNotifier(webhookUrl, realDingTalkPost);
 	}
 	throw new Error(`CIHEAL_DINGTALK_MODE=${mode} not supported`);

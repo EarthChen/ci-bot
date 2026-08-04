@@ -107,7 +107,10 @@ function cannedResultFromEnv(): AgentResult {
 	return {
 		kind: "fixed",
 		diagnosis,
-		summary: kind === "src-main" ? "（stub）试图改生产代码——应被 G3 拦截。" : "修正 CalculatorTest 断言为期望值 5。",
+		summary:
+			kind === "src-main"
+				? "（stub）试图改生产代码——应被 G3 拦截。"
+				: "修正 CalculatorTest 断言为期望值 5。",
 	};
 }
 
@@ -120,12 +123,16 @@ function applyStubEdits(cwd: string, result: AgentResult): void {
 	if (result.kind !== "fixed") return;
 	const kind = process.env.CIHEAL_STUB_FIX_KIND ?? "test";
 	if (kind === "src-main") {
-		writeFile(joinPath(cwd, "src/main/java/com/example/Calculator.java"),
-			"// stub production change — must be rejected by G3\n");
+		writeFile(
+			joinPath(cwd, "src/main/java/com/example/Calculator.java"),
+			"// stub production change — must be rejected by G3\n",
+		);
 		return;
 	}
-	writeFile(joinPath(cwd, "src/test/java/com/example/CalculatorTest.java"),
-		"package com.example;\n// fixed assertion: assertEquals(5, ...)\n");
+	writeFile(
+		joinPath(cwd, "src/test/java/com/example/CalculatorTest.java"),
+		"package com.example;\n// fixed assertion: assertEquals(5, ...)\n",
+	);
 }
 
 function writeFile(abs: string, content: string): void {
@@ -141,7 +148,8 @@ function writeFile(abs: string, content: string): void {
  */
 export const stubSessionFactory: SessionFactory = (input: AgentRunInput) => {
 	const result = cannedResultFromEnv();
-	const turnTokens = Number(process.env.CIHEAL_STUB_TURN_TOKENS ?? "1000") || 1000;
+	const turnTokens =
+		Number(process.env.CIHEAL_STUB_TURN_TOKENS ?? "1000") || 1000;
 	const session = new StubSession(result, turnTokens, input.cwd);
 	const bundle: SessionBundle = {
 		session: session as unknown as AgentSession,

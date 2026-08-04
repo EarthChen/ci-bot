@@ -10,7 +10,7 @@ import type { Patch, Diagnosis } from "../types.js";
 
 /** Result of a glab mr create call. */
 export interface CreatedMr {
-  readonly url: string;
+	readonly url: string;
 }
 
 /**
@@ -20,108 +20,108 @@ export interface CreatedMr {
 export type GlabRunner = (args: readonly string[]) => Promise<string>;
 
 export interface GitLabClient {
-  /** Fetch the failed pipeline's job logs (aggregated). */
-  fetchCiLog(projectId: string, pipelineId: number): Promise<string>;
-  /** Fetch the MR diff (if a related MR exists) — empty string if none. */
-  fetchMrDiff(projectId: string, mrIid: number): Promise<string>;
-  /** Create a MR with the given git patch + diagnosis summary. */
-  createMr(params: {
-    projectId: string;
-    sourceBranch: string;
-    targetBranch: string;
-    title: string;
-    diagnosis: Diagnosis;
-    patch: Patch;
-  }): Promise<CreatedMr>;
+	/** Fetch the failed pipeline's job logs (aggregated). */
+	fetchCiLog(projectId: string, pipelineId: number): Promise<string>;
+	/** Fetch the MR diff (if a related MR exists) — empty string if none. */
+	fetchMrDiff(projectId: string, mrIid: number): Promise<string>;
+	/** Create a MR with the given git patch + diagnosis summary. */
+	createMr(params: {
+		projectId: string;
+		sourceBranch: string;
+		targetBranch: string;
+		title: string;
+		diagnosis: Diagnosis;
+		patch: Patch;
+	}): Promise<CreatedMr>;
 }
 
 /** glab-backed implementation. Token read from env at call time. */
 export class GlabGitLabClient implements GitLabClient {
-  constructor(private readonly runGlab: GlabRunner) {}
+	constructor(private readonly runGlab: GlabRunner) {}
 
-  async fetchCiLog(projectId: string, pipelineId: number): Promise<string> {
-    // glab ci trace --raw streams the job log; we get all jobs for the pipeline.
-    return this.runGlab([
-      "ci",
-      "trace",
-      "--project",
-      String(projectId),
-      "--pipeline-id",
-      String(pipelineId),
-      "--raw",
-    ]);
-  }
+	async fetchCiLog(projectId: string, pipelineId: number): Promise<string> {
+		// glab ci trace --raw streams the job log; we get all jobs for the pipeline.
+		return this.runGlab([
+			"ci",
+			"trace",
+			"--project",
+			String(projectId),
+			"--pipeline-id",
+			String(pipelineId),
+			"--raw",
+		]);
+	}
 
-  async fetchMrDiff(projectId: string, mrIid: number): Promise<string> {
-    return this.runGlab([
-      "mr",
-      "diff",
-      String(mrIid),
-      "--project",
-      String(projectId),
-    ]);
-  }
+	async fetchMrDiff(projectId: string, mrIid: number): Promise<string> {
+		return this.runGlab([
+			"mr",
+			"diff",
+			String(mrIid),
+			"--project",
+			String(projectId),
+		]);
+	}
 
-  async createMr(params: {
-    projectId: string;
-    sourceBranch: string;
-    targetBranch: string;
-    title: string;
-    diagnosis: Diagnosis;
-    patch: Patch;
-  }): Promise<CreatedMr> {
-    const body = buildMrBody(params.diagnosis, params.patch);
-    // glab mr create outputs JSON with web_url when --output json is used.
-    const out = await this.runGlab([
-      "mr",
-      "create",
-      "--project",
-      String(params.projectId),
-      "--source-branch",
-      params.sourceBranch,
-      "--target-branch",
-      params.targetBranch,
-      "--title",
-      params.title,
-      "--description",
-      body,
-      "--yes",
-      "--output",
-      "json",
-    ]);
-    const parsed = safeParse(out);
-    const url = parsed?.web_url ?? parsed?.url ?? "";
-    return { url: typeof url === "string" ? url : "" };
-  }
+	async createMr(params: {
+		projectId: string;
+		sourceBranch: string;
+		targetBranch: string;
+		title: string;
+		diagnosis: Diagnosis;
+		patch: Patch;
+	}): Promise<CreatedMr> {
+		const body = buildMrBody(params.diagnosis, params.patch);
+		// glab mr create outputs JSON with web_url when --output json is used.
+		const out = await this.runGlab([
+			"mr",
+			"create",
+			"--project",
+			String(params.projectId),
+			"--source-branch",
+			params.sourceBranch,
+			"--target-branch",
+			params.targetBranch,
+			"--title",
+			params.title,
+			"--description",
+			body,
+			"--yes",
+			"--output",
+			"json",
+		]);
+		const parsed = safeParse(out);
+		const url = parsed?.web_url ?? parsed?.url ?? "";
+		return { url: typeof url === "string" ? url : "" };
+	}
 }
 
 function buildMrBody(diagnosis: Diagnosis, patch: Patch): string {
-  return [
-    "## CI 自愈 Bot 修复",
-    "",
-    `**根因分类**: class ${diagnosis.failureClass}`,
-    `**诊断摘要**: ${diagnosis.summary}`,
-    "",
-    "### 修复内容",
-    patch.summary,
-    "",
-    "### 改动文件",
-    ...patch.paths.map((p) => `- \`${p}\``),
-    "",
-    "### Patch",
-    "```diff",
-    patch.diff,
-    "```",
-    "",
-    "---",
-    "_由 ci-self-heal-bot 自动生成，需人工 review 后 merge。_",
-  ].join("\n");
+	return [
+		"## CI 自愈 Bot 修复",
+		"",
+		`**根因分类**: class ${diagnosis.failureClass}`,
+		`**诊断摘要**: ${diagnosis.summary}`,
+		"",
+		"### 修复内容",
+		patch.summary,
+		"",
+		"### 改动文件",
+		...patch.paths.map((p) => `- \`${p}\``),
+		"",
+		"### Patch",
+		"```diff",
+		patch.diff,
+		"```",
+		"",
+		"---",
+		"_由 ci-self-heal-bot 自动生成，需人工 review 后 merge。_",
+	].join("\n");
 }
 
 function safeParse(s: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(s) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+	try {
+		return JSON.parse(s) as Record<string, unknown>;
+	} catch {
+		return null;
+	}
 }

@@ -24,7 +24,11 @@ import { join as joinPath } from "node:path";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { createAgentSession, SessionManager, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import {
+	createAgentSession,
+	SessionManager,
+	ModelRuntime,
+} from "@earendil-works/pi-coding-agent";
 
 /** Budget config for a session. */
 export interface BudgetConfig {
@@ -71,10 +75,17 @@ function defaultSessionFactory(input: AgentRunInput): Promise<SessionBundle> {
 	}));
 }
 
-async function createDefaultSession(input: AgentRunInput): Promise<AgentSession> {
+async function createDefaultSession(
+	input: AgentRunInput,
+): Promise<AgentSession> {
 	const agentDir = process.env.PI_CODING_AGENT_DIR ?? undefined;
 	const modelRuntime = await ModelRuntime.create(
-		agentDir ? { authPath: `${agentDir}/auth.json`, modelsPath: `${agentDir}/models.json` } : {},
+		agentDir
+			? {
+					authPath: `${agentDir}/auth.json`,
+					modelsPath: `${agentDir}/models.json`,
+				}
+			: {},
 	);
 	// Inject .env-sourced provider key as a runtime override (not persisted to
 	// disk). Falls back to SDK's own env resolution (ANTHROPIC_API_KEY etc.) when
@@ -127,12 +138,19 @@ export class RealAgentRunner implements AgentRunner {
 		const unsubscribe = session.subscribe((event) => {
 			if (event.type !== "turn_end") return;
 			// turn_end.message is always an assistant message; narrow to read usage.
-			const message = event.message as { role?: string; usage?: { totalTokens: number } };
+			const message = event.message as {
+				role?: string;
+				usage?: { totalTokens: number };
+			};
 			const usage = message.usage;
 			if (!usage) return;
 			totalTokens += usage.totalTokens;
 			logger.info(
-				{ turnTokens: usage.totalTokens, totalTokens, limit: this.budget.totalTokenLimit },
+				{
+					turnTokens: usage.totalTokens,
+					totalTokens,
+					limit: this.budget.totalTokenLimit,
+				},
 				"turn_end budget",
 			);
 			// Per-turn overshoot: abort this turn's aftermath immediately.
@@ -253,7 +271,9 @@ function extractText(msg: { content?: unknown }): string {
 	if (!Array.isArray(content)) return "";
 	return content
 		.map((block: { type?: string; text?: string }) =>
-			block?.type === "text" && typeof block.text === "string" ? block.text : "",
+			block?.type === "text" && typeof block.text === "string"
+				? block.text
+				: "",
 		)
 		.join("");
 }
@@ -275,15 +295,29 @@ export function tryParseAgentJson(text: string): AgentResult | null {
 
 /** Validate + normalize a parsed object into a well-formed AgentResult. */
 function normalizeAgentResult(obj: Partial<AgentResult>): AgentResult | null {
-	if (obj.kind === "fixed" && obj.diagnosis && typeof obj.summary === "string") {
+	if (
+		obj.kind === "fixed" &&
+		obj.diagnosis &&
+		typeof obj.summary === "string"
+	) {
 		const diag = obj.diagnosis as Diagnosis;
-		if (typeof diag.failureClass === "number" && typeof diag.summary === "string") {
+		if (
+			typeof diag.failureClass === "number" &&
+			typeof diag.summary === "string"
+		) {
 			return { kind: "fixed", diagnosis: diag, summary: obj.summary };
 		}
 	}
-	if (obj.kind === "escalated" && obj.diagnosis && typeof obj.reason === "string") {
+	if (
+		obj.kind === "escalated" &&
+		obj.diagnosis &&
+		typeof obj.reason === "string"
+	) {
 		const diag = obj.diagnosis as Diagnosis;
-		if (typeof diag.failureClass === "number" && typeof diag.summary === "string") {
+		if (
+			typeof diag.failureClass === "number" &&
+			typeof diag.summary === "string"
+		) {
 			return { kind: "escalated", diagnosis: diag, reason: obj.reason };
 		}
 	}

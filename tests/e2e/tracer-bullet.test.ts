@@ -37,6 +37,7 @@ const WORK_ROOT = await mkdtemp(join(tmpdir(), "ciheal-e2e-"));
 const workerManager = new SubprocessWorkerManager({
   timeoutMs: 60_000,
   keepWork: true, // keep cwd so the test can read sidecars
+  env: { CIHEAL_WORKTREE_MODE: "fake" },
 });
 
 const scheduler = new Scheduler({
@@ -242,7 +243,7 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
     const g3Manager = new SubprocessWorkerManager({
       timeoutMs: 60_000,
       keepWork: true,
-      env: { CIHEAL_STUB_FIX_KIND: "src-main" },
+      env: { CIHEAL_STUB_FIX_KIND: "src-main", CIHEAL_WORKTREE_MODE: "fake" },
     });
     const g3Scheduler = new Scheduler({
       workerManager: g3Manager,

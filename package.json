@@ -1,0 +1,28 @@
+{
+  "name": "ci-self-heal-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CI unit-test self-healing bot: GitLab pipeline webhook → AI diagnosis → test-only fix → MR + DingTalk notification",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node --enable-source-maps dist/main.js",
+    "dev": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "fastify": "^5.2.0",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

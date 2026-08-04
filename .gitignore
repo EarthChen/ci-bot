@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+*.tsbuildinfo
+
+# environment secrets (NEVER commit)
+.env
+.env.*
+!.env.example
+
+# worker working dirs (per-event checkouts, isolated)
+.work/
+.worker-data/
+
+# runtime state
+*.log
+logs/
+data/
+*.db
+*.db-journal
+
+# editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store

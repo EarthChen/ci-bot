@@ -35,7 +35,10 @@ function pipelineFailedBody(
 	return {
 		object_kind: "pipeline",
 		object_attributes: { id: pipelineId, ref, sha, status: "failed" },
-		project: { id: projectId, web_url: `https://gitlab.example.com/${projectId}` },
+		project: {
+			id: projectId,
+			web_url: `https://gitlab.example.com/${projectId}`,
+		},
 	};
 }
 
@@ -59,9 +62,7 @@ async function postWebhook(
 	return { status: res.status, json };
 }
 
-async function setupBot(opts: {
-	threshold?: number;
-}): Promise<{
+async function setupBot(opts: { threshold?: number }): Promise<{
 	app: FastifyInstance;
 	scheduler: Scheduler;
 	base: string;
@@ -117,16 +118,19 @@ describe("worker-crash self-fault alert (ticket 07)", () => {
 			for (let i = 1; i <= 3; i++) {
 				await postWebhook(
 					bot.base,
-					pipelineFailedBody(`proj-crash`, 950_000 + i, "main", `${i}`.repeat(16)),
+					pipelineFailedBody(
+						`proj-crash`,
+						950_000 + i,
+						"main",
+						`${i}`.repeat(16),
+					),
 				);
 			}
 			await bot.scheduler.idle();
 
 			// The self-fault alert fired (bot is down — operator must intervene).
 			expect(bot.notifier.sent.length).toBeGreaterThanOrEqual(1);
-			const alert = bot.notifier.sent.find((m) =>
-				m.title.includes("自故障"),
-			);
+			const alert = bot.notifier.sent.find((m) => m.title.includes("自故障"));
 			expect(alert).toBeTruthy();
 			expect(alert!.text).toContain("worker");
 		} finally {
@@ -196,13 +200,16 @@ describe("worker-crash self-fault alert (ticket 07)", () => {
 			for (let i = 1; i <= 3; i++) {
 				await postWebhook(
 					base,
-					pipelineFailedBody("proj-reset", 952_000 + i, "main", `${i}`.repeat(16)),
+					pipelineFailedBody(
+						"proj-reset",
+						952_000 + i,
+						"main",
+						`${i}`.repeat(16),
+					),
 				);
 				await scheduler.idle();
 			}
-			const selfFault = notifier.sent.filter((m) =>
-				m.title.includes("自故障"),
-			);
+			const selfFault = notifier.sent.filter((m) => m.title.includes("自故障"));
 			expect(selfFault.length).toBe(0);
 		} finally {
 			await app.close();

@@ -111,11 +111,15 @@ function auditEvent(event: PipelineEvent): AuditTrace["event"] {
  * Unit price is per-1k-tokens (env-configurable; defaults to a conservative
  * placeholder — real value TBD per provider, see spec cost section).
  */
-const COST_PER_1K_TOKENS = Number(process.env.BOT_TOKEN_UNIT_COST_PER_1K ?? "0.001");
+const COST_PER_1K_TOKENS = Number(
+	process.env.BOT_TOKEN_UNIT_COST_PER_1K ?? "0.001",
+);
 
 /** Compute the estimated cost for a token count. */
 function repairCost(tokens: number): number {
-	return Math.round((tokens / 1000) * COST_PER_1K_TOKENS * 1_000_000) / 1_000_000;
+	return (
+		Math.round((tokens / 1000) * COST_PER_1K_TOKENS * 1_000_000) / 1_000_000
+	);
 }
 
 /** Zero metrics (for paths that never run the agent, e.g. class-5 early filter). */

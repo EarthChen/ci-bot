@@ -14,7 +14,10 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const workRoot = process.argv[2] ?? process.env.CIHEAL_WORK_ROOT ?? join(tmpdir(), "ci-self-heal-work");
+const workRoot =
+	process.argv[2] ??
+	process.env.CIHEAL_WORK_ROOT ??
+	join(tmpdir(), "ci-self-heal-work");
 
 async function collectLines(root) {
 	const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
@@ -37,7 +40,13 @@ async function collectLines(root) {
 
 const lines = await collectLines(workRoot);
 if (lines.length === 0) {
-	console.log(JSON.stringify({ workRoot, count: 0, note: "no metrics.jsonl found" }, null, 2));
+	console.log(
+		JSON.stringify(
+			{ workRoot, count: 0, note: "no metrics.jsonl found" },
+			null,
+			2,
+		),
+	);
 	process.exit(0);
 }
 

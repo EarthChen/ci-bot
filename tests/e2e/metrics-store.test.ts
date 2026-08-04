@@ -37,7 +37,10 @@ function pipelineFailedBody(
 	return {
 		object_kind: "pipeline",
 		object_attributes: { id: pipelineId, ref, sha, status: "failed" },
-		project: { id: projectId, web_url: `https://gitlab.example.com/${projectId}` },
+		project: {
+			id: projectId,
+			web_url: `https://gitlab.example.com/${projectId}`,
+		},
 	};
 }
 

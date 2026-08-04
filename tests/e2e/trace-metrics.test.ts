@@ -71,7 +71,10 @@ interface AuditTrace {
 		readonly sha: string;
 	};
 	readonly outcome: string;
-	readonly diagnosis: { readonly failureClass: number; readonly summary: string };
+	readonly diagnosis: {
+		readonly failureClass: number;
+		readonly summary: string;
+	};
 	readonly diff: string;
 	readonly reasoning: string;
 	readonly mrUrl?: string;

@@ -132,11 +132,13 @@ export class RealAgentRunner implements AgentRunner {
 		const { session, dispose } = bundle;
 
 		let totalTokens = 0;
+		let turnCount = 0;
 		let budgetBreached = false;
 		let breachReason = "";
 
 		const unsubscribe = session.subscribe((event) => {
 			if (event.type !== "turn_end") return;
+			turnCount++;
 			// turn_end.message is always an assistant message; narrow to read usage.
 			const message = event.message as {
 				role?: string;
@@ -217,7 +219,7 @@ export class RealAgentRunner implements AgentRunner {
 				.catch((err) => logger.warn({ err }, "budget alert failed"));
 		}
 
-		return result;
+		return { ...result, metrics: { turns: turnCount, tokens: totalTokens } };
 	}
 
 	/** Parse the final assistant message JSON into an AgentResult. */

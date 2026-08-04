@@ -45,12 +45,22 @@ export type AgentResult =
 			readonly kind: "fixed";
 			readonly diagnosis: Diagnosis;
 			readonly summary: string;
+			readonly metrics?: AgentMetrics;
 	  }
 	| {
 			readonly kind: "escalated";
 			readonly diagnosis: Diagnosis;
 			readonly reason: string;
+			readonly metrics?: AgentMetrics;
 	  };
+
+/** Per-session observability metrics (ticket 07). Filled by the runner. */
+export interface AgentMetrics {
+	/** Number of agent turns in the session. */
+	readonly turns: number;
+	/** Total tokens consumed across all turns. */
+	readonly tokens: number;
+}
 
 /** A real git patch the bot extracts from the agent's working tree. */
 export interface Patch {

@@ -49,6 +49,14 @@ interface AuditTrace {
 	readonly mrUrl?: string;
 	/** ISO timestamp for audit ordering / retention. */
 	readonly createdAt: string;
+	/** Ticket 07: agent turns (0 for class-5 early-filter, no agent). */
+	readonly turns: number;
+	/** Ticket 07: total tokens consumed (0 for class-5 early-filter, no agent). */
+	readonly tokens: number;
+	/** Ticket 07: estimated cost = tokens × unit price. */
+	readonly cost: number;
+	/** Ticket 07: repair wall-clock duration in ms. */
+	readonly durationMs: number;
 }
 
 /** Write the audit trace sidecar to the worker cwd (best-effort, never throws in caller). */
@@ -74,6 +82,21 @@ function auditEvent(event: PipelineEvent): AuditTrace["event"] {
 		sha: event.sha,
 	};
 }
+
+/**
+ * Ticket 07: estimated cost = tokens × unit price.
+ * Unit price is per-1k-tokens (env-configurable; defaults to a conservative
+ * placeholder — real value TBD per provider, see spec cost section).
+ */
+const COST_PER_1K_TOKENS = Number(process.env.BOT_TOKEN_UNIT_COST_PER_1K ?? "0.001");
+
+/** Compute the estimated cost for a token count. */
+function repairCost(tokens: number): number {
+	return Math.round((tokens / 1000) * COST_PER_1K_TOKENS * 1_000_000) / 1_000_000;
+}
+
+/** Zero metrics (for paths that never run the agent, e.g. class-5 early filter). */
+const ZERO_METRICS = { turns: 0, tokens: 0, cost: 0, durationMs: 0 } as const;
 
 /** Result of one verification layer (related or full regression). */
 export type TestRunStatus = "green" | "flaky" | "fail";
@@ -136,6 +159,7 @@ export async function runRepair(
 			diff: "",
 			reasoning: reason,
 			createdAt: new Date().toISOString(),
+			...ZERO_METRICS,
 		});
 		return { kind: "escalated", summary: reason };
 	}
@@ -156,6 +180,7 @@ export async function runRepair(
 	//    The agent self-executes: edits files + runs tests via bash inside the
 	//    session, all within the worktree (repoCwd). It returns a structured
 	//    result, NOT file contents.
+	const agentStartedAt = Date.now();
 	let result;
 	try {
 		result = await agent.run({
@@ -171,6 +196,17 @@ export async function runRepair(
 		await removeWorktree(deps.cwd).catch(() => {});
 		return fail(event, dingtalk, "agent-run", err);
 	}
+	// Ticket 07: per-fix metrics from the agent session (turns/tokens) +
+	// wall-clock duration. Agent-run failures go through fail() which writes
+	// its own trace without these (no result.metrics to read).
+	const agentTokens = result.metrics?.tokens ?? 0;
+	const agentTurns = result.metrics?.turns ?? 0;
+	const agentMetrics = {
+		turns: agentTurns,
+		tokens: agentTokens,
+		cost: repairCost(agentTokens),
+		durationMs: Date.now() - agentStartedAt,
+	} as const;
 
 	// 3. Branch on the structured agent result.
 	if (result.kind === "escalated") {
@@ -182,6 +218,7 @@ export async function runRepair(
 			diff: "",
 			reasoning: result.reason,
 			createdAt: new Date().toISOString(),
+			...agentMetrics,
 		});
 		return { kind: "escalated", summary: result.reason };
 	}
@@ -208,6 +245,7 @@ export async function runRepair(
 			diff: patch.diff,
 			reasoning: reason,
 			createdAt: new Date().toISOString(),
+			...agentMetrics,
 		});
 		return {
 			kind: "escalated",
@@ -226,6 +264,7 @@ export async function runRepair(
 			diff: patch.diff,
 			reasoning: reason,
 			createdAt: new Date().toISOString(),
+			...agentMetrics,
 		});
 		return { kind: "escalated", summary: `G3 violation: ${violation}` };
 	}
@@ -254,6 +293,7 @@ export async function runRepair(
 			diff: patch.diff,
 			reasoning: `verification ${verifyOutcome}: ${reason}`,
 			createdAt: new Date().toISOString(),
+			...agentMetrics,
 		});
 		return {
 			kind: "escalated",
@@ -284,6 +324,7 @@ export async function runRepair(
 		reasoning: result.summary,
 		mrUrl: mr.url,
 		createdAt: new Date().toISOString(),
+		...agentMetrics,
 	});
 	const outcome: RepairOutcome = {
 		kind: "mr",

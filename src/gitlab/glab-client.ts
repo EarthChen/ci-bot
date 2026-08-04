@@ -6,7 +6,7 @@
  * function so no real glab process / MR is created.
  */
 
-import type { FixDiff, Diagnosis } from "../types.js";
+import type { Patch, Diagnosis } from "../types.js";
 
 /** Result of a glab mr create call. */
 export interface CreatedMr {
@@ -24,14 +24,14 @@ export interface GitLabClient {
   fetchCiLog(projectId: string, pipelineId: number): Promise<string>;
   /** Fetch the MR diff (if a related MR exists) — empty string if none. */
   fetchMrDiff(projectId: string, mrIid: number): Promise<string>;
-  /** Create a MR with the given fix diff + diagnosis summary. */
+  /** Create a MR with the given git patch + diagnosis summary. */
   createMr(params: {
     projectId: string;
     sourceBranch: string;
     targetBranch: string;
     title: string;
     diagnosis: Diagnosis;
-    fix: FixDiff;
+    patch: Patch;
   }): Promise<CreatedMr>;
 }
 
@@ -68,9 +68,9 @@ export class GlabGitLabClient implements GitLabClient {
     targetBranch: string;
     title: string;
     diagnosis: Diagnosis;
-    fix: FixDiff;
+    patch: Patch;
   }): Promise<CreatedMr> {
-    const body = buildMrBody(params.diagnosis, params.fix);
+    const body = buildMrBody(params.diagnosis, params.patch);
     // glab mr create outputs JSON with web_url when --output json is used.
     const out = await this.runGlab([
       "mr",
@@ -95,7 +95,7 @@ export class GlabGitLabClient implements GitLabClient {
   }
 }
 
-function buildMrBody(diagnosis: Diagnosis, fix: FixDiff): string {
+function buildMrBody(diagnosis: Diagnosis, patch: Patch): string {
   return [
     "## CI 自愈 Bot 修复",
     "",
@@ -103,10 +103,15 @@ function buildMrBody(diagnosis: Diagnosis, fix: FixDiff): string {
     `**诊断摘要**: ${diagnosis.summary}`,
     "",
     "### 修复内容",
-    fix.summary,
+    patch.summary,
     "",
     "### 改动文件",
-    ...fix.files.map((f) => `- \`${f.path}\``),
+    ...patch.paths.map((p) => `- \`${p}\``),
+    "",
+    "### Patch",
+    "```diff",
+    patch.diff,
+    "```",
     "",
     "---",
     "_由 ci-self-heal-bot 自动生成，需人工 review 后 merge。_",

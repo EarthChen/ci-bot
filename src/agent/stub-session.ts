@@ -18,10 +18,12 @@
  * for testing the budget soft limit (set high to trip the per-turn abort).
  */
 
-import type { AgentResult, FixDiff, Diagnosis } from "../types.js";
+import type { AgentResult, Diagnosis } from "../types.js";
 import type { AgentRunInput } from "./runner.js";
 import type { SessionBundle, SessionFactory } from "./real-runner.js";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join as joinPath } from "node:path";
 
 /** A minimal assistant message shape the runner's parseResult + budget read. */
 interface FakeAssistantMessage {
@@ -42,10 +44,12 @@ class StubSession {
 	private listeners: Array<(event: FakeTurnEndEvent) => void> = [];
 	private readonly cannedResult: AgentResult;
 	private readonly turnTokens: number;
+	private readonly cwd: string;
 
-	constructor(cannedResult: AgentResult, turnTokens: number) {
+	constructor(cannedResult: AgentResult, turnTokens: number, cwd: string) {
 		this.cannedResult = cannedResult;
 		this.turnTokens = turnTokens;
+		this.cwd = cwd;
 	}
 
 	subscribe(listener: (event: FakeTurnEndEvent) => void): () => void {
@@ -56,8 +60,11 @@ class StubSession {
 	}
 
 	async prompt(_text: string): Promise<void> {
-		// Simulate one turn: emit a turn_end with the canned result as the
-		// final assistant message text + a configurable usage for budget tests.
+		// Simulate the agent self-executing: write canned edits to the working
+		// tree so `git diff` in run-repair sees real changes (no diff in prompt).
+		applyStubEdits(this.cwd, this.cannedResult);
+		// Emit a turn_end with the structured result JSON as the final assistant
+		// message + a configurable usage for budget tests.
 		const message: FakeAssistantMessage = {
 			role: "assistant",
 			content: [{ type: "text", text: JSON.stringify(this.cannedResult) }],
@@ -97,27 +104,33 @@ function cannedResultFromEnv(): AgentResult {
 		failureClass: 1,
 		summary: "测试断言写错：CalculatorTest 期望 4 但实际应为 5（2+3）。",
 	};
-	const fix: FixDiff =
-		kind === "src-main"
-			? {
-					summary: "（stub）试图改生产代码——应被 G3 拦截。",
-					files: [
-						{
-							path: "src/main/java/com/example/Calculator.java",
-							content: "// stub production change — must be rejected by G3",
-						},
-					],
-				}
-			: {
-					summary: "修正 CalculatorTest 断言为期望值 5。",
-					files: [
-						{
-							path: "src/test/java/com/example/CalculatorTest.java",
-							content: "package com.example;\n// fixed assertion\n",
-						},
-					],
-				};
-	return { kind: "fixed", diagnosis, fix };
+	return {
+		kind: "fixed",
+		diagnosis,
+		summary: kind === "src-main" ? "（stub）试图改生产代码——应被 G3 拦截。" : "修正 CalculatorTest 断言为期望值 5。",
+	};
+}
+
+/**
+ * Simulate the agent's bash edits by writing canned files to the working tree.
+ * This makes `git diff` in run-repair authoritative — no diff content lives in
+ * the prompt or the structured result. CIHEAL_STUB_FIX_KIND selects the path.
+ */
+function applyStubEdits(cwd: string, result: AgentResult): void {
+	if (result.kind !== "fixed") return;
+	const kind = process.env.CIHEAL_STUB_FIX_KIND ?? "test";
+	if (kind === "src-main") {
+		writeFile(joinPath(cwd, "src/main/java/com/example/Calculator.java"),
+			"// stub production change — must be rejected by G3\n");
+		return;
+	}
+	writeFile(joinPath(cwd, "src/test/java/com/example/CalculatorTest.java"),
+		"package com.example;\n// fixed assertion: assertEquals(5, ...)\n");
+}
+
+function writeFile(abs: string, content: string): void {
+	mkdirSync(dirname(abs), { recursive: true });
+	writeFileSync(abs, content, "utf8");
 }
 
 /**
@@ -126,10 +139,10 @@ function cannedResultFromEnv(): AgentResult {
  * This is the seam that lets the e2e test exercise the full RealAgentRunner
  * pipeline (budget, parse, G3, MR, DingTalk) without a live LLM, per spec.
  */
-export const stubSessionFactory: SessionFactory = (_input: AgentRunInput) => {
+export const stubSessionFactory: SessionFactory = (input: AgentRunInput) => {
 	const result = cannedResultFromEnv();
 	const turnTokens = Number(process.env.CIHEAL_STUB_TURN_TOKENS ?? "1000") || 1000;
-	const session = new StubSession(result, turnTokens);
+	const session = new StubSession(result, turnTokens, input.cwd);
 	const bundle: SessionBundle = {
 		session: session as unknown as AgentSession,
 		dispose: () => session.dispose(),

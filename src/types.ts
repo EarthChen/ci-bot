@@ -33,25 +33,26 @@ export interface Diagnosis {
   readonly summary: string;
 }
 
-/** A patch the agent wants applied (test/doc files only; src/main forbidden). */
-export interface FixDiff {
-  /** Unified-diff text or full file replacement blocks. */
-  readonly files: readonly FileChange[];
+/**
+ * The structured result an agent session outputs at the end.
+ *
+ * The agent self-executes (edits files + runs tests via bash inside the
+ * session). It does NOT output file contents — the bot extracts the real
+ * patch from `git diff` (authoritative) and G3-validates it post-hoc.
+ */
+export type AgentResult =
+  | { readonly kind: "fixed"; readonly diagnosis: Diagnosis; readonly summary: string }
+  | { readonly kind: "escalated"; readonly diagnosis: Diagnosis; readonly reason: string };
+
+/** A real git patch the bot extracts from the agent's working tree. */
+export interface Patch {
+  /** Unified-diff text (output of `git diff`). */
+  readonly diff: string;
+  /** Repo-relative paths the patch touches. */
+  readonly paths: readonly string[];
   /** Short summary for the MR body. */
   readonly summary: string;
 }
-
-export interface FileChange {
-  /** Repo-relative path. Must be a test or doc file. */
-  readonly path: string;
-  /** New full content of the file (tracer-bullet simplicity: full-file replace). */
-  readonly content: string;
-}
-
-/** The structured result an agent session outputs at the end. */
-export type AgentResult =
-  | { readonly kind: "fixed"; readonly diagnosis: Diagnosis; readonly fix: FixDiff }
-  | { readonly kind: "escalated"; readonly diagnosis: Diagnosis; readonly reason: string };
 
 /** Final outcome the bot records for a single pipeline (drives MR + DingTalk). */
 export type RepairOutcome =

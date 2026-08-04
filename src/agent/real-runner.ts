@@ -16,10 +16,13 @@
  * first overshooting turn trips the abort, not the tenth.
  */
 
-import type { AgentResult, FixDiff, Diagnosis } from "../types.js";
+import type { AgentResult, Diagnosis } from "../types.js";
 import type { AgentRunner, AgentRunInput } from "./runner.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import { logger } from "../util/log.js";
+import { join as joinPath } from "node:path";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { createAgentSession, SessionManager, ModelRuntime } from "@earendil-works/pi-coding-agent";
 
@@ -31,7 +34,8 @@ export interface BudgetConfig {
 	readonly perTurnTokenLimit: number;
 }
 
-/** Default budget: 200k total / 50k per turn. Tunable via BOT_BUDGET_TOKENS. */
+/** Default budget: 200k total / 50k per turn. Tunable via
+ * BOT_BUDGET_TOKENS (total) + BOT_BUDGET_PER_TURN_TOKENS (per-turn). */
 const DEFAULT_BUDGET: BudgetConfig = {
 	totalTokenLimit: 200_000,
 	perTurnTokenLimit: 50_000,
@@ -150,26 +154,23 @@ export class RealAgentRunner implements AgentRunner {
 			}
 		});
 
-		// Dual safety (spec): /skill:name deterministic load + prompt naming.
+		// Prompt is thin: /skill deterministic load + ref/sha + file paths.
+		// CI log + MR diff are written to files in the worker cwd and read via
+		// the `read` tool — never inlined into the prompt (large diffs would
+		// bloat the turn input and skew token accounting).
+		const ciLogPath = joinPath(input.cwd, "ci-log.txt");
+		const mrDiffPath = joinPath(input.cwd, "mr-diff.patch");
+		await writeText(ciLogPath, input.ciLog);
+		if (input.mrDiff) await writeText(mrDiffPath, input.mrDiff);
 		const prompt = [
 			`/skill:ci-self-heal-playbook`,
 			``,
-			`处理以下 GitLab pipeline 单测失败。按 ci-self-heal-playbook skill 的诊断/修复/文档同步三段执行。`,
-			`务必先读 java-coding-standards skill 了解 Java 规范。`,
+			`# 任务`,
+			`分支 ${input.ref} @ ${input.sha.slice(0, 8)} 的 pipeline 单测失败。`,
 			``,
-			`## CI 日志`,
-			`\`\`\``,
-			input.ciLog,
-			`\`\`\``,
-			``,
-			input.mrDiff ? `## MR diff\n\`\`\`diff\n${input.mrDiff}\n\`\`\`` : `（无相关 MR diff）`,
-			``,
-			`## 要求`,
-			`1. 诊断 G1 class 1/2/3/4/5，只自动修 1/2/3，4/5 转交。`,
-			`2. 只改测试/文档文件，src/main 禁止触碰（G3 权限边界）。`,
-			`3. class 2 触发文档同步，只动相关段落。`,
-			`4. 跑相关测试确认绿（全量回归是 ticket 04，不做）。`,
-			`5. session 结束输出 JSON 结构化结果（fixed/escalated），格式见 skill。`,
+			`# 输入文件（用 read 工具读取，不要靠 prompt 里的内容）`,
+			`- CI 日志：${ciLogPath}`,
+			input.mrDiff ? `- MR diff：${mrDiffPath}` : `- MR diff：无`,
 		].join("\n");
 
 		let result: AgentResult;
@@ -274,11 +275,10 @@ export function tryParseAgentJson(text: string): AgentResult | null {
 
 /** Validate + normalize a parsed object into a well-formed AgentResult. */
 function normalizeAgentResult(obj: Partial<AgentResult>): AgentResult | null {
-	if (obj.kind === "fixed" && obj.diagnosis && obj.fix) {
+	if (obj.kind === "fixed" && obj.diagnosis && typeof obj.summary === "string") {
 		const diag = obj.diagnosis as Diagnosis;
-		const fix = obj.fix as FixDiff;
-		if (typeof diag.failureClass === "number" && typeof diag.summary === "string" && Array.isArray(fix.files)) {
-			return { kind: "fixed", diagnosis: diag, fix };
+		if (typeof diag.failureClass === "number" && typeof diag.summary === "string") {
+			return { kind: "fixed", diagnosis: diag, summary: obj.summary };
 		}
 	}
 	if (obj.kind === "escalated" && obj.diagnosis && typeof obj.reason === "string") {
@@ -288,4 +288,11 @@ function normalizeAgentResult(obj: Partial<AgentResult>): AgentResult | null {
 		}
 	}
 	return null;
+}
+
+/** Write a text file, creating parent dirs. Used to spill CI log / MR diff
+ * into the worker cwd so the prompt stays thin. */
+function writeText(abs: string, content: string): void {
+	mkdirSync(dirname(abs), { recursive: true });
+	writeFileSync(abs, content, "utf8");
 }

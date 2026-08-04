@@ -9,7 +9,7 @@
  * Dependency injection via env switches lets the e2e test drive a REAL
  * subprocess while intercepting external side effects (glab/dingtalk/agent):
  *
- *   CIHEAL_AGENT_MODE=stub|real   (ticket 01 = stub only)
+ *   CIHEAL_AGENT_MODE=stub|real   (stub = canned result; real = pi SDK session)
  *   CIHEAL_GLAB_MODE=fake|real
  *   CIHEAL_DINGTALK_MODE=fake|real
  *   CIHEAL_RESULT_FILE=<path>      (worker writes its RepairOutcome JSON here)
@@ -27,6 +27,7 @@ import { stubSessionFactory } from "../agent/stub-session.js";
 import type { GitLabClient } from "../gitlab/glab-client.js";
 import { GlabGitLabClient } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
+import { HttpDingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
 import { logger } from "../util/log.js";
 import { runRepair, type WorkerDeps } from "../pipeline/run-repair.js";
@@ -74,8 +75,23 @@ function pickGlab(cwd: string): GitLabClient {
 function pickDingTalk(cwd: string): DingTalkNotifier {
 	const mode = process.env.CIHEAL_DINGTALK_MODE ?? "fake";
 	if (mode === "fake") return makeFakeDingtalk(cwd);
-	// Real HTTP notifier wired in ticket 02+ (needs signing).
-	throw new Error(`CIHEAL_DINGTALK_MODE=${mode} not supported in ticket 01`);
+	if (mode === "real") {
+		const webhookUrl = process.env.DINGTALK_WEBHOOK_URL;
+		if (!webhookUrl) throw new Error("DINGTALK_WEBHOOK_URL required when CIHEAL_DINGTALK_MODE=real");
+		return new HttpDingTalkNotifier(webhookUrl, realDingTalkPost);
+	}
+	throw new Error(`CIHEAL_DINGTALK_MODE=${mode} not supported`);
+}
+
+async function realDingTalkPost(url: string, body: unknown): Promise<void> {
+	const res = await fetch(url, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) {
+		throw new Error(`dingtalk webhook failed: ${res.status} ${res.statusText}`);
+	}
 }
 
 async function realGlabRunner(args: readonly string[]): Promise<string> {
@@ -128,9 +144,9 @@ function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
 				sourceBranch: params.sourceBranch,
 				targetBranch: params.targetBranch,
 				title: params.title,
-				body: params.fix.summary,
+				body: params.patch.summary,
 				diagnosis: params.diagnosis,
-				fixFiles: params.fix.files.map((f) => f.path),
+				fixFiles: params.patch.paths,
 			};
 			createdMrs.push(rec);
 			// Persist to cwd so the parent test can observe across the process seam.

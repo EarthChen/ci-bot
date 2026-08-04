@@ -9,7 +9,9 @@
  * the DingTalk tool — only bot code notifies.
  */
 
-import type { AgentResult, Diagnosis, FixDiff } from "../types.js";
+import type { AgentResult, Diagnosis } from "../types.js";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join as joinPath } from "node:path";
 
 export interface AgentRunInput {
   /** Project id from the pipeline event. */
@@ -44,45 +46,26 @@ export interface AgentRunner {
  *   "src-main"  — a fix that touches src/main (G3 violation → must escalate)
  */
 export class StubAgentRunner implements AgentRunner {
-  async run(): Promise<AgentResult> {
+  async run(input: AgentRunInput): Promise<AgentResult> {
     const diagnosis: Diagnosis = {
       failureClass: 1,
       summary: "测试断言写错：CalculatorTest 期望 4 但实际应为 5（2+3）。",
     };
     const kind = process.env.CIHEAL_STUB_FIX_KIND ?? "test";
-    const fix: FixDiff =
-      kind === "src-main"
-        ? {
-            summary: "（stub）试图改生产代码——应被 G3 拦截。",
-            files: [
-              {
-                path: "src/main/java/com/example/Calculator.java",
-                content: "// stub production change — must be rejected by G3",
-              },
-            ],
-          }
-        : {
-            summary: "修正 CalculatorTest 断言为期望值 5。",
-            files: [
-              {
-                path: "src/test/java/com/example/CalculatorTest.java",
-                content: [
-                  "package com.example;",
-                  "",
-                  "import org.junit.jupiter.api.Test;",
-                  "import static org.junit.jupiter.api.Assertions.assertEquals;",
-                  "",
-                  "class CalculatorTest {",
-                  "    @Test",
-                  "    void addsTwoPlusThree() {",
-                  "        assertEquals(5, new Calculator().add(2, 3));",
-                  "    }",
-                  "}",
-                  "",
-                ].join("\n"),
-              },
-            ],
-          };
-    return { kind: "fixed", diagnosis, fix };
+    // Simulate the agent self-executing: write the canned edit to the working
+    // tree so `git diff` in run-repair is authoritative (no diff in the result).
+    if (kind === "src-main") {
+      writeStubFile(joinPath(input.cwd, "src/main/java/com/example/Calculator.java"),
+        "// stub production change — must be rejected by G3\n");
+      return { kind: "fixed", diagnosis, summary: "（stub）试图改生产代码——应被 G3 拦截。" };
+    }
+    writeStubFile(joinPath(input.cwd, "src/test/java/com/example/CalculatorTest.java"),
+      "package com.example;\n// fixed assertion: assertEquals(5, ...)\n");
+    return { kind: "fixed", diagnosis, summary: "修正 CalculatorTest 断言为期望值 5。" };
   }
+}
+
+function writeStubFile(abs: string, content: string): void {
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, content, "utf8");
 }

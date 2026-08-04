@@ -1,0 +1,53 @@
+# CI Self-Heal Bot
+
+This context defines the ownership and runtime language for the CI unit-test self-healing bot.
+
+## Agent Runtime
+
+**Bot-owned Pi configuration**:
+The Pi settings, playbook, and model-candidate policy shipped with the self-heal bot. It is the only configuration allowed to shape an agent worker.
+_Avoid_: target-project Pi configuration, user-global Pi configuration
+
+**Target worktree**:
+The checked-out project revision in which the agent diagnoses a failed pipeline and prepares a test/documentation-only change.
+_Avoid_: agent configuration directory, bot workspace
+
+**Model candidate**:
+An ordered provider and concrete model pair, with a reference to the deployment secret that authenticates it.
+_Avoid_: provider-only fallback, implicit default model
+
+**Provider selection**:
+The deterministic startup choice of the first usable same-family model candidate. A running repair keeps its selected provider; runtime provider errors are escalated rather than mixed with another session.
+_Avoid_: cross-family fallback, mid-session model switching
+
+**Model profile**:
+A runtime-owned, Pi-compatible settings subset bound to a model candidate. It controls thinking and compaction policy but never redeclares model catalog facts such as context-window or maximum-output size.
+_Avoid_: model metadata override, vertical-agent profile
+
+**Model policy**:
+A named, runtime-owned selection of approved model candidates and profiles that a vertical agent may request. It does not expose provider credentials, direct provider/model selection, or raw token-budget configuration to the vertical agent.
+_Avoid_: vertical agent provider selection, embedded API key
+
+**Agent capability**:
+A platform-owned, reviewed operation exposed by the shared agent runtime. It defines what an agent may do independently of any prompt or skill.
+_Avoid_: capability implied by a prompt, arbitrary shell authority
+
+**Capability profile**:
+A named, platform-owned allowlist of built-in Pi tool capabilities that a vertical agent may request. The runtime grants the profile; a vertical agent cannot create arbitrary execution authority through its resources. The first version is a fixed configuration allowlist, not a custom-tool plugin mechanism.
+_Avoid_: arbitrary tool declarations in a vertical agent, speculative plugin framework
+
+**Agent resources**:
+A vertical agent's prompt, append-only system prompt, skills, and optional result contract. Resources instruct an agent but do not grant execution authority. The system instruction augments Pi's default system prompt; it never replaces it.
+_Avoid_: treating a skill or prompt as a capability, replacing Pi's default system prompt
+
+**Agent artifact**:
+The authoritative observable effect of an agent run, such as a workspace `git diff`, a generated file, a tool result, or a validated structured result. Free-text assistant output is advisory unless a vertical agent explicitly declares a result contract.
+_Avoid_: treating a narrative summary as evidence of a completed code change
+
+**Vertical agent**:
+A statically registered, named business-level composition expressed as a type-checked TypeScript definition. It customizes agent resources and requests runtime policies while reusing the shared agent runtime. Its `buildPrompt` function maps business input to a task prompt; the runtime receives only that prompt and never interprets the business input. A vertical agent does not implement or own the underlying runtime, provider credentials, model catalog, or worker lifecycle. The runtime accepts only registered agent IDs and never discovers agents from arbitrary paths or task input.
+_Avoid_: a separate agent runtime, a prompt with implicit privileges, dynamic agent discovery, untyped JSON manifest
+
+**Shared agent runtime**:
+The common Pi session, model configuration, authentication, worker lifecycle, concurrency limits, timeout, cleanup, and execution machinery reused by all vertical agents. It alone creates workers and controls their scheduling, but does not decide business success or mandate business validation.
+_Avoid_: rebuilding an agent runtime per business agent, vertical-agent worker creation, generic business workflow engine

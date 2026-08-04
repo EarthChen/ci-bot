@@ -114,7 +114,10 @@ CI 单元测试失败后，开发者必须手动介入：判断失败根因、�
 ### Agent 编排（v1：单 agent）
 
 - v1 用单主 agent + skills 启用 + `/skill:name` 确定性加载。agent 每次修复跑一个连续 session（诊断 → 修复 → 同步文档 → 输出结构化结果）。诊断结论在 context 内天然传递（无跨模型脱节）。v1 不做 subagent 路由。
-- **Skill 加载**：prompt 显式点名语言 skill（"处理 Java 单测失败时先读 java-coding-standards"）+ `/skill:name` 命令强制确定性加载（双重保险）。已有 pi skill（java-coding-standards、springboot-tdd、springboot-patterns、python-patterns）零迁移复用。
+- **Skill 加载**：prompt 显式点名 skill（"处理 Java 单测失败时先读 java-coding-standards 与 ci-self-heal-playbook"）+ `/skill:name` 命令强制确定性加载（双重保险）。
+- **Skill 管理位置**：分层——(1) **bot 专用 skill** 放项目内 `.agents/skills/`，版本化在仓库，随 bot 代码演进（v1 为单个 `ci-self-heal-playbook` skill，内含诊断/修复/文档同步三段，理由见下）；(2) **通用语言 skill**（java-coding-standards、springboot-tdd、springboot-patterns、python-patterns）仍在全局 `~/.pi/agent/skills/` 或 `~/.agents/skills/`，bot 只调用不维护。pi 原生支持项目内 `.agents/skills/` 发现（受信项目后自动加载），零额外机制。理由：项目内 skill 可追溯（prompt 调整与代码改动同 commit）、可便携（clone 仓库即全套）、隔离（不污染全局）、版本对齐（v1 prompt 不被 v2 代码调用）。
+- **v1 单 skill vs 多 skill**：v1 用**单个** `ci-self-heal-playbook` skill 内含三段（诊断/修复/文档同步），不拆 3 个。理由：G2 pipeline 是一个连续 session，三段是同一 pipeline 的三段而非三个独立可触发关注点；单 skill 一次 `/skill:name` 加载全拿到，从机制上消除 headless 下"漏 load 某段"的风险（R2 证实 LLM 语义匹配非确定，拆多 skill 后 agent 可能只 load 2/3，修复质量静默退化）。三段合计 < 5k 词上限，舒适。拆多 skill 唯一真实收益场景是演进到多 subagent 后选择性加载，v1 不适用。
+  - **演进接缝（拆 skill）**：触发与拆 subagent 同步（G6 接缝）。机制：`ci-self-heal-playbook` 拆为 `ci-failure-diagnosis`（诊断 subagent）/ `ci-repair-playbook`（修复 subagent）/ `ci-doc-sync`（文档 subagent），每个 subagent 只 load 自己的 skill。此时选择性加载变成真实需求。
 - **结构化结果输出**：session 结束时 agent 输出结构化结果（成功/转交/flaky/诊断摘要）。bot 代码读结果执行后续动作（开 MR/通知钉钉）。agent 不直接调钉钉。
 - **演进接缝（拆 subagent）**：触发 = context 压力超阈值/失败涉及多模块/诊断与修复能力需求差异大到单模型扣不住。机制：用 pi-subagents 扩展（per-agent model + skills + 独立 context）；诊断/修复/文档三段搬到 subagent；诊断结论结构化输入传给修复 subagent；skill 仍用 `/skill:name` 在 subagent scope 内确定性加载。
 

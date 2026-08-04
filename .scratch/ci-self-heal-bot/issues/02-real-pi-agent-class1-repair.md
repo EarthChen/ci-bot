@@ -7,7 +7,8 @@
 **Status:** ready-for-agent
 
 - [ ] pi SDK `createAgentSession` 接入 agent runner（TS 同进程 import）
-- [ ] `/skill:name` 确定性加载 java-coding-standards；prompt 也点名 skill（双重保险）
+- [ ] 项目内 `.agents/skills/ci-self-heal-playbook/SKILL.md` 落地：把 G1 五类分类法 + G3 每类修复策略与权限边界 + G2 文档同步时机与段落规则写成单个 skill 的三段（诊断/修复/文档同步）
+- [ ] `/skill:ci-self-heal-playbook` 确定性加载；prompt 也点名（双重保险）；通用 java-coding-standards 仍走全局发现
 - [ ] 预算软上限：turn_end 事件监听 + token 累加 + 超阈值 session.abort() + 钉钉告警
 - [ ] agent 从 CI 日志 + diff + 源码诊断 class 1（测试 bug），只改测试文件（src/main 写禁）
 - [ ] agent session 结束输出结构化结果（成功/转交/诊断摘要）；bot 代码读结果

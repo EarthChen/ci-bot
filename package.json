@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "audit": "pnpm audit --prod",
+    "metrics": "node scripts/metrics-summary.mjs",
     "start": "node --enable-source-maps dist/main.js",
     "dev": "tsx src/main.ts"
   },

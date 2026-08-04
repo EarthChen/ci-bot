@@ -16,7 +16,7 @@ import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome, Patch } from "../types.js";
 import { logger } from "../util/log.js";
 import { createWorktree, removeWorktree } from "./worktree.js";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 
 /**
@@ -70,6 +70,29 @@ function writeAuditTrace(cwd: string, trace: AuditTrace): void {
 		);
 	} catch (err) {
 		logger.warn({ cwd, err }, "audit-trace write failed");
+	}
+	// Ticket 07: also append one JSONL line to metrics.jsonl so aggregate
+	// stats (success rate / avg repair time / cost / count) can be derived
+	// without an external metrics store. v1 file-based (G7: no external deps);
+	// production ships lines to a metrics pipeline (Prometheus evolution seam).
+	appendMetric(cwd, trace);
+}
+
+/** Append one metric line to metrics.jsonl (best-effort). */
+function appendMetric(cwd: string, trace: AuditTrace): void {
+	const line = JSON.stringify({
+		projectId: trace.event.projectId,
+		pipelineId: trace.event.pipelineId,
+		outcome: trace.outcome,
+		tokens: trace.tokens,
+		cost: trace.cost,
+		durationMs: trace.durationMs,
+		createdAt: trace.createdAt,
+	});
+	try {
+		appendFileSync(joinPath(cwd, "metrics.jsonl"), line + "\n", "utf8");
+	} catch (err) {
+		logger.warn({ cwd, err }, "metrics append failed");
 	}
 }
 

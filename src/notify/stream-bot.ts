@@ -97,10 +97,7 @@ export class DingTalkStreamBot {
 			try {
 				raw = JSON.parse(res.data) as RobotMessage;
 			} catch (err) {
-				logger.warn(
-					{ err, messageId },
-					"dingtalk message parse failed",
-				);
+				logger.warn({ err, messageId }, "dingtalk message parse failed");
 				return; // malformed payload — drop, ACK in finally
 			}
 

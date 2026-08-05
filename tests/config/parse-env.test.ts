@@ -4,7 +4,8 @@ import { loadConfig, parseEnvFile } from "../../src/config/index.js";
 const requiredConfig = {
 	GITLAB_WEBHOOK_SECRET: "webhook-secret",
 	GITLAB_TOKEN: "gitlab-token",
-	DINGTALK_WEBHOOK_URL: "https://dingtalk.example.test/robot",
+	DINGTALK_CLIENT_ID: "ding-abc",
+	DINGTALK_CLIENT_SECRET: "secret-xyz",
 	CIHEAL_BOT_ROOT: "/opt/ci-self-heal-bot",
 	CIHEAL_PI_BASE_DIR: "/run/secrets/pi-agent",
 };

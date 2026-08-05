@@ -17,7 +17,7 @@
 
 ```bash
 pnpm install
-cp .env.example .env  # 填入 GitLab + 钉钉 + 模型配置
+cp .env.example .env  # 填入 GitLab + 钉钉 Stream 凭据 + 模型配置
 chmod 600 .env
 ```
 
@@ -52,7 +52,9 @@ pnpm start
 | `GITLAB_WEBHOOK_SECRET` | GitLab webhook 验签 token（X-Gitlab-Token） |
 | `GITLAB_TOKEN` | GitLab 项目访问令牌（read_repository + api） |
 | `GITLAB_URL` | 自托管 GitLab 地址（gitlab.com 省略） |
-| `DINGTALK_WEBHOOK_URL` | 钉钉自定义机器人 webhook |
+| `DINGTALK_CLIENT_ID` | 钉钉 Stream 模式 AppKey（企业内部应用） |
+| `DINGTALK_CLIENT_SECRET` | 钉钉 Stream 模式 AppSecret |
+| `DINGTALK_CONVERSATION_ID` | 默认通知群 openConversationId |
 | `config/model-candidates.json` | bot-owned 的同族 provider/model 有序候选（非敏感） |
 | `config/model-profiles.json` | 按候选绑定的 Pi settings 子集：`defaultThinkingLevel`、`thinkingBudgets`、`compaction` |
 | `CIHEAL_BOT_ROOT` | bot 发布根目录的绝对路径；worker 从此加载配置和 playbook，生产环境必填 |

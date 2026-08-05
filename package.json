@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.83.0",
+    "dingtalk-stream": "2.1.6-beta.1",
     "fastify": "^5.2.0",
     "pino": "^9.5.0"
   },

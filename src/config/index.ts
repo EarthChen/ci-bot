@@ -18,10 +18,12 @@ export interface BotConfig {
 	readonly gitlabToken: string;
 	/** GitLab base URL (self-hosted). Empty = gitlab.com default. */
 	readonly gitlabUrl: string;
-	/** DingTalk webhook URL (bot-side notification; agent never sees this). */
-	readonly dingtalkWebhookUrl: string;
-	/** DingTalk signing secret. */
-	readonly dingtalkSecret: string;
+	/** DingTalk Stream bot clientId (AppKey). */
+	readonly dingtalkClientId: string;
+	/** DingTalk Stream bot clientSecret (AppSecret). */
+	readonly dingtalkClientSecret: string;
+	/** DingTalk default group conversation ID for notifications. */
+	readonly dingtalkConversationId: string;
 	/** Global worker concurrency cap. Ticket 01 hardcodes effective N=1. */
 	readonly concurrency: number;
 	/** Comma-separated GitLab egress IP/CIDR allowlist. Empty = skip. */
@@ -118,8 +120,9 @@ export function loadConfig(): BotConfig {
 		gitlabWebhookSecret: required("GITLAB_WEBHOOK_SECRET"),
 		gitlabToken: required("GITLAB_TOKEN"),
 		gitlabUrl: optional("GITLAB_URL", "https://gitlab.com"),
-		dingtalkWebhookUrl: required("DINGTALK_WEBHOOK_URL"),
-		dingtalkSecret: optional("DINGTALK_SECRET"),
+		dingtalkClientId: required("DINGTALK_CLIENT_ID"),
+		dingtalkClientSecret: required("DINGTALK_CLIENT_SECRET"),
+		dingtalkConversationId: optional("DINGTALK_CONVERSATION_ID"),
 		concurrency,
 		ipAllowlist,
 		port,

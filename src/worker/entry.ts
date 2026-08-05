@@ -26,7 +26,7 @@ import { stubSessionFactory } from "../agent/stub-session.js";
 import type { GitLabClient } from "../gitlab/glab-client.js";
 import { GlabGitLabClient } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
-import { HttpDingTalkNotifier } from "../notify/dingtalk.js";
+import { StreamDingTalkNotifier } from "../notify/stream-dingtalk.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
 import type { Patch } from "../types.js";
 import { logger } from "../util/log.js";
@@ -93,25 +93,24 @@ function pickDingTalk(cwd: string): DingTalkNotifier {
 	const mode = process.env.CIHEAL_DINGTALK_MODE ?? "fake";
 	if (mode === "fake") return makeFakeDingtalk(cwd);
 	if (mode === "real") {
-		const webhookUrl = process.env.DINGTALK_WEBHOOK_URL;
-		if (!webhookUrl)
+		const clientId = process.env.DINGTALK_CLIENT_ID;
+		const clientSecret = process.env.DINGTALK_CLIENT_SECRET;
+		if (!clientId || !clientSecret)
 			throw new Error(
-				"DINGTALK_WEBHOOK_URL required when CIHEAL_DINGTALK_MODE=real",
+				"DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET required when CIHEAL_DINGTALK_MODE=real",
 			);
-		return new HttpDingTalkNotifier(webhookUrl, realDingTalkPost);
+		// Worker subprocess creates its own DWClient for API push only.
+		// No WebSocket — workers are short-lived; the main process holds the stream.
+		const { DWClient } =
+			require("dingtalk-stream") as typeof import("dingtalk-stream");
+		const client = new DWClient({ clientId, clientSecret });
+		return new StreamDingTalkNotifier({
+			client,
+			robotCode: clientId,
+			conversationId: process.env.DINGTALK_CONVERSATION_ID ?? "",
+		});
 	}
 	throw new Error(`CIHEAL_DINGTALK_MODE=${mode} not supported`);
-}
-
-async function realDingTalkPost(url: string, body: unknown): Promise<void> {
-	const res = await fetch(url, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify(body),
-	});
-	if (!res.ok) {
-		throw new Error(`dingtalk webhook failed: ${res.status} ${res.statusText}`);
-	}
 }
 
 async function realGlabRunner(args: readonly string[]): Promise<string> {

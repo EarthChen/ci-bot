@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+          # Fixture submodule (ci-bot-fixtures) is public; no token needed.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Materialize fixture branches
+        # The fixture submodule is checked out at a detached HEAD; the
+        # fixture test needs class1/2/3-failing-test as LOCAL branches.
+        run: |
+          git -C fixtures/repo fetch origin
+          git -C fixtures/repo for-each-ref --format='%(refname:short)' refs/remotes/origin \
+            | grep -v '/HEAD$' | sed 's#origin/##' \
+            | while read b; do
+                git -C fixtures/repo branch --force "$b" "origin/$b" 2>/dev/null || true
+              done
+          git -C fixtures/repo branch
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test

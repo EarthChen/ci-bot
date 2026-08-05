@@ -10,6 +10,7 @@
  */
 
 import type { AgentDefinition } from "../agent-runtime/runtime.js";
+import type { SchedulingPolicy } from "../agent-runtime/scheduler.js";
 import type { AgentRunInput } from "./runner.js";
 import { join as joinPath } from "node:path";
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -50,6 +51,12 @@ function writeText(abs: string, content: string): void {
 	writeFileSync(abs, content, "utf8");
 }
 
+/** CI Repair scheduling policy: serialize per projectId, request up to 4 parallel repos. */
+export const CI_REPAIR_SCHEDULING_POLICY: SchedulingPolicy = {
+	serialKey: (event) => event.projectId,
+	maxParallel: 4,
+};
+
 /**
  * Create a CI repair definition bound to a specific worker cwd.
  * Resource paths are resolved lazily when accessed (not at creation time),
@@ -62,6 +69,7 @@ export function createCiRepairDefinition(
 		id: "ci-repair",
 		modelPolicy: "default",
 		capabilityProfile: "workspace-coding",
+		schedulingPolicy: CI_REPAIR_SCHEDULING_POLICY,
 		get resources() {
 			const resources = resolveCiRepairResources();
 			return {

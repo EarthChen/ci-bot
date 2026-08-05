@@ -24,7 +24,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Scheduler } from "../../src/queue/scheduler.js";
+import { Scheduler } from "../../src/agent-runtime/scheduler.js";
+import { CI_REPAIR_SCHEDULING_POLICY } from "../../src/agent/ci-repair-definition.js";
 import { SubprocessWorkerManager } from "../../src/worker/manager.js";
 import { mountWebhook } from "../../src/webhook/receiver.js";
 
@@ -43,7 +44,8 @@ const workerManager = new SubprocessWorkerManager({
 const scheduler = new Scheduler({
   workerManager,
   workRoot: WORK_ROOT,
-  concurrency: 1,
+  maxWorkers: 1,
+  policy: CI_REPAIR_SCHEDULING_POLICY,
 });
 
 let app: FastifyInstance;
@@ -248,7 +250,8 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
     const g3Scheduler = new Scheduler({
       workerManager: g3Manager,
       workRoot: g3WorkRoot,
-      concurrency: 1,
+      maxWorkers: 1,
+      policy: CI_REPAIR_SCHEDULING_POLICY,
     });
     const g3App = Fastify({ logger: false });
     await mountWebhook(g3App, {

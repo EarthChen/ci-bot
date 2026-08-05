@@ -7,7 +7,8 @@
 import Fastify from "fastify";
 import { DWClient } from "dingtalk-stream";
 import { loadEnvFile, loadConfig } from "./config/index.js";
-import { Scheduler } from "./queue/scheduler.js";
+import { Scheduler } from "./agent-runtime/scheduler.js";
+import { CI_REPAIR_SCHEDULING_POLICY } from "./agent/ci-repair-definition.js";
 import { SubprocessWorkerManager } from "./worker/manager.js";
 import { mountWebhook } from "./webhook/receiver.js";
 import { StreamDingTalkNotifier } from "./notify/stream-dingtalk.js";
@@ -69,7 +70,8 @@ async function main(): Promise<void> {
 	const scheduler = new Scheduler({
 		workerManager,
 		workRoot,
-		concurrency: config.concurrency,
+		policy: CI_REPAIR_SCHEDULING_POLICY,
+		maxWorkers: config.concurrency,
 		notifier,
 		workerCrashThreshold: Number(process.env.BOT_WORKER_CRASH_THRESHOLD ?? "3"),
 	});

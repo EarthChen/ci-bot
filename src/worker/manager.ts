@@ -17,17 +17,11 @@ import { spawn } from "node:child_process";
 import type { Stats } from "node:fs";
 import { chmod, copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { isAbsolute, join, dirname, relative, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { logger } from "../util/log.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-/** A fresh per-worker working directory root. */
-export function workerWorkDir(root: string, event: PipelineEvent): string {
-	return join(root, `${event.projectId}-${event.pipelineId}-${randomUUID()}`);
-}
 
 export interface WorkerManager {
 	/** Spawn a worker for the given event + cwd, return its outcome. */

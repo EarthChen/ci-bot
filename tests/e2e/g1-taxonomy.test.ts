@@ -20,7 +20,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Scheduler } from "../../src/queue/scheduler.js";
+import { Scheduler } from "../../src/agent-runtime/scheduler.js";
+import { CI_REPAIR_SCHEDULING_POLICY } from "../../src/agent/ci-repair-definition.js";
 import { SubprocessWorkerManager } from "../../src/worker/manager.js";
 import { mountWebhook } from "../../src/webhook/receiver.js";
 
@@ -97,7 +98,8 @@ async function setupBot(env: Record<string, string>): Promise<{
 	const scheduler = new Scheduler({
 		workerManager,
 		workRoot,
-		concurrency: 1,
+		maxWorkers: 1,
+		policy: CI_REPAIR_SCHEDULING_POLICY,
 	});
 	const app = Fastify({ logger: false });
 	await mountWebhook(app, {

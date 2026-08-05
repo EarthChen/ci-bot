@@ -1,5 +1,6 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { logger } from "../util/log.js";
+import type { SchedulingPolicy } from "./scheduler.js";
 
 export interface BudgetConfig {
 	readonly totalTokenLimit: number;
@@ -21,6 +22,8 @@ export interface AgentDefinition<Input> {
 	readonly modelPolicy: string;
 	readonly capabilityProfile: string;
 	readonly resources: AgentResources;
+	/** Per-agent scheduling policy (serial key + requested parallelism degree). */
+	readonly schedulingPolicy: SchedulingPolicy;
 	buildPrompt(input: Input): string;
 }
 

@@ -19,18 +19,21 @@ import {
 } from "dingtalk-stream";
 import { logger } from "../util/log.js";
 
+/** Conversation type derived from DingTalk's "1" (private) / "2" (group). */
+export type ConversationType = "private" | "group";
+
 /** Parsed incoming message delivered to the onMessage callback. */
 export interface DingTalkIncomingMessage {
 	/** Raw text content (e.g. "/status 42"). */
 	readonly text: string;
-	/** Sender staff ID (for private reply via oToMessages). */
+	/** Sender staff ID (for identifying the sender). */
 	readonly senderStaffId: string;
 	/** Sender nickname. */
 	readonly senderNick: string;
 	/** Conversation ID (openConversationId for groups). */
 	readonly conversationId: string;
-	/** "1" = private, "2" = group. */
-	readonly conversationType: string;
+	/** "private" (1:1) or "group". */
+	readonly conversationType: ConversationType;
 	/** Session webhook URL for direct reply. */
 	readonly sessionWebhook: string;
 	/** Robot code. */
@@ -69,7 +72,7 @@ export class DingTalkStreamBot {
 	/** Start the WebSocket connection and register callbacks. */
 	async start(): Promise<void> {
 		this.client.registerCallbackListener(TOPIC_ROBOT, (res) => {
-			this.handleIncoming(res).catch((err) => {
+			void this.handleIncoming(res).catch((err) => {
 				logger.error({ err }, "dingtalk message handler error");
 			});
 		});
@@ -86,44 +89,40 @@ export class DingTalkStreamBot {
 		logger.info("dingtalk stream bot stopped");
 	}
 
-	/** Parse downstream message and dispatch to onMessage. */
+	/** Parse downstream message and dispatch to onMessage. ACKs unconditionally. */
 	private async handleIncoming(res: DWClientDownStream): Promise<void> {
-		let raw: RobotMessage;
+		const messageId = res.headers.messageId;
 		try {
-			raw = JSON.parse(res.data) as RobotMessage;
-		} catch (err) {
-			logger.warn(
-				{ err, messageId: res.headers.messageId },
-				"dingtalk message parse failed",
-			);
-			return;
+			let raw: RobotMessage;
+			try {
+				raw = JSON.parse(res.data) as RobotMessage;
+			} catch (err) {
+				logger.warn(
+					{ err, messageId },
+					"dingtalk message parse failed",
+				);
+				return; // malformed payload — drop, ACK in finally
+			}
+
+			const text = raw.text?.content?.trim() ?? "";
+			if (!text) return; // empty content — drop, ACK in finally
+
+			const message: DingTalkIncomingMessage = {
+				text,
+				senderStaffId: raw.senderStaffId,
+				senderNick: raw.senderNick,
+				conversationId: raw.conversationId,
+				conversationType: raw.conversationType === "2" ? "group" : "private",
+				sessionWebhook: raw.sessionWebhook,
+				robotCode: raw.robotCode,
+				messageId,
+			};
+
+			await this.onMessage(message);
+		} finally {
+			// ACK unconditionally so DingTalk never retries a message we have
+			// already accepted (parse failure or handler error included).
+			this.client.socketCallBackResponse(messageId, {});
 		}
-		const text = raw.text?.content?.trim() ?? "";
-		if (!text) return;
-
-		const message: DingTalkIncomingMessage = {
-			text,
-			senderStaffId: raw.senderStaffId,
-			senderNick: raw.senderNick,
-			conversationId: raw.conversationId,
-			conversationType: raw.conversationType,
-			sessionWebhook: raw.sessionWebhook,
-			robotCode: raw.robotCode,
-			messageId: res.headers.messageId,
-		};
-
-		logger.info(
-			{
-				text: text.slice(0, 80),
-				sender: raw.senderNick,
-				convType: raw.conversationType,
-			},
-			"dingtalk message received",
-		);
-
-		await this.onMessage(message);
-
-		// ACK the message so DingTalk doesn't retry
-		this.client.socketCallBackResponse(res.headers.messageId, {});
 	}
 }

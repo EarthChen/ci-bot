@@ -25,6 +25,7 @@ import { RealAgentRunner } from "../agent/real-runner.js";
 import { stubSessionFactory } from "../agent/stub-session.js";
 import type { GitLabClient } from "../gitlab/glab-client.js";
 import { GlabGitLabClient } from "../gitlab/glab-client.js";
+import { DWClient } from "dingtalk-stream";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import { StreamDingTalkNotifier } from "../notify/stream-dingtalk.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
@@ -101,8 +102,6 @@ function pickDingTalk(cwd: string): DingTalkNotifier {
 			);
 		// Worker subprocess creates its own DWClient for API push only.
 		// No WebSocket — workers are short-lived; the main process holds the stream.
-		const { DWClient } =
-			require("dingtalk-stream") as typeof import("dingtalk-stream");
 		const client = new DWClient({ clientId, clientSecret });
 		return new StreamDingTalkNotifier({
 			client,

@@ -13,7 +13,6 @@
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
 import { logger } from "../util/log.js";
-import { removeWorktree } from "./worktree.js";
 import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 
@@ -211,8 +210,10 @@ export async function finishRepair(args: {
 	cwd: string;
 	event: PipelineEvent;
 	result: RepairResult;
+	/** Injected worktree cleanup seam (best-effort). */
+	removeWorktree: (cwd: string) => Promise<void>;
 }): Promise<RepairOutcome> {
-	const { dingtalk, cwd, event, result } = args;
+	const { dingtalk, cwd, event, result, removeWorktree } = args;
 	const metrics = result.metrics ?? ZERO_METRICS;
 	const diff = result.diff ?? "";
 	const reasoning =

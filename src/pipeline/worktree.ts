@@ -227,3 +227,17 @@ function gitEnv(): Record<string, string> {
 			: {}),
 	};
 }
+
+/** Worktree seam — injectable so runRepair is unit-testable without real git. */
+export interface Worktree {
+	/** Create a worktree at `<workDir>/repo`, returning its absolute path. */
+	create(workDir: string, event: PipelineEvent): Promise<string>;
+	/** Remove a worktree (best-effort, idempotent). */
+	remove(cwd: string): Promise<void>;
+}
+
+/** Production worktree impl: real bare-clone + git worktree add/remove. */
+export const defaultWorktree: Worktree = {
+	create: createWorktree,
+	remove: removeWorktree,
+};

@@ -15,7 +15,7 @@ import type { GitLabClient } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome, Patch } from "../types.js";
 import { logger } from "../util/log.js";
-import { createWorktree } from "./worktree.js";
+import type { Worktree } from "./worktree.js";
 import { finishRepair, repairCost } from "./repair-outcome.js";
 
 /** Normalize an unknown error to a message string. */
@@ -50,6 +50,8 @@ export interface WorkerDeps {
 	readonly glab: GitLabClient;
 	readonly dingtalk: DingTalkNotifier;
 	readonly cwd: string;
+	/** Worktree seam (create + best-effort remove). Injected so runRepair is unit-testable without real git. */
+	readonly worktree: Worktree;
 	/** Optional test runner for two-layer verification. Defaults to mvn/gradle. */
 	readonly verifyRunner?: TestRunner;
 }
@@ -58,7 +60,7 @@ export async function runRepair(
 	deps: WorkerDeps,
 	event: PipelineEvent,
 ): Promise<RepairOutcome> {
-	const { agent, glab, dingtalk } = deps;
+	const { agent, glab, dingtalk, worktree } = deps;
 	log("start", event);
 
 	// 1. Fetch CI log. (MR diff fetched only if a related MR exists; tracer
@@ -71,6 +73,7 @@ export async function runRepair(
 			dingtalk,
 			cwd: deps.cwd,
 			event,
+			removeWorktree: worktree.remove,
 			result: {
 				kind: "failed",
 				summary: "fetch-ci-log",
@@ -90,6 +93,7 @@ export async function runRepair(
 			dingtalk,
 			cwd: deps.cwd,
 			event,
+			removeWorktree: worktree.remove,
 			result: { kind: "escalated", summary: reason },
 		});
 	}
@@ -101,12 +105,13 @@ export async function runRepair(
 	//     so they never pollute the repo's git diff.
 	let repoCwd: string;
 	try {
-		repoCwd = await createWorktree(deps.cwd, event);
+		repoCwd = await worktree.create(deps.cwd, event);
 	} catch (err) {
 		return finishRepair({
 			dingtalk,
 			cwd: deps.cwd,
 			event,
+			removeWorktree: worktree.remove,
 			result: { kind: "failed", summary: "worktree", error: errMessage(err) },
 		});
 	}
@@ -132,6 +137,7 @@ export async function runRepair(
 			dingtalk,
 			cwd: deps.cwd,
 			event,
+			removeWorktree: worktree.remove,
 			result: { kind: "failed", summary: "agent-run", error: errMessage(err) },
 		});
 	}
@@ -153,6 +159,7 @@ export async function runRepair(
 			dingtalk,
 			cwd: deps.cwd,
 			event,
+			removeWorktree: worktree.remove,
 			result: {
 				kind: "escalated",
 				summary: result.reason,
@@ -175,6 +182,7 @@ export async function runRepair(
 			dingtalk,
 			cwd: deps.cwd,
 			event,
+			removeWorktree: worktree.remove,
 			result: {
 				kind: "failed",
 				summary: "extract-patch",
@@ -187,6 +195,7 @@ export async function runRepair(
 			dingtalk,
 			cwd: deps.cwd,
 			event,
+			removeWorktree: worktree.remove,
 			result: {
 				kind: "escalated",
 				summary: "empty patch after agent reported fixed",
@@ -203,6 +212,7 @@ export async function runRepair(
 			dingtalk,
 			cwd: deps.cwd,
 			event,
+			removeWorktree: worktree.remove,
 			result: {
 				kind: "escalated",
 				summary: `G3 violation: ${violation}`,
@@ -232,6 +242,7 @@ export async function runRepair(
 			dingtalk,
 			cwd: deps.cwd,
 			event,
+			removeWorktree: worktree.remove,
 			result: {
 				kind: "escalated",
 				summary: `verification ${verifyOutcome}: ${reason}`,
@@ -258,6 +269,7 @@ export async function runRepair(
 			dingtalk,
 			cwd: deps.cwd,
 			event,
+			removeWorktree: worktree.remove,
 			result: { kind: "failed", summary: "create-mr", error: errMessage(err) },
 		});
 	}
@@ -265,6 +277,7 @@ export async function runRepair(
 		dingtalk,
 		cwd: deps.cwd,
 		event,
+		removeWorktree: worktree.remove,
 		result: {
 			kind: "mr",
 			summary: result.diagnosis.summary,

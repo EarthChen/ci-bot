@@ -37,6 +37,7 @@ import {
 	type TestRunner,
 	type TestRunResult,
 } from "../pipeline/run-repair.js";
+import { defaultWorktree } from "../pipeline/worktree.js";
 
 /** Write JSON to a path, creating parent dirs (best-effort, never throws in caller). */
 async function writeJSON(path: string, value: unknown): Promise<void> {
@@ -269,6 +270,7 @@ export async function runWorker(task: WorkerTask): Promise<RepairOutcome> {
 		dingtalk,
 		cwd: task.cwd,
 		verifyRunner,
+		worktree: defaultWorktree,
 	};
 	return runRepair(deps, task.event);
 }

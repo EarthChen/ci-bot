@@ -15,115 +15,13 @@ import type { GitLabClient } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome, Patch } from "../types.js";
 import { logger } from "../util/log.js";
-import { createWorktree, removeWorktree } from "./worktree.js";
-import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
-import { join as joinPath } from "node:path";
+import { createWorktree } from "./worktree.js";
+import { finishRepair, repairCost } from "./repair-outcome.js";
 
-/**
- * G5 audit record — persisted per repair so a bad fix can be traced back
- * afterward. Written as audit-trace.json in the worker cwd (sidecar pattern,
- * same as glab-mr-creates.json / dingtalk-sent.json) so the e2e test observes
- * it across the process seam. Production deployment ships these to log/object
- * storage (ticket 07 evolution seam).
- */
-interface AuditTrace {
-	/** The pipeline event this repair handled (ties a trace to a pipeline). */
-	readonly event: {
-		readonly projectId: string;
-		readonly pipelineId: number;
-		readonly ref: string;
-		readonly sha: string;
-	};
-	/** Repair outcome: "mr" | "escalated" | "failed". */
-	readonly outcome: string;
-	/** LLM diagnosis (failure class + root-cause summary); absent for class-5. */
-	readonly diagnosis?: {
-		readonly failureClass: number;
-		readonly summary: string;
-	};
-	/** Real git diff (authoritative; empty for escalations with no patch). */
-	readonly diff: string;
-	/** The bot's recorded rationale for the outcome (fix summary or escalation reason). */
-	readonly reasoning: string;
-	/** MR url when outcome === "mr"; absent otherwise. */
-	readonly mrUrl?: string;
-	/** ISO timestamp for audit ordering / retention. */
-	readonly createdAt: string;
-	/** Ticket 07: agent turns (0 for class-5 early-filter, no agent). */
-	readonly turns: number;
-	/** Ticket 07: total tokens consumed (0 for class-5 early-filter, no agent). */
-	readonly tokens: number;
-	/** Ticket 07: estimated cost = tokens × unit price. */
-	readonly cost: number;
-	/** Ticket 07: repair wall-clock duration in ms. */
-	readonly durationMs: number;
+/** Normalize an unknown error to a message string. */
+function errMessage(e: unknown): string {
+	return e instanceof Error ? e.message : String(e);
 }
-
-/** Write the audit trace sidecar to the worker cwd (best-effort, never throws in caller). */
-function writeAuditTrace(cwd: string, trace: AuditTrace): void {
-	try {
-		mkdirSync(cwd, { recursive: true });
-		writeFileSync(
-			joinPath(cwd, "audit-trace.json"),
-			JSON.stringify(trace, null, 2),
-			"utf8",
-		);
-	} catch (err) {
-		logger.warn({ cwd, err }, "audit-trace write failed");
-	}
-	// Ticket 07: also append one JSONL line to metrics.jsonl so aggregate
-	// stats (success rate / avg repair time / cost / count) can be derived
-	// without an external metrics store. v1 file-based (G7: no external deps);
-	// production ships lines to a metrics pipeline (Prometheus evolution seam).
-	appendMetric(cwd, trace);
-}
-
-/** Append one metric line to metrics.jsonl (best-effort). */
-function appendMetric(cwd: string, trace: AuditTrace): void {
-	const line = JSON.stringify({
-		projectId: trace.event.projectId,
-		pipelineId: trace.event.pipelineId,
-		outcome: trace.outcome,
-		tokens: trace.tokens,
-		cost: trace.cost,
-		durationMs: trace.durationMs,
-		createdAt: trace.createdAt,
-	});
-	try {
-		appendFileSync(joinPath(cwd, "metrics.jsonl"), line + "\n", "utf8");
-	} catch (err) {
-		logger.warn({ cwd, err }, "metrics append failed");
-	}
-}
-
-/** Build the event slice of an audit trace. */
-function auditEvent(event: PipelineEvent): AuditTrace["event"] {
-	return {
-		projectId: event.projectId,
-		pipelineId: event.pipelineId,
-		ref: event.ref,
-		sha: event.sha,
-	};
-}
-
-/**
- * Ticket 07: estimated cost = tokens × unit price.
- * Unit price is per-1k-tokens (env-configurable; defaults to a conservative
- * placeholder — real value TBD per provider, see spec cost section).
- */
-const COST_PER_1K_TOKENS = Number(
-	process.env.BOT_TOKEN_UNIT_COST_PER_1K ?? "0.001",
-);
-
-/** Compute the estimated cost for a token count. */
-function repairCost(tokens: number): number {
-	return (
-		Math.round((tokens / 1000) * COST_PER_1K_TOKENS * 1_000_000) / 1_000_000
-	);
-}
-
-/** Zero metrics (for paths that never run the agent, e.g. class-5 early filter). */
-const ZERO_METRICS = { turns: 0, tokens: 0, cost: 0, durationMs: 0 } as const;
 
 /** Result of one verification layer (related or full regression). */
 export type TestRunStatus = "green" | "flaky" | "fail";
@@ -169,7 +67,16 @@ export async function runRepair(
 	try {
 		ciLog = await glab.fetchCiLog(event.projectId, event.pipelineId);
 	} catch (err) {
-		return fail(event, dingtalk, "fetch-ci-log", err);
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			result: {
+				kind: "failed",
+				summary: "fetch-ci-log",
+				error: errMessage(err),
+			},
+		});
 	}
 
 	// 1a. Class-5 early filter: scan CI log for compile/dependency errors
@@ -179,16 +86,12 @@ export async function runRepair(
 	const class5Reason = detectClass5(ciLog);
 	if (class5Reason) {
 		const reason = `class 5 非单测失败：${class5Reason}，转交人工（不起 agent）`;
-		await notifyEscalation(dingtalk, event, reason);
-		writeAuditTrace(deps.cwd, {
-			event: auditEvent(event),
-			outcome: "escalated",
-			diff: "",
-			reasoning: reason,
-			createdAt: new Date().toISOString(),
-			...ZERO_METRICS,
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			result: { kind: "escalated", summary: reason },
 		});
-		return { kind: "escalated", summary: reason };
 	}
 
 	// 1b. Create a worktree from the project's shared bare clone (G2 local
@@ -200,7 +103,12 @@ export async function runRepair(
 	try {
 		repoCwd = await createWorktree(deps.cwd, event);
 	} catch (err) {
-		return fail(event, dingtalk, "worktree", err);
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			result: { kind: "failed", summary: "worktree", error: errMessage(err) },
+		});
 	}
 
 	// 2. Run the agent session (diagnosis → fix → doc sync).
@@ -220,12 +128,16 @@ export async function runRepair(
 			cwd: repoCwd,
 		});
 	} catch (err) {
-		await removeWorktree(deps.cwd).catch(() => {});
-		return fail(event, dingtalk, "agent-run", err);
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			result: { kind: "failed", summary: "agent-run", error: errMessage(err) },
+		});
 	}
 	// Ticket 07: per-fix metrics from the agent session (turns/tokens) +
-	// wall-clock duration. Agent-run failures go through fail() which writes
-	// its own trace without these (no result.metrics to read).
+	// wall-clock duration. Failed paths go through finishRepair without these
+	// (no result.metrics to read), which writes a zero-metrics trace.
 	const agentTokens = result.metrics?.tokens ?? 0;
 	const agentTurns = result.metrics?.turns ?? 0;
 	const agentMetrics = {
@@ -237,17 +149,17 @@ export async function runRepair(
 
 	// 3. Branch on the structured agent result.
 	if (result.kind === "escalated") {
-		await notifyEscalation(dingtalk, event, result.reason);
-		writeAuditTrace(deps.cwd, {
-			event: auditEvent(event),
-			outcome: "escalated",
-			diagnosis: result.diagnosis,
-			diff: "",
-			reasoning: result.reason,
-			createdAt: new Date().toISOString(),
-			...agentMetrics,
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			result: {
+				kind: "escalated",
+				summary: result.reason,
+				diagnosis: result.diagnosis,
+				metrics: agentMetrics,
+			},
 		});
-		return { kind: "escalated", summary: result.reason };
 	}
 
 	// 4. result.kind === "fixed" — extract the real patch from the agent's
@@ -259,41 +171,46 @@ export async function runRepair(
 	try {
 		patch = await extractPatch(repoCwd, result.summary);
 	} catch (err) {
-		await removeWorktree(deps.cwd).catch(() => {});
-		return fail(event, dingtalk, "extract-patch", err);
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			result: {
+				kind: "failed",
+				summary: "extract-patch",
+				error: errMessage(err),
+			},
+		});
 	}
 	if (patch.paths.length === 0) {
-		const reason = "agent 报告 fixed 但工作区无改动";
-		await notifyEscalation(dingtalk, event, reason);
-		writeAuditTrace(deps.cwd, {
-			event: auditEvent(event),
-			outcome: "escalated",
-			diagnosis: result.diagnosis,
-			diff: patch.diff,
-			reasoning: reason,
-			createdAt: new Date().toISOString(),
-			...agentMetrics,
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			result: {
+				kind: "escalated",
+				summary: "empty patch after agent reported fixed",
+				diagnosis: result.diagnosis,
+				diff: patch.diff,
+				metrics: agentMetrics,
+			},
 		});
-		return {
-			kind: "escalated",
-			summary: "empty patch after agent reported fixed",
-		};
 	}
 	// G3 permission boundary: only test/doc files; src/main forbidden.
 	const violation = validatePatchPaths(patch);
 	if (violation) {
-		const reason = `G3 权限越界：${violation}`;
-		await notifyEscalation(dingtalk, event, reason);
-		writeAuditTrace(deps.cwd, {
-			event: auditEvent(event),
-			outcome: "escalated",
-			diagnosis: result.diagnosis,
-			diff: patch.diff,
-			reasoning: reason,
-			createdAt: new Date().toISOString(),
-			...agentMetrics,
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			result: {
+				kind: "escalated",
+				summary: `G3 violation: ${violation}`,
+				diagnosis: result.diagnosis,
+				diff: patch.diff,
+				metrics: agentMetrics,
+			},
 		});
-		return { kind: "escalated", summary: `G3 violation: ${violation}` };
 	}
 	// Re-run tests: two-layer verification (ticket 04). Layer 1 = related
 	// tests only (fast feedback); layer 2 = full regression (catches
@@ -307,25 +224,22 @@ export async function runRepair(
 		event,
 	);
 	if (verifyOutcome !== "green") {
-		await removeWorktree(deps.cwd).catch(() => {});
 		const reason =
 			verifyOutcome === "flaky"
 				? "相关测试 flaky——修复本身不稳定，转交人工"
 				: "验证未绿（重跑测试失败，疑似 agent 改了生产代码让测试假绿）";
-		await notifyEscalation(dingtalk, event, reason);
-		writeAuditTrace(deps.cwd, {
-			event: auditEvent(event),
-			outcome: "escalated",
-			diagnosis: result.diagnosis,
-			diff: patch.diff,
-			reasoning: `verification ${verifyOutcome}: ${reason}`,
-			createdAt: new Date().toISOString(),
-			...agentMetrics,
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			result: {
+				kind: "escalated",
+				summary: `verification ${verifyOutcome}: ${reason}`,
+				diagnosis: result.diagnosis,
+				diff: patch.diff,
+				metrics: agentMetrics,
+			},
 		});
-		return {
-			kind: "escalated",
-			summary: `verification ${verifyOutcome}: ${reason}`,
-		};
 	}
 
 	const sourceBranch = `ci-self-heal/${event.ref}-${shortSha(event.sha)}`;
@@ -340,78 +254,25 @@ export async function runRepair(
 			patch,
 		});
 	} catch (err) {
-		return fail(event, dingtalk, "create-mr", err);
-	}
-	await notifySuccess(dingtalk, event, mr.url, result.diagnosis.summary);
-	writeAuditTrace(deps.cwd, {
-		event: auditEvent(event),
-		outcome: "mr",
-		diagnosis: result.diagnosis,
-		diff: patch.diff,
-		reasoning: result.summary,
-		mrUrl: mr.url,
-		createdAt: new Date().toISOString(),
-		...agentMetrics,
-	});
-	const outcome: RepairOutcome = {
-		kind: "mr",
-		mrUrl: mr.url,
-		summary: result.diagnosis.summary,
-	};
-	await removeWorktree(deps.cwd).catch(() => {});
-	return outcome;
-}
-
-function fail(
-	event: PipelineEvent,
-	dingtalk: DingTalkNotifier,
-	stage: string,
-	err: unknown,
-): RepairOutcome {
-	const error = err instanceof Error ? err.message : String(err);
-	logger.error({ event, stage, error }, "repair failed");
-	// Best-effort: notify even on failure. Do not let a notify failure mask
-	// the real error — log it explicitly so it is never silently swallowed.
-	void dingtalk
-		.send({
-			title: "CI 自愈 Bot 异常",
-			text: `项目 ${event.projectId} pipeline ${event.pipelineId} 在 ${stage} 阶段失败：${error}`,
-		})
-		.catch((notifyErr) => {
-			logger.warn({ event, stage, notifyErr }, "failure-notify failed");
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			result: { kind: "failed", summary: "create-mr", error: errMessage(err) },
 		});
-	return { kind: "failed", summary: `${stage} failed`, error };
-}
-
-function notifySuccess(
-	dingtalk: DingTalkNotifier,
-	event: PipelineEvent,
-	mrUrl: string,
-	summary: string,
-): Promise<void> {
-	return dingtalk.send({
-		title: "CI 自愈修复成功",
-		text: [
-			`项目 ${event.projectId}`,
-			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
-			`诊断：${summary}`,
-			`MR：${mrUrl}`,
-		].join("\n"),
-	});
-}
-
-function notifyEscalation(
-	dingtalk: DingTalkNotifier,
-	event: PipelineEvent,
-	reason: string,
-): Promise<void> {
-	return dingtalk.send({
-		title: "CI 自愈转交人工",
-		text: [
-			`项目 ${event.projectId}`,
-			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
-			`原因：${reason}`,
-		].join("\n"),
+	}
+	return finishRepair({
+		dingtalk,
+		cwd: deps.cwd,
+		event,
+		result: {
+			kind: "mr",
+			summary: result.diagnosis.summary,
+			diagnosis: result.diagnosis,
+			diff: patch.diff,
+			mrUrl: mr.url,
+			metrics: agentMetrics,
+		},
 	});
 }
 

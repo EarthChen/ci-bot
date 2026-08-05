@@ -1,0 +1,44 @@
+{
+  "object_kind": "pipeline",
+  "object_attributes": {
+    "id": 100031159,
+    "iid": 303,
+    "ref": "refs/merge-requests/303/head",
+    "tag": false,
+    "sha": "9e799bebb034ffece76f3b7d42a36f990970611e",
+    "before_sha": "0000000000000000000000000000000000000000",
+    "status": "failed",
+    "stages": [
+      "build",
+      "test"
+    ],
+    "source": "merge_request_event"
+  },
+  "project": {
+    "id": 29997,
+    "name": "ultron-guild",
+    "path_with_namespace": "ultron/ultron-guild",
+    "web_url": "https://git.wemomo.com/ultron/ultron-guild",
+    "git_http_url": "https://git.wemomo.com/ultron/ultron-guild.git",
+    "namespace": "ultron"
+  },
+  "user": {
+    "id": 2128,
+    "name": "chen.youwei",
+    "username": "chen.youwei"
+  },
+  "commit": {
+    "id": "9e799bebb034ffece76f3b7d42a36f990970611e",
+    "message": "2.9.0工会政策",
+    "title": "2.9.0工会政策"
+  },
+  "builds": [
+    {
+      "id": 1,
+      "stage": "test",
+      "name": "unit-test",
+      "status": "failed",
+      "allow_failure": false
+    }
+  ]
+}

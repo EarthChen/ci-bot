@@ -1,0 +1,3 @@
+[submodule "fixtures/repo"]
+	path = fixtures/repo
+	url = https://github.com/EarthChen/ci-bot-fixtures.git

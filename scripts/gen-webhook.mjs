@@ -5,11 +5,11 @@
 // 去拉取该 MR 的代码并跑测试，因此这里用 glab 取真实 project id / 源分支 / head SHA /
 // 关联 pipeline，确保 webhook 指向真实可克隆的目标。
 //
-// 用法：
-//   node scripts/gen-webhook.mjs https://git.wemomo.com/ultron/ultron-guild/-/merge_requests/303
-//   node scripts/gen-webhook.mjs ultron/ultron-guild!303
+// 用法（生成与发送合一：加 --send 一步完成，无需单独脚本）：
+//   node scripts/gen-webhook.mjs https://git.wemomo.com/ultron/ultron-guild/-/merge_requests/303 --send
+//   node scripts/gen-webhook.mjs ultron/ultron-guild!303 --send
 //   node scripts/gen-webhook.mjs --repo ultron/ultron-guild --mr 303
-//   node scripts/gen-webhook.mjs ultron/ultron-guild!303 --out /tmp/w.json
+//   node scripts/gen-webhook.mjs ultron/ultron-guild!303 --out /tmp/w.json   # 仅生成文件，不发送
 //   node scripts/gen-webhook.mjs ultron/ultron-guild!303 --send          # 生成并直接 POST 到本地 bot
 //
 // 可选参数：
@@ -59,6 +59,7 @@ for (let i = 0; i < args.length; i++) {
 if (!repo || !mr) {
 	console.error(
 		"用法:\n" +
+			"  node scripts/gen-webhook.mjs <完整MR URL | group/project!iid> --send   # 生成并直接 POST 到本地 bot\n" +
 			"  node scripts/gen-webhook.mjs https://git.wemomo.com/ultron/ultron-guild/-/merge_requests/303\n" +
 			"  node scripts/gen-webhook.mjs <group/project>!303\n" +
 			"  node scripts/gen-webhook.mjs --repo <group/project> --mr 303",
@@ -162,19 +163,26 @@ console.error(
 	`  pipeline: #${chosen.id} status=${chosen.status}${isFailed ? "" : "  ⚠ 非 failed，已按 failed 模拟"}`,
 );
 console.error(
-	`  发送    : GITLAB_WEBHOOK_SECRET=$GITLAB_WEBHOOK_SECRET bash scripts/send-webhook.sh ${out}`,
+	`  发送    : 加 --send 即直接 POST 到本地 bot（已生成文件 ${out} 供查看/编辑）`,
 );
 
 if (send) {
 	const secret = process.env.GITLAB_WEBHOOK_SECRET ?? "testsecret";
 	const port = process.env.CI_BOT_PORT ?? "8080";
-	const res = await fetch(`http://localhost:${port}/webhook`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json", "X-Gitlab-Token": secret },
-		body: json,
-	});
-	const text = await res.text();
-	console.error(`POST /webhook -> ${res.status} ${text}`);
+	try {
+		const res = await fetch(`http://localhost:${port}/webhook`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "X-Gitlab-Token": secret },
+			body: json,
+		});
+		const text = await res.text();
+		console.error(`POST /webhook -> ${res.status} ${text}`);
+	} catch (e) {
+		console.error(
+			`无法连接到本地 bot http://localhost:${port}/webhook（是否未启动 pnpm dev？）: ${e.message}`,
+		);
+		process.exit(1);
+	}
 } else {
 	process.stdout.write(json);
 }

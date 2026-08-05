@@ -1,7 +1,9 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	loadModelCandidates,
-	loadModelProfiles,
 	selectModelCandidate,
 	type ModelCandidate,
 	type ModelRuntimeForSelection,
@@ -14,10 +16,8 @@ interface FakeModel {
 function fakeRuntime(opts: {
 	readonly models: Record<string, FakeModel | undefined>;
 	readonly available: readonly string[];
-}): ModelRuntimeForSelection<FakeModel> & { readonly injected: string[] } {
-	const injected: string[] = [];
+}): ModelRuntimeForSelection<FakeModel> {
 	return {
-		injected,
 		getModel(provider, modelId) {
 			return opts.models[`${provider}/${modelId}`];
 		},
@@ -28,71 +28,76 @@ function fakeRuntime(opts: {
 				)
 				.filter((model): model is FakeModel => model !== undefined);
 		},
-		async setRuntimeApiKey(provider, apiKey) {
-			injected.push(`${provider}:${apiKey}`);
-		},
 	};
 }
 
 const candidates: readonly ModelCandidate[] = [
 	{
-		provider: "deepseek",
-		model: "deepseek-chat",
-		keyEnv: "DEEPSEEK_API_KEY",
-		profile: "deepseek-chat",
+		provider: "MOMO本地",
+		model: "qwen3.7-max",
+		defaultThinkingLevel: "high",
+		compaction: {
+			enabled: true,
+			reserveTokens: 16384,
+			keepRecentTokens: 20000,
+		},
 	},
 	{
-		provider: "deepseek",
-		model: "deepseek-reasoner",
-		keyEnv: "DEEPSEEK_API_KEY",
-		profile: "deepseek-reasoner",
+		provider: "MOMO本地",
+		model: "glm-5.2",
+		defaultThinkingLevel: "high",
+		compaction: {
+			enabled: true,
+			reserveTokens: 16384,
+			keepRecentTokens: 20000,
+		},
 	},
 ];
 
 describe("loadModelCandidates", () => {
-	it("loads the bot-owned candidate list", () => {
+	it("loads the bot-owned candidate list with inline policy", () => {
 		expect(loadModelCandidates("config/model-candidates.json")).toEqual(
 			candidates,
 		);
 	});
-});
 
-describe("loadModelProfiles", () => {
-	it("loads per-model thinking and compaction policies", () => {
-		expect(loadModelProfiles("config/model-profiles.json")).toMatchObject({
-			"deepseek-reasoner": {
-				defaultThinkingLevel: "high",
-				compaction: {
-					reserveTokens: 32768,
+	it("rejects a candidate with an invalid thinking level", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ci-bot-"));
+		const bad = join(dir, "bad.json");
+		writeFileSync(
+			bad,
+			JSON.stringify([
+				{
+					provider: "MOMO本地",
+					model: "glm-5.2",
+					defaultThinkingLevel: "ultra",
 				},
-			},
-		});
+			]),
+		);
+		expect(() => loadModelCandidates(bad)).toThrow();
 	});
 });
 
 describe("selectModelCandidate", () => {
-	it("selects the first available model and injects its provider key", async () => {
+	it("selects the first available model without key injection", async () => {
 		const runtime = fakeRuntime({
 			models: {
-				"deepseek/deepseek-chat": undefined,
-				"deepseek/deepseek-reasoner": { id: "deepseek-reasoner" },
+				"MOMO本地/qwen3.7-max": undefined,
+				"MOMO本地/glm-5.2": { id: "glm-5.2" },
 			},
-			available: ["deepseek-reasoner"],
+			available: ["glm-5.2"],
 		});
 
-		const selected = await selectModelCandidate(runtime, candidates, {
-			DEEPSEEK_API_KEY: "deepseek-secret",
-		});
+		const selected = await selectModelCandidate(runtime, candidates);
 
 		expect(selected.candidate).toEqual(candidates[1]);
-		expect(selected.model).toEqual({ id: "deepseek-reasoner" });
-		expect(runtime.injected).toEqual(["deepseek:deepseek-secret"]);
+		expect(selected.model).toEqual({ id: "glm-5.2" });
 	});
 
 	it("fails loudly when no candidate has an available model", async () => {
 		const runtime = fakeRuntime({ models: {}, available: [] });
 
-		await expect(selectModelCandidate(runtime, candidates, {})).rejects.toThrow(
+		await expect(selectModelCandidate(runtime, candidates)).rejects.toThrow(
 			"no available model candidate",
 		);
 	});

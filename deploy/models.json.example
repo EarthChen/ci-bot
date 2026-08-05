@@ -1,0 +1,25 @@
+{
+  "providers": {
+    "MOMO本地": {
+      "api": "openai-responses",
+      "baseUrl": "http://ai-gateway.momo.com/v1",
+      "models": [
+        {
+          "id": "qwen3.7-max",
+          "name": "qwen3.7-max",
+          "api": "openai-responses",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 256000
+        },
+        {
+          "id": "glm-5.2",
+          "name": "glm-5.2",
+          "api": "openai-responses",
+          "reasoning": true,
+          "contextWindow": 256000
+        }
+      ]
+    }
+  }
+}

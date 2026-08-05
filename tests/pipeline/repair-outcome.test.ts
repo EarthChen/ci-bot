@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
 	mkdtempSync,
 	rmSync,
@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import { finishRepair } from "../../src/pipeline/repair-outcome.js";
+import { removeWorktree as realRemoveWorktree } from "../../src/pipeline/worktree.js";
 import type { PipelineEvent } from "../../src/types.js";
 
 const event: PipelineEvent = {
@@ -27,9 +28,17 @@ function readTrace(cwd: string): Record<string, unknown> {
 describe("finishRepair — 统一终态 handler", () => {
 	let cwd: string;
 	let dt: InMemoryDingTalkNotifier;
+	let removeCalls: string[];
+	let removeWorktree: (cwd: string) => Promise<void>;
 	beforeEach(() => {
 		cwd = mkdtempSync(join(tmpdir(), "repair-outcome-"));
 		dt = new InMemoryDingTalkNotifier();
+		removeCalls = [];
+		// 注入的清理 seam：记录调用，并委托真实实现以保留"真删 repo"断言
+		removeWorktree = vi.fn(async (c: string) => {
+			removeCalls.push(c);
+			await realRemoveWorktree(c);
+		});
 	});
 	afterEach(() => {
 		rmSync(cwd, { recursive: true, force: true });
@@ -40,6 +49,7 @@ describe("finishRepair — 统一终态 handler", () => {
 			dingtalk: dt,
 			cwd,
 			event,
+			removeWorktree,
 			result: {
 				kind: "mr",
 				summary: "NPE in Calc",
@@ -56,6 +66,7 @@ describe("finishRepair — 统一终态 handler", () => {
 		expect(trace.diff).toBe("diff--");
 		expect(dt.sent).toHaveLength(1);
 		expect(dt.sent[0].title).toBe("CI 自愈修复成功");
+		expect(removeCalls).toContain(cwd);
 	});
 
 	it("escalated: 写审计 + 转交通知", async () => {
@@ -63,6 +74,7 @@ describe("finishRepair — 统一终态 handler", () => {
 			dingtalk: dt,
 			cwd,
 			event,
+			removeWorktree,
 			result: {
 				kind: "escalated",
 				summary: "G3 violation: src/main",
@@ -78,6 +90,7 @@ describe("finishRepair — 统一终态 handler", () => {
 		const trace = readTrace(cwd);
 		expect(trace.outcome).toBe("escalated");
 		expect(dt.sent[0].title).toBe("CI 自愈转交人工");
+		expect(removeCalls).toContain(cwd);
 	});
 
 	it("failed: 写 G5 审计（此前缺失）+ 异常通知", async () => {
@@ -85,6 +98,7 @@ describe("finishRepair — 统一终态 handler", () => {
 			dingtalk: dt,
 			cwd,
 			event,
+			removeWorktree,
 			result: { kind: "failed", summary: "agent-run", error: "boom" },
 		});
 		expect(out).toEqual({
@@ -96,6 +110,7 @@ describe("finishRepair — 统一终态 handler", () => {
 		expect(trace.outcome).toBe("failed");
 		expect(String(trace.reasoning)).toContain("boom");
 		expect(dt.sent[0].title).toBe("CI 自愈 Bot 异常");
+		expect(removeCalls).toContain(cwd);
 	});
 
 	it("总是 best-effort 清理 <cwd>/repo worktree", async () => {
@@ -104,8 +119,10 @@ describe("finishRepair — 统一终态 handler", () => {
 			dingtalk: dt,
 			cwd,
 			event,
+			removeWorktree,
 			result: { kind: "escalated", summary: "x" },
 		});
 		expect(existsSync(join(cwd, "repo"))).toBe(false);
+		expect(removeCalls).toContain(cwd);
 	});
 });

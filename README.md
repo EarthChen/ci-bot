@@ -71,6 +71,11 @@ pnpm start
 `contextWindow`、`maxTokens` 和 reasoning 能力始终以 Pi 的 model catalog 为准，
 不在 bot 配置中重复声明。
 
+provider 列表（deepseek/openai/anthropic/qwen 等约 40 个）内置于 Pi SDK，
+默认 deepseek 公共端点**无需 `models.json`**。仅当要自定义 endpoint（如公司网关）时，
+才在 `CIHEAL_PI_BASE_DIR` 下放 `models.json` 覆盖 `baseUrl`；通用网关可用内置的
+`radius` provider。详见 `docs/pi-agent-configuration.md`。
+
 ## 测试
 
 ```bash

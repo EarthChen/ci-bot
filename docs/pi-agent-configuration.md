@@ -20,10 +20,12 @@ bot 使用 Pi agent 诊断失败的单元测试，并仅允许其处理测试或
 ```text
 $CIHEAL_BOT_ROOT/
 ├── .pi/
-│   ├── settings.json
-│   └── APPEND_SYSTEM.md
-├── .agents/skills/
-│   └── ci-self-heal-playbook/
+│   └── settings.json
+├── src/agents/ci-repair/resources/
+│   ├── APPEND_SYSTEM.md
+│   └── skills/ci-self-heal-playbook/
+│       ├── SKILL.md
+│       └── references/
 └── config/
     ├── model-candidates.json
     └── model-profiles.json
@@ -32,6 +34,20 @@ $CIHEAL_BOT_ROOT/
 `RealAgentRunner` 会验证 `CIHEAL_BOT_ROOT/config` 和 bundled playbook 存在；缺失时 session 初始化失败并升级人工，而不是从目标 worktree 或用户全局目录寻找替代配置。
 
 部署还必须设置绝对路径 `CIHEAL_PI_BASE_DIR`。这是 deployment-owned 的只读目录，包含 Pi 原生格式的 `auth.json`、`models.json` 或两者。`auth.json` 必须由 Secret Manager/secret volume 提供，绝不能打入 release 或提交到 git。
+
+注意：**provider 列表内置于 Pi SDK**（`@earendil-works/pi-ai/providers/all` 的 `builtinProviders()`，含 deepseek/openai/anthropic/qwen 等约 40 个）。因此默认 deepseek 公共端点「零配置」即可用，`models.json` 只是覆盖层——仅当要自定义 endpoint 或新增 `radius` 网关时才需要它。
+
+### 配置速查：模型、密钥与 Pi 路径
+
+| 你想配置什么 | 放在哪里 | 说明 |
+| --- | --- | --- |
+| provider 列表 / 默认 endpoint | 无需配置（SDK 内置） | deepseek 等约 40 个 provider 出厂自带 |
+| 自定义 endpoint（公司网关） | `CIHEAL_PI_BASE_DIR/models.json` | 覆盖 `baseUrl`，或用内置 `radius` provider |
+| 模型密钥 | `DEEPSEEK_API_KEY` 环境变量（或 `auth.json`） | bot 经 `setRuntimeApiKey` 注入内存，不落盘 |
+| 选哪个 provider/model | `config/model-candidates.json` | bot-owned 有序候选（非敏感） |
+| thinking / compaction | `config/model-profiles.json` | 仅 Pi settings 子集 |
+| bot 配置与 playbook | `CIHEAL_BOT_ROOT` | `.pi/` + `src/agents/ci-repair/resources/` + `config/` |
+| Pi 凭证 / 模型定义 | `CIHEAL_PI_BASE_DIR` | `auth.json` ± `models.json` |
 
 每个 pipeline worker 另有独立的 `PI_CODING_AGENT_DIR`：
 
@@ -123,6 +139,46 @@ loader 会拒绝未知 profile 字段、无效 thinking level、非正数 budget
 
 模型 catalog 属性不在 profile 中声明：Pi `ModelRuntime` 提供模型的上下文窗口、最大输出 token 与 reasoning 能力，避免 bot 配置和 provider catalog 分叉。
 
+### 4.3 自定义模型 endpoint（可选）
+
+默认 deepseek 公共端点无需任何 `models.json`——provider 定义与默认 endpoint 已内置于 SDK。仅在以下场景需要 `CIHEAL_PI_BASE_DIR/models.json`：
+
+- **走公司网关 / 私有部署**：覆盖指定 provider 的 `baseUrl`；
+- **接入通用网关**：用 SDK 内置的 `radius` provider，通过 `oauth: "radius"` + `baseUrl` 声明。
+
+示例（覆盖 deepseek endpoint）：
+
+```json
+{
+  "providers": [
+    {
+      "name": "deepseek",
+      "baseUrl": "https://your-gateway.example.com/v1",
+      "models": [
+        { "id": "deepseek-chat" },
+        { "id": "deepseek-reasoner" }
+      ]
+    }
+  ]
+}
+```
+
+示例（通用网关，使用内置 radius provider）：
+
+```json
+{
+  "providers": [
+    {
+      "name": "radius",
+      "oauth": "radius",
+      "baseUrl": "https://your-gateway.example.com/v1"
+    }
+  ]
+}
+```
+
+`models.json` 是 SDK 标准格式，与 `auth.json` 一起由 worker 拷贝进私有运行时；候选 `model-candidates.json` 的 `provider`/`model` 必须与其中定义的条目一致，否则启动期候选选择会失败。
+
 ## 5. Pi Settings、System Prompt 与 resources
 
 bot 基础 `.pi/settings.json` 当前只控制跨模型的通用行为：
@@ -136,7 +192,7 @@ bot 基础 `.pi/settings.json` 当前只控制跨模型的通用行为：
 
 选中模型后，profile 会通过 `SettingsManager.applyOverrides()` 覆盖 thinking 与 compaction 策略。
 
-为保留 Pi 内建的工具说明和通用 system prompt，bot **不会**创建 `.pi/SYSTEM.md` 来替换默认 prompt。它改用 `.pi/APPEND_SYSTEM.md` 追加以下规则：
+为保留 Pi 内建的工具说明和通用 system prompt，bot **不会**创建 `.pi/SYSTEM.md` 来替换默认 prompt。它改用 `src/agents/ci-repair/resources/APPEND_SYSTEM.md` 追加以下规则：
 
 - bundled `ci-self-heal-playbook` 是唯一权威诊断流程；
 - 仅修改测试或相关文档，绝不修改生产源码；
@@ -146,13 +202,13 @@ bot 基础 `.pi/settings.json` 当前只控制跨模型的通用行为：
 
 | 项目 | 行为 |
 | --- | --- |
-| skill | 禁用自动发现；显式加入 `$CIHEAL_BOT_ROOT/.agents/skills/ci-self-heal-playbook` |
+| skill | 禁用自动发现；显式加入 `$CIHEAL_BOT_ROOT/src/agents/ci-repair/resources/skills/ci-self-heal-playbook` |
 | extensions | 禁用 |
 | prompt templates | 禁用 |
 | themes | 禁用 |
 | context files | 禁用 |
 | target worktree `SYSTEM.md` | 不加载 |
-| append prompt | 仅追加 `$CIHEAL_BOT_ROOT/.pi/APPEND_SYSTEM.md` |
+| append prompt | 仅追加 `$CIHEAL_BOT_ROOT/src/agents/ci-repair/resources/APPEND_SYSTEM.md` |
 
 因此，目标仓库的 Pi 文件不能改变 agent 的系统指令、技能、扩展或运行配置。
 

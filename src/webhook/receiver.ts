@@ -9,7 +9,7 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { Scheduler } from "../queue/scheduler.js";
+import type { Scheduler } from "../agent-runtime/scheduler.js";
 import type { PipelineEvent } from "../types.js";
 import { logger } from "../util/log.js";
 

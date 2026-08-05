@@ -20,7 +20,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Scheduler } from "../../src/queue/scheduler.js";
+import { Scheduler } from "../../src/agent-runtime/scheduler.js";
+import { CI_REPAIR_SCHEDULING_POLICY } from "../../src/agent/ci-repair-definition.js";
 import { mountWebhook } from "../../src/webhook/receiver.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 
@@ -86,7 +87,8 @@ async function setupBot(opts: {
 	const scheduler = new Scheduler({
 		workerManager: crashManager,
 		workRoot,
-		concurrency: 1,
+		maxWorkers: 1,
+		policy: CI_REPAIR_SCHEDULING_POLICY,
 		notifier,
 		workerCrashThreshold: opts.threshold ?? 3,
 	});
@@ -202,7 +204,8 @@ describe("worker-crash self-fault alert (ticket 07)", () => {
 		const scheduler = new Scheduler({
 			workerManager: flakyManager,
 			workRoot,
-			concurrency: 1,
+			maxWorkers: 1,
+			policy: CI_REPAIR_SCHEDULING_POLICY,
 			notifier,
 			workerCrashThreshold: 3,
 		});

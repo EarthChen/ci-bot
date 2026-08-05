@@ -38,7 +38,7 @@ src/
   main.ts                  # 入口：config + Fastify + StreamDingTalkBot/Notifier + scheduler + worker manager
   config/index.ts          # .env 解析 + 配置校验；必填 CIHEAL_BOT_ROOT / CIHEAL_PI_BASE_DIR（绝对路径）缺失即抛
   webhook/receiver.ts      # POST /webhook：IP allowlist → 限流 → X-Gitlab-Token 验签 → 项目ID路径穿越校验 → 去重 → 入队
-  queue/scheduler.ts       # FIFO 队列 + 并发上限（默认 1）+ per-project 串行 + pipeline-id 幂等去重 + worker 崩溃自警
+  agent-runtime/scheduler.ts  # 调度能力（通用层）：per-key 串行 + 跨 key 并行（effective=min(maxParallel,maxWorkers)），pipeline-id 幂等去重 + worker 崩溃自警；SchedulingPolicy 由 vertical agent 声明
   worker/
     manager.ts             # SubprocessWorkerManager：per-event spawn 子进程，cwd/env 隔离；从 CIHEAL_PI_BASE_DIR 复制 Pi auth/models 到 .pi-agent
     entry.ts               # 子进程入口：env-switch DI（agent/glab/dingtalk/verify 模式）+ runRepair

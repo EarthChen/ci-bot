@@ -27,8 +27,7 @@ $CIHEAL_BOT_ROOT/
 │       ├── SKILL.md
 │       └── references/
 └── config/
-    ├── model-candidates.json
-    └── model-profiles.json
+    └── model-candidates.json
 ```
 
 `RealAgentRunner` 会验证 `CIHEAL_BOT_ROOT/config` 和 bundled playbook 存在；缺失时 session 初始化失败并升级人工，而不是从目标 worktree 或用户全局目录寻找替代配置。
@@ -43,9 +42,9 @@ $CIHEAL_BOT_ROOT/
 | --- | --- | --- |
 | provider 列表 / 默认 endpoint | 无需配置（SDK 内置） | deepseek 等约 40 个 provider 出厂自带 |
 | 自定义 endpoint（公司网关） | `CIHEAL_PI_BASE_DIR/models.json` | 覆盖 `baseUrl`，或用内置 `radius` provider |
-| 模型密钥 | `DEEPSEEK_API_KEY` 环境变量（或 `auth.json`） | bot 经 `setRuntimeApiKey` 注入内存，不落盘 |
+| 模型密钥 | 已在 `auth.json`/`models.json`（按 provider id 索引） | SDK 启动时直接读取，无需任何 `*_API_KEY` env；provider 级凭证，与具体模型无关 |
 | 选哪个 provider/model | `config/model-candidates.json` | bot-owned 有序候选（非敏感） |
-| thinking / compaction | `config/model-profiles.json` | 仅 Pi settings 子集 |
+| thinking / compaction | 内联于 `config/model-candidates.json` 的每个候选 | `defaultThinkingLevel` + `compaction` |
 | bot 配置与 playbook | `CIHEAL_BOT_ROOT` | `.pi/` + `src/agents/ci-repair/resources/` + `config/` |
 | Pi 凭证 / 模型定义 | `CIHEAL_PI_BASE_DIR` | `auth.json` ± `models.json` |
 
@@ -70,7 +69,7 @@ sequenceDiagram
     W->>R: 启动，传入独立 PI_CODING_AGENT_DIR
     W->>W: 从 CIHEAL_PI_BASE_DIR 拷贝 auth.json / models.json
     R->>R: 验证 CIHEAL_BOT_ROOT
-    R->>M: 读取 worker-private auth.json / models.json
+    R->>M: 读取 worker-private auth.json / models.json（含 provider 密钥）
     R->>R: 读取 candidates 与 profiles
     R->>M: 按顺序验证候选模型可用性
     R->>S: 应用选中 profile
@@ -82,10 +81,8 @@ sequenceDiagram
 
 1. 依序读取 `config/model-candidates.json`；
 2. 查找候选的具体 `provider/model`；
-3. 若配置的 `keyEnv` 存在，使用 `setRuntimeApiKey()` 将 key 仅注入内存；
-4. 调用 Pi runtime 的可用模型查询；
-5. 选择第一个可用候选及其 profile；
-6. 失败的临时 key 会调用 `removeRuntimeApiKey()` 清理；所有候选失败则升级人工。
+3. 调用 Pi runtime 的可用模型查询；
+4. 选择第一个可用候选及其 profile；所有候选失败则升级人工。
 
 运行中的 provider、认证或 session 异常不会触发候选切换；bot 返回 `escalated`，由人工处理。
 
@@ -93,73 +90,48 @@ sequenceDiagram
 
 ### 4.1 `config/model-candidates.json`
 
-候选是非敏感、bot-owned 的有序数组。当前配置为同一 DeepSeek provider 内的备用链：
+候选是非敏感、bot-owned 的有序数组，按部署实际可用的 provider/model 配置。其 `provider`/`model` 必须与你挂载的 `models.json` 中定义的 provider 名与 model id 完全一致；候选顺序即优先级（首个可用胜出）。本仓库默认示例基于部署的 `MOMO本地` 网关 provider：
 
 ```json
 [
   {
-    "provider": "deepseek",
-    "model": "deepseek-chat",
-    "keyEnv": "DEEPSEEK_API_KEY",
-    "profile": "deepseek-chat"
+    "provider": "MOMO本地",
+    "model": "qwen3.7-max",
+    "defaultThinkingLevel": "high",
+    "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 }
   },
   {
-    "provider": "deepseek",
-    "model": "deepseek-reasoner",
-    "keyEnv": "DEEPSEEK_API_KEY",
-    "profile": "deepseek-reasoner"
+    "provider": "MOMO本地",
+    "model": "glm-5.2",
+    "defaultThinkingLevel": "high",
+    "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 }
   }
 ]
 ```
 
-这实现了「主模型 → 同族备用 → 人工介入」策略，禁止 DeepSeek 到 OpenAI 等跨族自动降级。`keyEnv` 的值仅由部署 Secret Manager 或运行环境注入，绝不能写入该 JSON 文件或仓库。
+候选直接内联 `provider` / `model` / `defaultThinkingLevel` / `compaction`，**不含任何密钥配置**——provider 级密钥放在你挂载的 `auth.json` / `models.json` 中（按 provider id 索引），由 SDK 在启动时读取。运行策略随候选走，无需额外的 profile 文件。
 
-为了与旧部署兼容，若候选 provider 与 `MODEL_PROVIDER` 相同，选择器可使用 `MODEL_API_KEY`；新部署应优先使用候选所声明的 provider-specific key。
-
-### 4.2 `config/model-profiles.json`
-
-profile 使用 Pi `settings.json` 的原生字段名，但 schema 被刻意限制为下列可变策略：
-
-| 字段 | 作用 |
-| --- | --- |
-| `defaultThinkingLevel` | 传给 `createAgentSession` 的默认 thinking level |
-| `thinkingBudgets` | 为各 thinking level 定义 token budget |
-| `compaction.enabled` | 是否启用 Pi 上下文压缩 |
-| `compaction.reserveTokens` | 为未来上下文预留的 token 数 |
-| `compaction.keepRecentTokens` | 压缩时保留的最近 token 数 |
-
-当前 policy：
-
-| profile | thinking | thinking budget | reserve / keep recent |
-| --- | --- | ---: | ---: |
-| `deepseek-chat` | `medium` | 16,384 | 16,384 / 20,000 |
-| `deepseek-reasoner` | `high` | 32,768 | 32,768 / 24,000 |
-
-loader 会拒绝未知 profile 字段、无效 thinking level、非正数 budget，以及不合法 compaction 配置。候选所引用的 profile 不存在也会让 session 初始化失败。
-
-模型 catalog 属性不在 profile 中声明：Pi `ModelRuntime` 提供模型的上下文窗口、最大输出 token 与 reasoning 能力，避免 bot 配置和 provider catalog 分叉。
-
-### 4.3 自定义模型 endpoint（可选）
+### 4.2 自定义模型 endpoint（可选）
 
 默认 deepseek 公共端点无需任何 `models.json`——provider 定义与默认 endpoint 已内置于 SDK。仅在以下场景需要 `CIHEAL_PI_BASE_DIR/models.json`：
 
 - **走公司网关 / 私有部署**：覆盖指定 provider 的 `baseUrl`；
 - **接入通用网关**：用 SDK 内置的 `radius` provider，通过 `oauth: "radius"` + `baseUrl` 声明。
 
-示例（覆盖 deepseek endpoint）：
+示例（自定义网关 provider，如本仓库默认的 `MOMO本地`）：
 
 ```json
 {
-  "providers": [
-    {
-      "name": "deepseek",
-      "baseUrl": "https://your-gateway.example.com/v1",
+  "providers": {
+    "MOMO本地": {
+      "api": "openai-responses",
+      "baseUrl": "http://ai-gateway.momo.com/v1",
       "models": [
-        { "id": "deepseek-chat" },
-        { "id": "deepseek-reasoner" }
+        { "id": "qwen3.7-max", "reasoning": true, "contextWindow": 256000 },
+        { "id": "glm-5.2", "reasoning": true, "contextWindow": 256000 }
       ]
     }
-  ]
+  }
 }
 ```
 
@@ -239,19 +211,27 @@ bot 的 session 预算由环境变量控制：
 
 ## 8. 部署与变更检查清单
 
+### 8.1 模型密钥部署方式
+
+bot **只支持一种**密钥方式：把 `auth.json`（含凭证）和 `models.json`（含 provider 定义，可带 key）挂到 `CIHEAL_PI_BASE_DIR`，**不设任何 `*_API_KEY` 环境变量**。worker 启动会把二者拷进私有运行时，SDK 按 provider id 直接读文件里的 key。provider 由你 `models.json` 定义，无需绑定 DeepSeek。
+
+### 8.2 候选必须与挂载的 provider 对齐
+
+`config/model-candidates.json` 是**显式选择列表**，bot 不会自动发现 `auth.json`/`models.json` 里的 provider。其 `provider`/`model` 必须与你挂载的 `models.json` 中定义的 provider `name` 和 model `id` **完全一致**（auth.json 的 key 也按同一 provider id 索引）。provider 不在候选列表里 → 该 provider 不会被使用。
+
 部署至少应提供：
 
 ```env
 CIHEAL_BOT_ROOT=/opt/ci-self-heal-bot
 CIHEAL_PI_BASE_DIR=/run/secrets/ci-self-heal-pi
-DEEPSEEK_API_KEY=... # 通过 Secret Manager 或部署环境注入
+# 模型密钥随 CIHEAL_PI_BASE_DIR 的 auth.json / models.json 挂载，无需任何 *_API_KEY env
 ```
 
 变更 Pi 配置时：
 
 1. 只修改 bot 发布目录中的 `.pi/`、`config/` 或 bundled skill；
 2. `CIHEAL_PI_BASE_DIR` 只能来自部署受控的绝对路径，且至少有 `auth.json` 或 `models.json`；
-3. provider/model 变更必须保持同族备用策略；
+3. 候选 `provider`/`model` 必须与你挂载的 `models.json` 定义一致；候选顺序即优先级，失败升级人工而非自动跨 provider 降级；
 4. profile 只能使用第 4.2 节列出的 Pi Settings 字段；
 5. 不要把 API key、auth 文件或 provider 响应提交到仓库；
 6. 执行 `pnpm test` 与 `pnpm typecheck`；若 `pnpm` 的 build approval 阻塞测试，可按项目约定使用 `./node_modules/.bin/vitest run` 与 `./node_modules/.bin/tsc -p tsconfig.json --noEmit`。

@@ -1,14 +1,22 @@
 [
 	{
-		"provider": "deepseek",
-		"model": "deepseek-chat",
-		"keyEnv": "DEEPSEEK_API_KEY",
-		"profile": "deepseek-chat"
+		"provider": "MOMO本地",
+		"model": "qwen3.7-max",
+		"defaultThinkingLevel": "high",
+		"compaction": {
+			"enabled": true,
+			"reserveTokens": 16384,
+			"keepRecentTokens": 20000
+		}
 	},
 	{
-		"provider": "deepseek",
-		"model": "deepseek-reasoner",
-		"keyEnv": "DEEPSEEK_API_KEY",
-		"profile": "deepseek-reasoner"
+		"provider": "MOMO本地",
+		"model": "glm-5.2",
+		"defaultThinkingLevel": "high",
+		"compaction": {
+			"enabled": true,
+			"reserveTokens": 16384,
+			"keepRecentTokens": 20000
+		}
 	}
 ]

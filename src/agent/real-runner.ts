@@ -153,8 +153,9 @@ async function createDefaultSession(
 		SettingsManager,
 		ModelRuntime,
 	} = await import("@earendil-works/pi-coding-agent");
-	const { loadModelCandidates, loadModelProfiles, selectModelCandidate } =
-		await import("./model-selection.js");
+	const { loadModelCandidates, selectModelCandidate } = await import(
+		"./model-selection.js"
+	);
 
 	const agentDir = process.env.PI_CODING_AGENT_DIR;
 	if (!agentDir) {
@@ -169,21 +170,16 @@ async function createDefaultSession(
 	const selected = await selectModelCandidate(
 		modelRuntime,
 		loadModelCandidates(joinPath(configDir, "model-candidates.json")),
-		process.env,
 	);
-	const profile = loadModelProfiles(joinPath(configDir, "model-profiles.json"))[
-		selected.candidate.profile
-	];
-	if (!profile) {
-		throw new Error(
-			`model candidate profile not found: ${selected.candidate.profile}`,
-		);
-	}
+	const candidate = selected.candidate;
 
 	// The worker owns Pi resources. Do not discover settings, extensions, skills,
 	// prompts, themes, or context files from the target repository worktree.
 	const settingsManager = SettingsManager.create(botRoot, agentDir);
-	settingsManager.applyOverrides(profile);
+	settingsManager.applyOverrides({
+		defaultThinkingLevel: candidate.defaultThinkingLevel,
+		...(candidate.compaction ? { compaction: candidate.compaction } : {}),
+	});
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: input.cwd,
 		agentDir,
@@ -204,7 +200,7 @@ async function createDefaultSession(
 		cwd: input.cwd,
 		agentDir,
 		model: selected.model,
-		thinkingLevel: profile.defaultThinkingLevel,
+		thinkingLevel: candidate.defaultThinkingLevel,
 		modelRuntime,
 		resourceLoader,
 		settingsManager,
@@ -225,8 +221,6 @@ function resolveBotRoot(): string {
 	return botRoot;
 }
 
-
-
 /** Keep provider responses and credential details out of MR and DingTalk output. */
 function safeExternalErrorMessage(err: unknown): string {
 	const message = err instanceof Error ? err.message : "unknown error";
@@ -237,5 +231,3 @@ function safeExternalErrorMessage(err: unknown): string {
 	if (message.includes("CIHEAL_BOT_ROOT")) return "bot 发布配置缺失";
 	return "agent 运行失败；详情见服务日志";
 }
-
-

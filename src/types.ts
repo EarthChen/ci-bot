@@ -14,12 +14,20 @@ export interface PipelineEvent {
 	readonly projectId: string;
 	/** Pipeline id — used for idempotent dedup. */
 	readonly pipelineId: number;
-	/** Full ref (branch) the pipeline ran on. */
+	/** Full ref (branch) the pipeline ran on. For MR-triggered pipelines
+	 *  this is `refs/merge-requests/<iid>/head` (a synthetic ref, NOT a real
+	 *  branch name) — use mrSourceBranch for the actual MR source branch. */
 	readonly ref: string;
 	/** Commit sha the pipeline ran for. */
 	readonly sha: string;
 	/** Project URL (used to derive clone/MR endpoints). */
 	readonly projectUrl: string;
+	/** MR source branch (only present for merge-request-triggered pipelines).
+	 *  This is the real branch name to target with the fix MR — merging the
+	 *  fix MR into it updates the source MR's CI. */
+	readonly mrSourceBranch?: string;
+	/** MR iid (only present for merge-request-triggered pipelines). */
+	readonly mrIid?: number;
 }
 
 /** G1 failure root-cause class (v1 only auto-fixes 1/2/3; 4/5 escalate). */
@@ -45,6 +53,8 @@ export type AgentResult =
 			readonly kind: "fixed";
 			readonly diagnosis: Diagnosis;
 			readonly summary: string;
+			/** Agent 提交的 MR URL（agent 自己 git push + glab mr create）。空 = 未建 MR。 */
+			readonly mrUrl?: string;
 			readonly metrics?: AgentMetrics;
 	  }
 	| {

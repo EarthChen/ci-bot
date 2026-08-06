@@ -49,6 +49,16 @@ export function parsePipelinePayload(body: unknown): PipelineEvent | null {
 	) {
 		return null;
 	}
+	// MR-triggered pipelines carry a `merge_request` object with the real
+	// source_branch (ref is the synthetic `refs/merge-requests/<iid>/head`,
+	// not a mergeable target). Extract so the fix MR targets the MR's source
+	// branch — merging the fix updates the source MR's CI.
+	// v1: bot only handles MR-triggered pipelines; push/trigger pipelines
+	// lack merge_request → reject here.
+	const mr = (obj.merge_request ?? {}) as Record<string, unknown>;
+	if (typeof mr.source_branch !== "string") return null;
+	const mrSourceBranch = mr.source_branch;
+	const mrIid = typeof mr.iid === "number" ? mr.iid : undefined;
 	return {
 		projectId,
 		pipelineId: attrs.id,
@@ -57,6 +67,8 @@ export function parsePipelinePayload(body: unknown): PipelineEvent | null {
 		projectUrl: extractProjectUrl(
 			(obj.project ?? {}) as Record<string, unknown>,
 		),
+		...(mrSourceBranch ? { mrSourceBranch } : {}),
+		...(mrIid ? { mrIid } : {}),
 	};
 }
 

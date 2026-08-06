@@ -26,7 +26,12 @@ export function tryParseAgentJson(text: string): AgentResult | null {
 function normalizeAgentResult(obj: Partial<AgentResult>): AgentResult | null {
 	const diagnosis = normalizeDiagnosis(obj.diagnosis);
 	if (obj.kind === "fixed" && diagnosis && typeof obj.summary === "string") {
-		return { kind: "fixed", diagnosis, summary: obj.summary };
+		return {
+			kind: "fixed",
+			diagnosis,
+			summary: obj.summary,
+			mrUrl: typeof obj.mrUrl === "string" ? obj.mrUrl : undefined,
+		};
 	}
 	if (obj.kind === "escalated" && diagnosis && typeof obj.reason === "string") {
 		return { kind: "escalated", diagnosis, reason: obj.reason };

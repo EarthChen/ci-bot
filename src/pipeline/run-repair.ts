@@ -121,6 +121,11 @@ export async function runRepair(
 	//    session, all within the worktree (repoCwd). It returns a structured
 	//    result, NOT file contents.
 	const agentStartedAt = Date.now();
+	const sourceBranch = `ci-self-heal/${event.ref}-${shortSha(event.sha)}`;
+	// MR-triggered pipelines: target the MR's real source_branch (e.g.
+	// guild-policy-outreach) so merging the fix MR updates the source MR's CI.
+	// Push pipelines: target the pipeline's ref directly.
+	const targetBranch = event.mrSourceBranch ?? event.ref;
 	let result;
 	try {
 		result = await agent.run({
@@ -131,6 +136,8 @@ export async function runRepair(
 			ciLog,
 			mrDiff: "",
 			cwd: repoCwd,
+			sourceBranch,
+			targetBranch,
 		});
 	} catch (err) {
 		return finishRepair({
@@ -176,7 +183,7 @@ export async function runRepair(
 	//    edits that could have made tests pass illegitimately.
 	let patch;
 	try {
-		patch = await extractPatch(repoCwd, result.summary);
+		patch = await extractPatch(repoCwd, result.summary, event.sha);
 	} catch (err) {
 		return finishRepair({
 			dingtalk,
@@ -205,9 +212,17 @@ export async function runRepair(
 			},
 		});
 	}
-	// G3 permission boundary: only test/doc files; src/main forbidden.
-	const violation = validatePatchPaths(patch);
-	if (violation) {
+	// G3 路径校验 + 测试验证均跳过（人工 review 兜底，MR 不自动合并）：
+	// - validatePatchPaths 用 TEST_PATH_RE 硬编码 src/test|it/、docs/ 判定
+	// - verifyTwoLayer 硬编码 Mvn/Gradle 命令（mavenTestArg/inferMavenModule）
+	// 非 Java 项目（Python tests/、Go *_test.go、JS __tests__/）会被误杀。
+	// 通用化方向：信任 agent 提供验证命令、bot 独立执行看 exit code
+	// （不信任自述结果）；当前 v1 靠人工 review。以下函数保留以备恢复。
+	void validatePatchPaths;
+	void verifyTwoLayer;
+	// MR 由 agent 自己提交（git push + glab mr create + 返回 mrUrl）。
+	// bot 从结构化输出取 mrUrl，不信任时可选 glab mr list 验证。
+	if (!result.mrUrl) {
 		return finishRepair({
 			dingtalk,
 			cwd: deps.cwd,
@@ -215,75 +230,24 @@ export async function runRepair(
 			removeWorktree: worktree.remove,
 			result: {
 				kind: "escalated",
-				summary: `G3 violation: ${violation}`,
+				summary: "agent reported fixed but did not create MR (no mrUrl)",
 				diagnosis: result.diagnosis,
 				diff: patch.diff,
 				metrics: agentMetrics,
 			},
-		});
-	}
-	// Re-run tests: two-layer verification (ticket 04). Layer 1 = related
-	// tests only (fast feedback); layer 2 = full regression (catches
-	// breakage elsewhere). Flaky in layer 2 → @Skip discarded + independent
-	// DingTalk (per design decision: discard + notify, no @Skip in MR).
-	const verifyOutcome = await verifyTwoLayer(
-		repoCwd,
-		patch,
-		deps.verifyRunner,
-		dingtalk,
-		event,
-	);
-	if (verifyOutcome !== "green") {
-		const reason =
-			verifyOutcome === "flaky"
-				? "相关测试 flaky——修复本身不稳定，转交人工"
-				: "验证未绿（重跑测试失败，疑似 agent 改了生产代码让测试假绿）";
-		return finishRepair({
-			dingtalk,
-			cwd: deps.cwd,
-			event,
-			removeWorktree: worktree.remove,
-			result: {
-				kind: "escalated",
-				summary: `verification ${verifyOutcome}: ${reason}`,
-				diagnosis: result.diagnosis,
-				diff: patch.diff,
-				metrics: agentMetrics,
-			},
-		});
-	}
-
-	const sourceBranch = `ci-self-heal/${event.ref}-${shortSha(event.sha)}`;
-	let mr;
-	try {
-		mr = await glab.createMr({
-			projectId: event.projectId,
-			sourceBranch,
-			targetBranch: event.ref,
-			title: `[ci-self-heal] ${result.diagnosis.summary}`,
-			diagnosis: result.diagnosis,
-			patch,
-		});
-	} catch (err) {
-		return finishRepair({
-			dingtalk,
-			cwd: deps.cwd,
-			event,
-			removeWorktree: worktree.remove,
-			result: { kind: "failed", summary: "create-mr", error: errMessage(err) },
 		});
 	}
 	return finishRepair({
 		dingtalk,
 		cwd: deps.cwd,
-		event,
-		removeWorktree: worktree.remove,
-		result: {
+			event,
+			removeWorktree: worktree.remove,
+			result: {
 			kind: "mr",
 			summary: result.diagnosis.summary,
 			diagnosis: result.diagnosis,
 			diff: patch.diff,
-			mrUrl: mr.url,
+			mrUrl: result.mrUrl,
 			metrics: agentMetrics,
 		},
 	});
@@ -312,32 +276,30 @@ function validatePatchPaths(patch: Patch): string | null {
 
 /**
  * Extract the real git patch from the agent's worktree.
- * `git diff` is the authoritative record of what the agent actually changed;
- * the agent's self-reported content is never trusted.
- *
- * The worktree is a real repo with a HEAD at the pipeline's sha, so no
- * baseline-init is needed (unlike the pre-worktree temp-dir fallback).
+ * `git diff <baseSha>` is authoritative — captures all agent changes
+ * (committed or not) relative to the pipeline's sha. Agent self-reported
+ * content is never trusted.
  */
-async function extractPatch(cwd: string, summary: string): Promise<Patch> {
+async function extractPatch(
+	cwd: string,
+	summary: string,
+	baseSha: string,
+): Promise<Patch> {
 	const { execFile } = await import("node:child_process");
 	const { promisify } = await import("node:util");
 	const exec = promisify(execFile);
-	// Stage the agent's edits so untracked new files appear in the diff, then
-	// unstage bot-written spill files (ci-log.txt, mr-diff.patch) so they never
-	// pollute the MR patch. Using `reset` (instead of pathspec exclude) is
-	// robust across git versions + worktree contexts.
+	// Stage agent's edits so untracked new files appear in the diff (baseSha
+	// has no record of them). Spill files live outside repoCwd so they never
+	// pollute the patch.
 	await exec("git", ["add", "-A"], { cwd });
-	await exec("git", ["reset", "--quiet", "--", "ci-log.txt", "mr-diff.patch"], {
-		cwd,
-	}).catch(() => {}); // files may not exist; ignore.
 	const { stdout: diff } = await exec(
 		"git",
-		["diff", "--no-color", "--cached"],
+		["diff", "--no-color", baseSha],
 		{ cwd },
 	);
 	const { stdout: namesOut } = await exec(
 		"git",
-		["diff", "--name-only", "--cached"],
+		["diff", "--name-only", baseSha],
 		{ cwd },
 	);
 	const paths = namesOut
@@ -518,7 +480,14 @@ class MvnGradleTestRunner implements TestRunner {
 				.catch(() => false);
 			if (hasMvn) {
 				const testArg = !isFull ? mavenTestArg(patch!.paths) : "";
-				const args = ["test", ...(testArg ? [testArg] : [])];
+				// 多模块项目必须 -pl 指定 patch 所属模块，否则 reactor 根跑
+				// 会在第一个模块跑（Surefire "No tests were executed"）。
+				const module = !isFull ? inferMavenModule(patch!.paths) : undefined;
+				const args = [
+					"test",
+					...(module ? ["-pl", module] : []),
+					...(testArg ? [testArg] : []),
+				];
 				await exec("mvn", args, { cwd, env: { ...process.env } });
 				return { status: "green" };
 			}
@@ -559,17 +528,35 @@ class MvnGradleTestRunner implements TestRunner {
  * Map patch test paths to dot-separated Maven test class names.
  * e.g. "src/test/java/com/example/FooTest.java" → "com.example.FooTest".
  * Returns "" (run all) if no test paths are discoverable.
+ *
+ * 必须去掉 src/test/java|groovy|kotlin/ 整个前缀（含 java/groovy/kotlin 子目录），
+ * 否则 java/ 被当包名 → -Dtest=java.com.example...（Surefire "No tests were executed"）。
  */
 function mavenTestArg(paths: readonly string[]): string {
 	const testClasses = paths
 		.filter((p) => TEST_PATH_RE.test(p))
 		.map((p) =>
 			p
-				.replace(/^.*\/(?:test|it)\//, "")
+				.replace(/^.*\/(?:test|it)\/(?:java|groovy|kotlin)\//, "")
 				.replace(/\.java$/, "")
+				.replace(/\.groovy$/, "")
+				.replace(/\.kt$/, "")
 				.replace(/\//g, "."),
 		);
 	return testClasses.length > 0 ? `-Dtest=${testClasses.join(",")}` : "";
+}
+
+/**
+ * 多模块 Maven 项目：从 patch 测试路径推断所属模块（路径第一段）。
+ * e.g. "ultron-guild-service/src/test/java/..." → "ultron-guild-service"。
+ * reactor 根跑 mvn 会在第一个模块（如 ultron-guild-api）跑 → "No tests were executed"。
+ */
+function inferMavenModule(paths: readonly string[]): string | undefined {
+	for (const p of paths) {
+		const m = p.match(/^([^/]+)\/src\/(?:test|it)\//);
+		if (m) return m[1];
+	}
+	return undefined;
 }
 
 /**

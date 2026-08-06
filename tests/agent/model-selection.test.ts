@@ -33,6 +33,16 @@ function fakeRuntime(opts: {
 
 const candidates: readonly ModelCandidate[] = [
 	{
+		provider: "kilolocal",
+		model: "tencent/hy3:free",
+		defaultThinkingLevel: "medium",
+		compaction: {
+			enabled: true,
+			reserveTokens: 16384,
+			keepRecentTokens: 20000,
+		},
+	},
+	{
 		provider: "MOMO本地",
 		model: "qwen3.7-max",
 		defaultThinkingLevel: "high",
@@ -90,7 +100,7 @@ describe("selectModelCandidate", () => {
 
 		const selected = await selectModelCandidate(runtime, candidates);
 
-		expect(selected.candidate).toEqual(candidates[1]);
+		expect(selected.candidate).toEqual(candidates[2]);
 		expect(selected.model).toEqual({ id: "glm-5.2" });
 	});
 

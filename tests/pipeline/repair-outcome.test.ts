@@ -12,6 +12,12 @@ import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import { finishRepair } from "../../src/pipeline/repair-outcome.js";
 import { removeWorktree as realRemoveWorktree } from "../../src/pipeline/worktree.js";
 import type { PipelineEvent } from "../../src/types.js";
+import {
+	repairCost,
+	persistDurable,
+	metricLine,
+	resolveAuditDir,
+} from "../../src/pipeline/repair-outcome.js";
 
 const event: PipelineEvent = {
 	projectId: "42",
@@ -126,3 +132,115 @@ describe("finishRepair — 统一终态 handler", () => {
 		expect(removeCalls).toContain(cwd);
 	});
 });
+describe("repairCost — token cost computation", () => {
+	it("returns 0 for 0 tokens", () => {
+		expect(repairCost(0)).toBe(0);
+	});
+	it("scales linearly with tokens", () => {
+		// default BOT_TOKEN_UNIT_COST_PER_1K = 0.001
+		// 1000 tokens = 0.001
+		expect(repairCost(1000)).toBe(0.001);
+		expect(repairCost(50000)).toBe(0.05);
+	});
+	it("respects BOT_TOKEN_UNIT_COST_PER_1K env override", () => {
+		const orig = process.env.BOT_TOKEN_UNIT_COST_PER_1K;
+		process.env.BOT_TOKEN_UNIT_COST_PER_1K = "0.002";
+		// dynamic re-read inside repairCost uses the env at call time
+		// (module-level const is set once; this test verifies the env path)
+		delete require.cache[require.resolve("../../src/pipeline/repair-outcome.js")];
+		const { repairCost: rc } = require("../../src/pipeline/repair-outcome.js");
+		expect(rc(1000)).toBe(0.002);
+		if (orig !== undefined) process.env.BOT_TOKEN_UNIT_COST_PER_1K = orig;
+		else delete process.env.BOT_TOKEN_UNIT_COST_PER_1K;
+	});
+});
+
+describe("metricLine — JSONL metric serialization", () => {
+	it("produces valid JSON with all required fields", () => {
+		const line = metricLine({
+			event: { projectId: "42", pipelineId: 1001, ref: "main", sha: "abc12345" },
+			outcome: "mr",
+			tokens: 50000,
+			cost: 0.05,
+			durationMs: 1200,
+			createdAt: "2026-08-06T09:00:00.000Z",
+		});
+		const parsed = JSON.parse(line);
+		expect(parsed.projectId).toBe("42");
+		expect(parsed.pipelineId).toBe(1001);
+		expect(parsed.outcome).toBe("mr");
+		expect(parsed.tokens).toBe(50000);
+		expect(parsed.cost).toBe(0.05);
+		expect(parsed.durationMs).toBe(1200);
+		expect(parsed.createdAt).toBe("2026-08-06T09:00:00.000Z");
+	});
+});
+
+describe("resolveAuditDir — durable audit directory resolution", () => {
+	it("defaults to CIHEAL_BOT_ROOT/.audit when no CIHEAL_AUDIT_DIR", () => {
+		const orig = process.env.CIHEAL_AUDIT_DIR;
+		const origBotRoot = process.env.CIHEAL_BOT_ROOT;
+		delete process.env.CIHEAL_AUDIT_DIR;
+		process.env.CIHEAL_BOT_ROOT = "/tmp/bot";
+		expect(resolveAuditDir()).toBe("/tmp/bot/.audit");
+		if (orig !== undefined) process.env.CIHEAL_AUDIT_DIR = orig;
+		else delete process.env.CIHEAL_AUDIT_DIR;
+		process.env.CIHEAL_BOT_ROOT = origBotRoot;
+	});
+	it("uses CIHEAL_AUDIT_DIR when set", () => {
+		const orig = process.env.CIHEAL_AUDIT_DIR;
+		process.env.CIHEAL_AUDIT_DIR = "/custom/audit";
+		expect(resolveAuditDir()).toBe("/custom/audit");
+		if (orig !== undefined) process.env.CIHEAL_AUDIT_DIR = orig;
+		else delete process.env.CIHEAL_AUDIT_DIR;
+	});
+});
+
+describe("persistDurable — durable audit trace persistence", () => {
+	it("writes audit-trace.json and appends metrics.jsonl to CIHEAL_AUDIT_DIR", async () => {
+		const auditDir = mkdtempSync(join(tmpdir(), "ci-heal-audit-"));
+		const origAuditDir = process.env.CIHEAL_AUDIT_DIR;
+		process.env.CIHEAL_AUDIT_DIR = auditDir;
+		const trace: AuditTrace = {
+			event: { projectId: "42", pipelineId: 1001, ref: "main", sha: "abc12345" },
+			outcome: "escalated",
+			diff: "diff--",
+			reasoning: "test",
+			createdAt: "2026-08-06T09:00:00.000Z",
+			tokens: 1000,
+			cost: 0.001,
+			durationMs: 500,
+			turns: 1,
+		};
+		const cwd = mkdtempSync(join(tmpdir(), "ci-heal-work-"));
+		const runId = basename(cwd);
+		persistDurable(cwd, trace);
+		expect(existsSync(joinPath(auditDir, "1001", runId + "-audit-trace.json"))).toBe(true);
+		expect(existsSync(joinPath(auditDir, "1001", "metrics.jsonl"))).toBe(true);
+		const metricsContent = readFileSync(joinPath(auditDir, "1001", "metrics.jsonl"), "utf8");
+		const parsed = JSON.parse(metricsContent.trim());
+		expect(parsed.pipelineId).toBe(1001);
+		expect(parsed.outcome).toBe("escalated");
+		// cleanup
+		rmSync(auditDir, { recursive: true, force: true });
+		rmSync(cwd, { recursive: true, force: true });
+		if (origAuditDir !== undefined) process.env.CIHEAL_AUDIT_DIR = origAuditDir;
+		else delete process.env.CIHEAL_AUDIT_DIR;
+	});
+	it("is best-effort: does not throw on invalid path", () => {
+		expect(() => {
+			persistDurable("/nonexistent/deeply/nested/path/that/cannot/be/created", {
+				event: { projectId: "1", pipelineId: 1, ref: "r", sha: "s" },
+				outcome: "failed",
+				diff: "",
+				reasoning: "x",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				tokens: 0,
+				cost: 0,
+				durationMs: 0,
+				turns: 0,
+			} as AuditTrace);
+		}).not.toThrow();
+	});
+});
+

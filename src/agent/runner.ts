@@ -27,6 +27,10 @@ export interface AgentRunInput {
 	readonly mrDiff: string;
 	/** Repo working directory (cwd isolation per worker). */
 	readonly cwd: string;
+	/** MR source branch agent should push to (ci-self-heal/<ref>-<sha8>). */
+	readonly sourceBranch: string;
+	/** MR target branch (the pipeline's ref). */
+	readonly targetBranch: string;
 }
 
 export interface AgentRunner {

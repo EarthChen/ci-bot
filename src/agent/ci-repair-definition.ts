@@ -27,7 +27,6 @@ function resolveCiRepairResources(): string {
 	return joinPath(botRoot, "src", "agents", "ci-repair", "resources");
 }
 
-/** Write spill files to cwd and return the task prompt. */
 function buildCiPrompt(input: AgentRunInput, cwd: string): string {
 	const ciLogPath = joinPath(cwd, "ci-log.txt");
 	const mrDiffPath = joinPath(cwd, "mr-diff.patch");
@@ -43,6 +42,11 @@ function buildCiPrompt(input: AgentRunInput, cwd: string): string {
 		`# 输入文件（用 read 工具读取，不要靠 prompt 里的内容）`,
 		`- CI 日志：${ciLogPath}`,
 		input.mrDiff ? `- MR diff：${mrDiffPath}` : `- MR diff：无`,
+		``,
+		`# MR 提交（你自己完成，勿依赖 bot）`,
+		`- 源分支（push 到此）：${input.sourceBranch}`,
+		`- 目标分支（MR target）：${input.targetBranch}`,
+		`- 步骤：改文件 → git add → git commit → git push origin ${input.sourceBranch} → glab mr create（源/目标分支如上）→ 结构化输出 fixed.mrUrl 填 MR URL`,
 	].join("\n");
 }
 

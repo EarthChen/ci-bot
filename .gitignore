@@ -31,3 +31,7 @@ data/
 
 # subagent artifacts (transient)
 .pi-subagents/
+
+# durable audit traces + bot log (runtime artifacts, not source)
+.audit/
+.logs/

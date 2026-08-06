@@ -1,5 +1,15 @@
 [
 	{
+		"provider": "kilolocal",
+		"model": "tencent/hy3:free",
+		"defaultThinkingLevel": "medium",
+		"compaction": {
+			"enabled": true,
+			"reserveTokens": 16384,
+			"keepRecentTokens": 20000
+		}
+	},
+	{
 		"provider": "MOMO本地",
 		"model": "qwen3.7-max",
 		"defaultThinkingLevel": "high",

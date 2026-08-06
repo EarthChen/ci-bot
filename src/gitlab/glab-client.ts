@@ -40,16 +40,29 @@ export class GlabGitLabClient implements GitLabClient {
 	constructor(private readonly runGlab: GlabRunner) {}
 
 	async fetchCiLog(projectId: string, pipelineId: number): Promise<string> {
-		// glab ci trace --raw streams the job log; we get all jobs for the pipeline.
-		return this.runGlab([
-			"ci",
-			"trace",
-			"--project",
-			String(projectId),
-			"--pipeline-id",
-			String(pipelineId),
-			"--raw",
+		// Headless CI-log fetch via the REST API. `glab ci trace` is a TUI-only,
+		// interactive command (prompts for a job, emits terminal escapes) and is
+		// unusable from a non-interactive worker. So we list the pipeline's jobs
+		// then fetch each job's trace and concatenate them.
+		const jobsJson = await this.runGlab([
+			"api",
+			`/projects/${projectId}/pipelines/${pipelineId}/jobs`,
 		]);
+		const jobs = parseJobs(jobsJson);
+		const parts: string[] = [];
+		for (const job of jobs) {
+			if (job.id == null) continue;
+			const trace = await this.runGlab([
+				"api",
+				`/projects/${projectId}/jobs/${job.id}/trace`,
+			]);
+			parts.push(
+				`# Job ${job.id} ${job.name ?? ""} [${job.status ?? ""}]${
+					job.stage ? ` stage=${job.stage}` : ""
+				}\n${trace}`,
+			);
+		}
+		return parts.join("\n\n");
 	}
 
 	async fetchMrDiff(projectId: string, mrIid: number): Promise<string> {
@@ -75,7 +88,9 @@ export class GlabGitLabClient implements GitLabClient {
 		const out = await this.runGlab([
 			"mr",
 			"create",
-			"--project",
+			// glab 1.112 mr create 用 -R/--repo 指定项目（支持 OWNER/REPO 或 project ID）；
+			// --project 是 fetch 路径用的，mr create 不支持（"Unknown flag: --project"）。
+			"-R",
 			String(params.projectId),
 			"--source-branch",
 			params.sourceBranch,
@@ -123,5 +138,22 @@ function safeParse(s: string): Record<string, unknown> | null {
 		return JSON.parse(s) as Record<string, unknown>;
 	} catch {
 		return null;
+	}
+}
+
+interface JobSummary {
+	readonly id?: number;
+	readonly name?: string;
+	readonly status?: string;
+	readonly stage?: string;
+}
+
+/** Parse the pipeline-jobs JSON array returned by `glab api`; tolerate empty/bad output. */
+function parseJobs(s: string): JobSummary[] {
+	try {
+		const parsed = JSON.parse(s);
+		return Array.isArray(parsed) ? (parsed as JobSummary[]) : [];
+	} catch {
+		return [];
 	}
 }

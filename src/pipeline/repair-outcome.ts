@@ -14,7 +14,7 @@ import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
 import { logger } from "../util/log.js";
 import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
-import { join as joinPath } from "node:path";
+import { join as joinPath, basename } from "node:path";
 
 /**
  * G5 audit record — persisted per repair so a bad fix can be traced back
@@ -100,7 +100,28 @@ export interface RepairResult {
 	readonly error?: string;
 }
 
-/** Write the audit trace sidecar to the worker cwd (best-effort, never throws in caller). */
+/** Serialize one audit trace to its metric JSONL line. */
+export function metricLine(trace: AuditTrace): string {
+	return JSON.stringify({
+		projectId: trace.event.projectId,
+		pipelineId: trace.event.pipelineId,
+		outcome: trace.outcome,
+		tokens: trace.tokens,
+		cost: trace.cost,
+		durationMs: trace.durationMs,
+		createdAt: trace.createdAt,
+	});
+}
+
+/** Resolve the durable audit directory (survives per-event cwd deletion). */
+export function resolveAuditDir(): string {
+	const base =
+		process.env.CIHEAL_AUDIT_DIR ??
+		joinPath(process.env.CIHEAL_BOT_ROOT ?? process.cwd(), ".audit");
+	return base;
+}
+
+/** Write the audit trace sidecar to the worker cwd (best-effort, never throws). */
 function writeAuditTrace(cwd: string, trace: AuditTrace): void {
 	try {
 		mkdirSync(cwd, { recursive: true });
@@ -117,21 +138,37 @@ function writeAuditTrace(cwd: string, trace: AuditTrace): void {
 	// without an external metrics store. v1 file-based (G7: no external deps);
 	// production ships lines to a metrics pipeline (Prometheus evolution seam).
 	appendMetric(cwd, trace);
+	// Durable copy: persist to CIHEAL_AUDIT_DIR so the trace survives cwd
+	// cleanup (ticket 07 evolution seam — production ships to object storage).
+	// Bucketed by pipelineId; the run file is named by the per-event worktree
+	// id (basename(cwd)) so re-runs never overwrite a prior attempt.
+	persistDurable(cwd, trace);
+}
+
+/** Persist the audit trace + metric to the durable audit dir (best-effort). */
+export function persistDurable(cwd: string, trace: AuditTrace): void {
+	try {
+		const dir = joinPath(resolveAuditDir(), String(trace.event.pipelineId));
+		mkdirSync(dir, { recursive: true });
+		const runId = basename(cwd);
+		writeFileSync(
+			joinPath(dir, `${runId}-audit-trace.json`),
+			JSON.stringify(trace, null, 2),
+			"utf8",
+		);
+		appendFileSync(joinPath(dir, "metrics.jsonl"), metricLine(trace) + "\n", "utf8");
+	} catch (err) {
+		logger.warn(
+			{ pipelineId: trace.event.pipelineId, runId: basename(cwd), err },
+			"durable audit write failed",
+		);
+	}
 }
 
 /** Append one metric line to metrics.jsonl (best-effort). */
-function appendMetric(cwd: string, trace: AuditTrace): void {
-	const line = JSON.stringify({
-		projectId: trace.event.projectId,
-		pipelineId: trace.event.pipelineId,
-		outcome: trace.outcome,
-		tokens: trace.tokens,
-		cost: trace.cost,
-		durationMs: trace.durationMs,
-		createdAt: trace.createdAt,
-	});
+export function appendMetric(cwd: string, trace: AuditTrace): void {
 	try {
-		appendFileSync(joinPath(cwd, "metrics.jsonl"), line + "\n", "utf8");
+		appendFileSync(joinPath(cwd, "metrics.jsonl"), metricLine(trace) + "\n", "utf8");
 	} catch (err) {
 		logger.warn({ cwd, err }, "metrics append failed");
 	}

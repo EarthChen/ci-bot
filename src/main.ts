@@ -41,7 +41,12 @@ async function main(): Promise<void> {
 			);
 		},
 	});
-	await streamBot.start();
+	// 本地/异常网络下 DingTalk Stream WS 可能连不上；容错避免主进程崩溃。
+	try {
+		await streamBot.start();
+	} catch (err) {
+		logger.warn({ err }, "dingtalk stream bot 启动失败，继续运行（仅缺失 WS 接收）");
+	}
 
 	// Notifier: sends push messages via SDK API (groupMessages/send).
 	const notifier = new StreamDingTalkNotifier({
@@ -55,10 +60,10 @@ async function main(): Promise<void> {
 	const workerManager = new SubprocessWorkerManager({
 		timeoutMs: 5 * 60 * 1000,
 		env: {
-			// Production: real agent (pi SDK) + real glab + real dingtalk.
-			CIHEAL_AGENT_MODE: "real",
-			CIHEAL_GLAB_MODE: "real",
-			CIHEAL_DINGTALK_MODE: "real",
+			// 生产默认 real；本地测试可用同名环境变量覆盖（如 CIHEAL_DINGTALK_MODE=fake）。
+			CIHEAL_AGENT_MODE: process.env.CIHEAL_AGENT_MODE ?? "real",
+			CIHEAL_GLAB_MODE: process.env.CIHEAL_GLAB_MODE ?? "real",
+			CIHEAL_DINGTALK_MODE: process.env.CIHEAL_DINGTALK_MODE ?? "real",
 			CIHEAL_BOT_ROOT: config.botRoot,
 			CIHEAL_PI_BASE_DIR: config.piBaseDir,
 			// Worker subprocesses use SDK API push (no WebSocket needed).

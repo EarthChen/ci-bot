@@ -32,6 +32,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -49,7 +50,7 @@ interface BareClone {
 }
 
 const bareClones = new Map<string, BareClone>();
-const bareRoot =
+export const bareRoot =
 	process.env.CIHEAL_BARE_ROOT ?? join(tmpdir(), "ci-self-heal-bare");
 
 /**
@@ -63,15 +64,26 @@ async function ensureBareClone(
 ): Promise<string> {
 	let clone = bareClones.get(projectId);
 	const barePath =
-		clone?.barePath ?? join(bareRoot, projectId.replace(/[\/:]/g, "-"));
+		clone?.barePath ?? join(bareRoot, projectId.replace(/[/:]/g, "-"));
 
 	if (!clone) {
 		await mkdir(bareRoot, { recursive: true });
-		// First time: full bare clone.
-		logger.info({ projectId, barePath }, "bare clone: initial clone");
-		await exec("git", ["clone", "--bare", projectUrl, barePath], {
-			env: gitEnv(),
-		});
+		// 复用磁盘上已有的合法 bare clone（跨进程重启 / 手动重跑也能命中），
+		// 仅当目录缺失或损坏时才全新 clone；否则残留/不完整的 clone 目录会让
+		// 后续每次 clone 都因 "destination already exists" 失败。
+		let needClone = !existsSync(barePath);
+		if (!needClone && !(await isValidBareRepo(barePath))) {
+			await rm(barePath, { recursive: true, force: true });
+			needClone = true;
+		}
+		if (needClone) {
+			logger.info({ projectId, barePath }, "bare clone: initial clone");
+			await exec("git", ["clone", "--bare", projectUrl, barePath], {
+				env: gitEnv(),
+			});
+		} else {
+			logger.info({ projectId, barePath }, "bare clone: reuse existing");
+		}
 		clone = { barePath, fetchPromise: null };
 		bareClones.set(projectId, clone);
 	}
@@ -121,6 +133,20 @@ export async function createWorktree(
 	return realWorktree(workDir, event);
 }
 
+/** 判断 barePath 是否已是合法的 bare git 仓库（用于复用，避免重复 clone）。 */
+async function isValidBareRepo(barePath: string): Promise<boolean> {
+	try {
+		const { stdout } = await exec(
+			"git",
+			["--git-dir", barePath, "rev-parse", "--is-bare-repository"],
+			{ env: gitEnv() },
+		);
+		return stdout.trim() === "true";
+	} catch {
+		return false;
+	}
+}
+
 async function realWorktree(
 	workDir: string,
 	event: PipelineEvent,
@@ -139,7 +165,6 @@ async function realWorktree(
 			barePath,
 			"worktree",
 			"add",
-			"--detach",
 			"-b",
 			branch,
 			repoPath,

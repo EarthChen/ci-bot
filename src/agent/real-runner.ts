@@ -15,7 +15,7 @@ import type { AgentRunner, AgentRunInput } from "./runner.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import { logger } from "../util/log.js";
 import { join as joinPath } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type {
 	BudgetConfig,
@@ -138,7 +138,25 @@ async function defaultSessionFactory(
 	const session = await createDefaultSession(input, definition);
 	return {
 		session,
-		dispose: () => session.dispose(),
+		// P1-3: 持久化完整 agent session messages 到审计目录（完整 jsonl，用于审计/排查）。
+		// 写到 CIHEAL_WORKER_LOG_DIR（审计目录，不在 worktree cwd，不被 cleanup 删除）。
+		// session.messages 在 dispose 时完整（含所有 user/assistant/tool_use/tool_result），
+		// 比运行时 subscribe 简化版更完整、更可靠（无需猜测 event 结构、不截断）。
+		dispose: () => {
+			const workerLogDir = process.env.CIHEAL_WORKER_LOG_DIR;
+			if (workerLogDir) {
+				try {
+					const lines = session.messages.map((m) => JSON.stringify(m));
+					writeFileSync(
+						joinPath(workerLogDir, "agent-session.jsonl"),
+						lines.join("\n") + "\n",
+					);
+				} catch {
+					// best-effort：磁盘/权限问题不阻塞 agent
+				}
+			}
+			session.dispose();
+		},
 	};
 }
 
@@ -207,6 +225,7 @@ async function createDefaultSession(
 		sessionManager: SessionManager.inMemory(input.cwd),
 		tools: ["read", "grep", "find", "ls", "bash"],
 	});
+
 	return session;
 }
 

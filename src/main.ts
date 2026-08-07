@@ -14,8 +14,7 @@ import { mountWebhook } from "./webhook/receiver.js";
 import { StreamDingTalkNotifier } from "./notify/stream-dingtalk.js";
 import { DingTalkStreamBot } from "./notify/stream-bot.js";
 import { logger } from "./util/log.js";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { resolveWorkRoot } from "./config/paths.js";
 
 async function main(): Promise<void> {
 	loadEnvFile(".env");
@@ -55,8 +54,8 @@ async function main(): Promise<void> {
 		conversationId: config.dingtalkConversationId,
 	});
 
-	const workRoot =
-		process.env.CIHEAL_WORK_ROOT ?? join(tmpdir(), "ci-self-heal-work");
+	// Per-event worker cwd root — derived from CIHEAL_DATA_ROOT (work/).
+	const workRoot = resolveWorkRoot();
 	const workerManager = new SubprocessWorkerManager({
 		timeoutMs: 5 * 60 * 1000,
 		env: {
@@ -66,6 +65,7 @@ async function main(): Promise<void> {
 			CIHEAL_DINGTALK_MODE: process.env.CIHEAL_DINGTALK_MODE ?? "real",
 			CIHEAL_BOT_ROOT: config.botRoot,
 			CIHEAL_PI_BASE_DIR: config.piBaseDir,
+			CIHEAL_DATA_ROOT: config.dataRoot,
 			// Worker subprocesses use SDK API push (no WebSocket needed).
 			DINGTALK_CLIENT_ID: config.dingtalkClientId,
 			DINGTALK_CLIENT_SECRET: config.dingtalkClientSecret,

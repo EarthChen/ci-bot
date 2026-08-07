@@ -38,6 +38,7 @@ function pipelineFailedBody(
 	return {
 		object_kind: "pipeline",
 		object_attributes: { id: pipelineId, ref, sha, status: "failed" },
+		merge_request: { source_branch: ref, iid: pipelineId },
 		project: { id: projectId, web_url: `https://gitlab.example.com/${projectId}` },
 	};
 }
@@ -142,23 +143,23 @@ describe("real agent runner: webhook → MR → DingTalk (ticket 02 fixture)", (
 			expect(json).toEqual({ status: "queued" });
 			await bot.scheduler.idle();
 
-			// Exactly one MR created, with test-only fix files (G3 honored).
-			const mrs = await readSidecar<
-				Array<{
-					projectId: string;
-					diagnosis: { failureClass: number; summary: string };
-					fixFiles: readonly string[];
-				}>
-			>(bot.workRoot, "glab-mr-creates.json");
-			expect(mrs).not.toBeNull();
-			expect(mrs!.length).toBe(1);
-			expect(mrs![0].projectId).toBe("proj-real-1");
-			expect(mrs![0].diagnosis.failureClass).toBe(1);
-			expect(mrs![0].fixFiles.length).toBe(1);
-			expect(mrs![0].fixFiles[0]).toContain("CalculatorTest");
-			for (const p of mrs![0].fixFiles) {
-				expect(p).not.toMatch(/^src\/main\//);
-			}
+			// Exactly one MR outcome recorded (agent creates the MR, returns
+			// mrUrl; bot records via audit-trace.json). Assert on the
+			// authoritative git diff, not a sidecar the bot no longer writes.
+			const audit = await readSidecar<{
+				event: { projectId: string };
+				outcome: string;
+				diagnosis: { failureClass: number; summary: string };
+				mrUrl?: string;
+				diff: string;
+			}>(bot.workRoot, "audit-trace.json");
+			expect(audit).not.toBeNull();
+			expect(audit!.outcome).toBe("mr");
+			expect(audit!.mrUrl).toBeTruthy();
+			expect(audit!.event.projectId).toBe("proj-real-1");
+			expect(audit!.diagnosis.failureClass).toBe(1);
+			expect(audit!.diff).toContain("CalculatorTest");
+			expect(audit!.diff).not.toContain("src/main/");
 
 			// Success DingTalk sent exactly once.
 			const dingtalk = await readSidecar<Array<{ title: string }>>(

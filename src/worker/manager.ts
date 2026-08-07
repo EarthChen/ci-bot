@@ -61,7 +61,7 @@ export class SubprocessWorkerManager implements WorkerManager {
 		const resultFile = join(cwd, "result.json");
 
 		// Per-event worker audit log dir — durable, survives cwd cleanup.
-		// Placed inside CIHEAL_AUDIT_DIR (default <botRoot>/.audit) so
+		// Placed inside <dataRoot>/audit (default <CIHEAL_DATA_ROOT>/audit) so
 		// worker logs are easy to trace alongside audit traces.
 		// The directory is named <auditDir>/<pipelineId>/<uuid>-worker-log.
 		const auditDir = resolveAuditDir();
@@ -92,6 +92,9 @@ export class SubprocessWorkerManager implements WorkerManager {
 			// Bot-owned settings and skills must never be inferred from the target worktree.
 			CIHEAL_BOT_ROOT:
 				this.opts.env?.CIHEAL_BOT_ROOT ?? process.env.CIHEAL_BOT_ROOT ?? "",
+			// Writable data root — worker derives bare/audit/logs from it.
+			CIHEAL_DATA_ROOT:
+				this.opts.env?.CIHEAL_DATA_ROOT ?? process.env.CIHEAL_DATA_ROOT ?? "",
 			// Worker audit log dir — worker logs write here instead of
 			// stdout (so they don't mix into the bot log).
 			...(workerLogDir ? { CIHEAL_WORKER_LOG_DIR: workerLogDir } : {}),
@@ -178,7 +181,7 @@ export class SubprocessWorkerManager implements WorkerManager {
 				// that reference check and deletes the ref directly — the reliable
 				// last resort that prevents residue across re-runs.
 				try {
-					const barePath = join(bareRoot, event.projectId.replace(/[/:]/g, "-"));
+					const barePath = join(bareRoot(), event.projectId.replace(/[/:]/g, "-"));
 					const branch = `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`;
 					const runGit = (args: string[]) =>
 						new Promise<void>((resolve) => {

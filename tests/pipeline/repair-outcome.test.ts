@@ -7,7 +7,7 @@ import {
 	mkdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import { finishRepair } from "../../src/pipeline/repair-outcome.js";
 import { removeWorktree as realRemoveWorktree } from "../../src/pipeline/worktree.js";
@@ -18,6 +18,7 @@ import {
 	metricLine,
 	resolveAuditDir,
 } from "../../src/pipeline/repair-outcome.js";
+import type { AuditTrace } from "../../src/pipeline/repair-outcome.js";
 
 const event: PipelineEvent = {
 	projectId: "42",
@@ -142,13 +143,16 @@ describe("repairCost — token cost computation", () => {
 		expect(repairCost(1000)).toBe(0.001);
 		expect(repairCost(50000)).toBe(0.05);
 	});
-	it("respects BOT_TOKEN_UNIT_COST_PER_1K env override", () => {
+	it("respects BOT_TOKEN_UNIT_COST_PER_1K env override", async () => {
 		const orig = process.env.BOT_TOKEN_UNIT_COST_PER_1K;
 		process.env.BOT_TOKEN_UNIT_COST_PER_1K = "0.002";
-		// dynamic re-read inside repairCost uses the env at call time
-		// (module-level const is set once; this test verifies the env path)
-		delete require.cache[require.resolve("../../src/pipeline/repair-outcome.js")];
-		const { repairCost: rc } = require("../../src/pipeline/repair-outcome.js");
+		// COST_PER_1K_TOKENS is captured at module load; re-import with a
+		// cache-busting query so the env override is observed (ESM has no
+		// require.cache).
+		const fresh = await import(
+			"../../src/pipeline/repair-outcome.js?override=" + Date.now()
+		);
+		const { repairCost: rc } = fresh as typeof import("../../src/pipeline/repair-outcome.js");
 		expect(rc(1000)).toBe(0.002);
 		if (orig !== undefined) process.env.BOT_TOKEN_UNIT_COST_PER_1K = orig;
 		else delete process.env.BOT_TOKEN_UNIT_COST_PER_1K;
@@ -160,10 +164,13 @@ describe("metricLine — JSONL metric serialization", () => {
 		const line = metricLine({
 			event: { projectId: "42", pipelineId: 1001, ref: "main", sha: "abc12345" },
 			outcome: "mr",
+			diff: "diff--",
+			reasoning: "test",
+			createdAt: "2026-08-06T09:00:00.000Z",
+			turns: 0,
 			tokens: 50000,
 			cost: 0.05,
 			durationMs: 1200,
-			createdAt: "2026-08-06T09:00:00.000Z",
 		});
 		const parsed = JSON.parse(line);
 		expect(parsed.projectId).toBe("42");
@@ -177,30 +184,20 @@ describe("metricLine — JSONL metric serialization", () => {
 });
 
 describe("resolveAuditDir — durable audit directory resolution", () => {
-	it("defaults to CIHEAL_BOT_ROOT/.audit when no CIHEAL_AUDIT_DIR", () => {
-		const orig = process.env.CIHEAL_AUDIT_DIR;
-		const origBotRoot = process.env.CIHEAL_BOT_ROOT;
-		delete process.env.CIHEAL_AUDIT_DIR;
-		process.env.CIHEAL_BOT_ROOT = "/tmp/bot";
-		expect(resolveAuditDir()).toBe("/tmp/bot/.audit");
-		if (orig !== undefined) process.env.CIHEAL_AUDIT_DIR = orig;
-		else delete process.env.CIHEAL_AUDIT_DIR;
-		process.env.CIHEAL_BOT_ROOT = origBotRoot;
-	});
-	it("uses CIHEAL_AUDIT_DIR when set", () => {
-		const orig = process.env.CIHEAL_AUDIT_DIR;
-		process.env.CIHEAL_AUDIT_DIR = "/custom/audit";
-		expect(resolveAuditDir()).toBe("/custom/audit");
-		if (orig !== undefined) process.env.CIHEAL_AUDIT_DIR = orig;
-		else delete process.env.CIHEAL_AUDIT_DIR;
+	it("derives from CIHEAL_DATA_ROOT/audit", () => {
+		const orig = process.env.CIHEAL_DATA_ROOT;
+		process.env.CIHEAL_DATA_ROOT = "/tmp/data";
+		expect(resolveAuditDir()).toBe("/tmp/data/audit");
+		if (orig !== undefined) process.env.CIHEAL_DATA_ROOT = orig;
+		else delete process.env.CIHEAL_DATA_ROOT;
 	});
 });
 
 describe("persistDurable — durable audit trace persistence", () => {
-	it("writes audit-trace.json and appends metrics.jsonl to CIHEAL_AUDIT_DIR", async () => {
-		const auditDir = mkdtempSync(join(tmpdir(), "ci-heal-audit-"));
-		const origAuditDir = process.env.CIHEAL_AUDIT_DIR;
-		process.env.CIHEAL_AUDIT_DIR = auditDir;
+	it("writes audit-trace.json and appends metrics.jsonl under CIHEAL_DATA_ROOT/audit", async () => {
+		const dataDir = mkdtempSync(join(tmpdir(), "ci-heal-data-"));
+		const origDataRoot = process.env.CIHEAL_DATA_ROOT;
+		process.env.CIHEAL_DATA_ROOT = dataDir;
 		const trace: AuditTrace = {
 			event: { projectId: "42", pipelineId: 1001, ref: "main", sha: "abc12345" },
 			outcome: "escalated",
@@ -215,17 +212,17 @@ describe("persistDurable — durable audit trace persistence", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "ci-heal-work-"));
 		const runId = basename(cwd);
 		persistDurable(cwd, trace);
-		expect(existsSync(joinPath(auditDir, "1001", runId + "-audit-trace.json"))).toBe(true);
-		expect(existsSync(joinPath(auditDir, "1001", "metrics.jsonl"))).toBe(true);
-		const metricsContent = readFileSync(joinPath(auditDir, "1001", "metrics.jsonl"), "utf8");
+		expect(existsSync(join(dataDir, "audit", "1001", runId + "-audit-trace.json"))).toBe(true);
+		expect(existsSync(join(dataDir, "audit", "1001", "metrics.jsonl"))).toBe(true);
+		const metricsContent = readFileSync(join(dataDir, "audit", "1001", "metrics.jsonl"), "utf8");
 		const parsed = JSON.parse(metricsContent.trim());
 		expect(parsed.pipelineId).toBe(1001);
 		expect(parsed.outcome).toBe("escalated");
 		// cleanup
-		rmSync(auditDir, { recursive: true, force: true });
+		rmSync(dataDir, { recursive: true, force: true });
 		rmSync(cwd, { recursive: true, force: true });
-		if (origAuditDir !== undefined) process.env.CIHEAL_AUDIT_DIR = origAuditDir;
-		else delete process.env.CIHEAL_AUDIT_DIR;
+		if (origDataRoot !== undefined) process.env.CIHEAL_DATA_ROOT = origDataRoot;
+		else delete process.env.CIHEAL_DATA_ROOT;
 	});
 	it("is best-effort: does not throw on invalid path", () => {
 		expect(() => {

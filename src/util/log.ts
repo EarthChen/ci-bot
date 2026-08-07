@@ -10,18 +10,21 @@
 import pino from "pino";
 import { mkdirSync } from "node:fs";
 import { join as joinPath } from "node:path";
+import { resolveLogDir } from "../config/paths.js";
+import { resolveRetentionPolicy } from "../config/retention.js";
 
 const isWorker = Boolean(process.env.CIHEAL_WORKER_TASK);
 
 /**
- * Durable log directory for the main bot process.
- * Default: <CIHEAL_BOT_ROOT>/.logs (falls back to cwd when unset).
+ * Convert a human size string (e.g. "10MB", "10KB") to pino-roll's
+ * single-char unit format ("10m", "10k"). pino-roll's parser only accepts
+ * one trailing unit char, so "10MB" would throw.
  */
-function resolveLogDir(): string {
-	return (
-		process.env.CIHEAL_LOG_DIR ??
-		joinPath(process.env.CIHEAL_BOT_ROOT ?? process.cwd(), ".logs")
-	);
+function toPinoRollSize(maxSize: string): string {
+	const m = maxSize.trim().match(/^([\d.]+)\s*([KMG])?B?$/i);
+	if (!m) return maxSize;
+	const unit = (m[2] ?? "M").toLowerCase();
+	return `${m[1]}${unit}`;
 }
 
 const targets: Array<{ target: string; options: Record<string, unknown>; level: string }> = [
@@ -53,11 +56,28 @@ if (isWorker) {
 	} catch {
 		// ignore — fall back to stdout only
 	}
-	targets.push({
-		target: "pino/file",
-		options: { destination: joinPath(logDir, "bot.log"), mkdir: true },
-		level: "info",
-	});
+	// Rotate bot.log by size, retaining the most recent N copies (passive,
+	// no timer). Thresholds come from config/retention-policy.json.
+	const { maxSize, keep } = resolveRetentionPolicy().logs;
+	try {
+		targets.push({
+			target: "pino-roll",
+			options: {
+				file: joinPath(logDir, "bot.log"),
+				size: toPinoRollSize(maxSize),
+				limit: { count: keep },
+				mkdir: true,
+			},
+			level: "info",
+		});
+	} catch {
+		// retention policy unreadable — fall back to a plain file target.
+		targets.push({
+			target: "pino/file",
+			options: { destination: joinPath(logDir, "bot.log"), mkdir: true },
+			level: "info",
+		});
+	}
 }
 
 export const logger = pino.pino({

@@ -36,6 +36,7 @@ function pipelineFailedBody(
 	return {
 		object_kind: "pipeline",
 		object_attributes: { id: pipelineId, ref, sha, status: "failed" },
+		merge_request: { source_branch: ref, iid: pipelineId },
 		project: { id: projectId, web_url: `https://gitlab.example.com/${projectId}` },
 	};
 }
@@ -137,24 +138,27 @@ describe("G1 taxonomy: webhook → MR / escalation → DingTalk (ticket 03)", ()
 			expect(status).toBe(202);
 			await bot.scheduler.idle();
 
-			const mrs = await readSidecar<
-				Array<{
-					projectId: string;
-					diagnosis: { failureClass: number };
-					fixFiles: readonly string[];
-				}>
-			>(bot.workRoot, "glab-mr-creates.json");
-			expect(mrs).not.toBeNull();
-			expect(mrs!.length).toBe(1);
-			expect(mrs![0].diagnosis.failureClass).toBe(2);
+			// The agent creates the MR itself (returns mrUrl); the bot records the
+			// outcome via audit-trace.json. Assert on the authoritative git diff
+			// + outcome, not a sidecar the bot no longer writes.
+			const audit = await readSidecar<{
+				event: { projectId: string };
+				outcome: string;
+				diagnosis: { failureClass: number };
+				mrUrl?: string;
+				diff: string;
+			}>(bot.workRoot, "audit-trace.json");
+			expect(audit).not.toBeNull();
+			expect(audit!.outcome).toBe("mr");
+			expect(audit!.mrUrl).toBeTruthy();
+			expect(audit!.event.projectId).toBe("proj-c2");
+			expect(audit!.diagnosis.failureClass).toBe(2);
 			// Doc sync: a docs/ file is in the patch (G2 relevant-paragraph rule).
-			expect(mrs![0].fixFiles.some((p) => p.startsWith("docs/"))).toBe(true);
+			expect(audit!.diff).toContain("docs/");
 			// Test file also present.
-			expect(mrs![0].fixFiles.some((p) => p.includes("CalculatorTest"))).toBe(true);
+			expect(audit!.diff).toContain("CalculatorTest");
 			// G3 honored: no src/main.
-			for (const p of mrs![0].fixFiles) {
-				expect(p).not.toMatch(/^src\/main\//);
-			}
+			expect(audit!.diff).not.toContain("src/main/");
 		} finally {
 			await bot.cleanup();
 		}
@@ -170,20 +174,22 @@ describe("G1 taxonomy: webhook → MR / escalation → DingTalk (ticket 03)", ()
 			expect(status).toBe(202);
 			await bot.scheduler.idle();
 
-			const mrs = await readSidecar<
-				Array<{
-					diagnosis: { failureClass: number };
-					fixFiles: readonly string[];
-				}>
-			>(bot.workRoot, "glab-mr-creates.json");
-			expect(mrs).not.toBeNull();
-			expect(mrs!.length).toBe(1);
-			expect(mrs![0].diagnosis.failureClass).toBe(3);
+			const audit = await readSidecar<{
+				event: { projectId: string };
+				outcome: string;
+				diagnosis: { failureClass: number };
+				mrUrl?: string;
+				diff: string;
+			}>(bot.workRoot, "audit-trace.json");
+			expect(audit).not.toBeNull();
+			expect(audit!.outcome).toBe("mr");
+			expect(audit!.mrUrl).toBeTruthy();
+			expect(audit!.event.projectId).toBe("proj-c3ok");
+			expect(audit!.diagnosis.failureClass).toBe(3);
 			// New conformance test file (not the existing CalculatorTest).
-			expect(mrs![0].fixFiles.some((p) => p.includes("Conformance"))).toBe(true);
-			for (const p of mrs![0].fixFiles) {
-				expect(p).not.toMatch(/^src\/main\//);
-			}
+			expect(audit!.diff).toContain("Conformance");
+			// G3 honored: no src/main.
+			expect(audit!.diff).not.toContain("src/main/");
 		} finally {
 			await bot.cleanup();
 		}

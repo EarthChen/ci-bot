@@ -8,6 +8,10 @@ This context defines the ownership and runtime language for the CI unit-test sel
 The Pi settings, playbook, and model-candidate policy shipped with the self-heal bot. It is the only configuration allowed to shape an agent worker.
 _Avoid_: target-project Pi configuration, user-global Pi configuration
 
+**Data root**:
+The single writable directory the bot owns, from which the per-event working area, the shared bare-clone cache, durable audit traces, and logs all derive. It is distinct from the bot-owned configuration root (read-only resources) and from the Pi credential root (secrets). Centralizing writable state under one root makes retention, cleanup, and volume mounting a single operational concern rather than four.
+_Avoid_: scattering writable paths across independent environment variables, mixing writable data into the read-only configuration root.
+
 **Target worktree**:
 The checked-out project revision in which the agent diagnoses a failed pipeline and prepares a test/documentation-only change.
 _Avoid_: agent configuration directory, bot workspace

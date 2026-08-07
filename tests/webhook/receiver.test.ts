@@ -10,6 +10,7 @@ function failedPipeline(projectId: string | number): unknown {
 			sha: "0123456789abcdef",
 			status: "failed",
 		},
+		merge_request: { source_branch: "main", iid: 101 },
 		project: {
 			id: projectId,
 			web_url: "https://gitlab.example.com/example/project",

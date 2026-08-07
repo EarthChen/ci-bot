@@ -38,6 +38,7 @@ function pipelineFailedBody(
 	return {
 		object_kind: "pipeline",
 		object_attributes: { id: pipelineId, ref, sha, status: "failed" },
+		merge_request: { source_branch: ref, iid: pipelineId },
 		project: {
 			id: projectId,
 			web_url: `https://gitlab.example.com/${projectId}`,

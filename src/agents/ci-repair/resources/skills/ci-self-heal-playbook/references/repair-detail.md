@@ -2,14 +2,18 @@
 
 本文档是 `ci-self-heal-playbook` 的层 3 详尽参考，按需 Read。
 
+> 本表 playbook 仅在 [范围闸](scope-gate-detail.md) 判定为「可修」后执行。
+
 ## 权限边界（铁律）
 
 **允许写的路径**：
+
 - `src/test/`、`src/it/`（测试源码）
 - `docs/`、`*.md`（文档，仅 class 2 触发）
 - `src/test/resources/`（测试资源）
 
 **绝对禁止的路径**：
+
 - `src/main/java/`、`src/main/kotlin/`、`src/main/resources/`（生产代码）
 - `pom.xml`、`build.gradle`、`settings.gradle`（构建配置）
 - 仓库根的 `Dockerfile`、`ci/`、`.gitlab-ci.yml`（CI 配置）
@@ -28,6 +32,7 @@
 5. 若改完仍红 → 重新诊断（可能误判 class 1，实为 class 2/4/生产 bug）→ 转交。
 
 **反模式**：
+
 - ❌ 改被测代码让它返回断言的值（把生产代码改成 `return 4`）→ 转交，这是生产 bug。
 - ❌ 删除失败的断言/测试（`@Disabled`）→ 转交，不是 class 1 修复。
 - ❌ 改断言为 `assertTrue(true)` 绕过 → 转交。
@@ -44,6 +49,7 @@
 5. **文档同步**（见 doc-sync-detail）。
 
 **反模式**：
+
 - ❌ 改被测代码回滚变更 → 转交，生产变更不是 agent 该碰的。
 - ❌ 只改编译不改动逻辑（测试编译过但断言还指向旧行为）→ 不算修复。
 
@@ -57,18 +63,21 @@
    - 红 → 可能是被测代码实现漏了 spec（生产 bug）→ 转交。也可能误判 class 3 实为 class 2（被测代码改漏了）→ 重新诊断。
 
 **反模式**：
+
 - ❌ 按当前代码反推测试（"代码这么写的所以测试这么断言"）→ 固化 bug，禁止。
 - ❌ 写空测试/`@Disabled` 占位 → 转交，不算修复。
 
 ## class 4/5（转交，不修复）
 
 输出 `escalated`，reason 写明：
+
 - class 4：`class 4 flaky：<具体信号，如时间相关断言/网络依赖>，转交人工复现`。
 - class 5：`class 5 非单测失败：<编译错/依赖错，失败 stage=build>，转交人工`。
 
 ## 轻量测试结构重构（class 1/2 允许）
 
 当过时/错的测试因结构问题难修（如 200 行测试方法），允许轻量重构：
+
 - 拆过大方法为多个小测试方法。
 - 提取测试数据为 helper/`@ParameterizedTest`。
 - 调整 mock 位置（从字段移到 setup）。

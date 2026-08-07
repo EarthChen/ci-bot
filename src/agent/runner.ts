@@ -36,6 +36,18 @@ export interface AgentRunInput {
 export interface AgentRunner {
 	/** Run one agent session. Returns the structured outcome. */
 	run(input: AgentRunInput): Promise<AgentResult>;
+	/**
+	 * Continue an in-flight repair after its MR's CI failed: re-prompt the
+	 * same session (bot injected the new CI log) and push to the SAME MR
+	 * branch. `priorMrUrl` is the MR the agent must update, not recreate.
+	 */
+	continue(
+		input: AgentRunInput,
+		priorMrUrl: string,
+		newCiLog: string,
+	): Promise<AgentResult>;
+	/** Release any open session/resources held across a retry loop. */
+	close(): void;
 }
 
 /**
@@ -84,9 +96,53 @@ export class StubAgentRunner implements AgentRunner {
 			mrUrl: "https://gitlab.example.com/example/project/-/merge_requests/1",
 		};
 	}
+
+	async continue(
+		input: AgentRunInput,
+		priorMrUrl: string,
+		_newCiLog: string,
+	): Promise<AgentResult> {
+		const diagnosis: Diagnosis = {
+			failureClass: 1,
+			summary: "重试：修正断言为期望值 5。",
+		};
+		const kind = process.env.CIHEAL_STUB_FIX_KIND ?? "test";
+		if (kind === "src-main") {
+			writeStubFile(
+				joinPath(input.cwd, "src/main/java/com/example/Calculator.java"),
+				"// stub production change — must be rejected by G3\n",
+			);
+			return {
+				kind: "fixed",
+				diagnosis,
+				summary: "（stub）重试仍试图改生产代码——应被 G3 拦截。",
+			};
+		}
+		writeStubFile(
+			joinPath(input.cwd, "src/test/java/com/example/CalculatorTest.java"),
+			"package com.example;\n// retry fix assertion: assertEquals(5, ...)\n",
+		);
+		return {
+			kind: "fixed",
+			diagnosis,
+			summary: "重试修正 CalculatorTest 断言为 5。",
+			mrUrl: priorMrUrl,
+		};
+	}
+
+	close(): void {
+		// Stub holds no open session.
+	}
 }
 
 function writeStubFile(abs: string, content: string): void {
 	mkdirSync(dirname(abs), { recursive: true });
 	writeFileSync(abs, content, "utf8");
+}
+
+/** Parse the MR iid out of an MR URL (.../merge_requests/<iid>). */
+export function parseMrIid(mrUrl: string | undefined): number | null {
+	if (!mrUrl) return null;
+	const m = mrUrl.match(/merge_requests\/(\d+)/);
+	return m ? Number(m[1]) : null;
 }

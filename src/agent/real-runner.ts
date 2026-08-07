@@ -22,7 +22,7 @@ import type {
 	RuntimeSessionBundle,
 } from "../agent-runtime/runtime.js";
 import { SharedAgentRuntime } from "../agent-runtime/runtime.js";
-import { createCiRepairDefinition } from "./ci-repair-definition.js";
+import { createCiRepairDefinition, buildContinuePrompt } from "./ci-repair-definition.js";
 import { tryParseAgentJson } from "../agents/ci-repair/result-parser.js";
 
 // Re-export for backward compatibility
@@ -44,6 +44,9 @@ export class RealAgentRunner implements AgentRunner {
 	private readonly sessionFactory: SessionFactory;
 	private readonly dingtalk: DingTalkNotifier | undefined;
 	private readonly budget: Partial<BudgetConfig>;
+	/** Open session held across a retry loop (reused via continue()). */
+	private activeSession: AgentSession | undefined;
+	private activeDispose: (() => void) | undefined;
 
 	constructor(opts: {
 		sessionFactory?: SessionFactory;
@@ -63,7 +66,52 @@ export class RealAgentRunner implements AgentRunner {
 		});
 
 		const definition = createCiRepairDefinition(input.cwd);
-		const result = await runtime.run({ definition, input, cwd: input.cwd });
+		const opened = await runtime.runSession({ definition, input, cwd: input.cwd });
+		this.activeSession = opened.session;
+		this.activeDispose = opened.dispose;
+
+		let agentResult: AgentResult;
+		switch (opened.result.status) {
+			case "completed":
+				agentResult = this.parseResult(opened.result.finalText);
+				break;
+			case "budget_exceeded":
+				agentResult = this.escalateBudget(opened.result.reason);
+				break;
+			case "failed":
+				agentResult = this.escalateError(
+					new Error(`session ${opened.result.failure}`),
+				);
+				break;
+		}
+
+		// Fire budget DingTalk alert after the session is torn down (best-effort).
+		if (opened.result.status === "budget_exceeded" && this.dingtalk) {
+			void this.dingtalk
+				.send({
+				title: "CI 自愈预算告警",
+				text: `项目 ${input.projectId} pipeline ${input.pipelineId} 预算超限：${opened.result.reason}`,
+			})
+				.catch((err) => logger.warn({ err }, "budget alert failed"));
+		}
+
+		return { ...agentResult, metrics: opened.result.metrics };
+	}
+
+	async continue(
+		input: AgentRunInput,
+		priorMrUrl: string,
+		newCiLog: string,
+	): Promise<AgentResult> {
+		if (!this.activeSession) {
+			return this.escalateError(new Error("no open session to continue"));
+		}
+		const prompt = buildContinuePrompt(input, priorMrUrl, newCiLog);
+		const runtime = new SharedAgentRuntime({
+			sessionFactory: async () => this.sessionFactory(input),
+			budget: this.budget,
+		});
+		const result = await runtime.continueSession(this.activeSession, prompt);
 
 		let agentResult: AgentResult;
 		switch (result.status) {
@@ -80,17 +128,22 @@ export class RealAgentRunner implements AgentRunner {
 				break;
 		}
 
-		// Fire budget DingTalk alert after the session is torn down (best-effort).
 		if (result.status === "budget_exceeded" && this.dingtalk) {
 			void this.dingtalk
 				.send({
-					title: "CI 自愈预算告警",
-					text: `项目 ${input.projectId} pipeline ${input.pipelineId} 预算超限：${result.reason}`,
-				})
+				title: "CI 自愈预算告警",
+				text: `项目 ${input.projectId} pipeline ${input.pipelineId} 重试预算超限：${result.reason}`,
+			})
 				.catch((err) => logger.warn({ err }, "budget alert failed"));
 		}
 
 		return { ...agentResult, metrics: result.metrics };
+	}
+
+	close(): void {
+		this.activeDispose?.();
+		this.activeSession = undefined;
+		this.activeDispose = undefined;
 	}
 
 	/** Parse the final assistant text JSON into an AgentResult. */

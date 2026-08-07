@@ -36,6 +36,8 @@ export interface BotConfig {
 	readonly botRoot: string;
 	/** Absolute deployment-owned directory containing Pi auth/models configuration. */
 	readonly piBaseDir: string;
+	/** Absolute writable data root (work/bare/audit/logs derive from it). */
+	readonly dataRoot: string;
 }
 
 /**
@@ -129,5 +131,6 @@ export function loadConfig(): BotConfig {
 		nodeEnv: optional("NODE_ENV", "development"),
 		botRoot: requiredAbsolutePath("CIHEAL_BOT_ROOT"),
 		piBaseDir: requiredAbsolutePath("CIHEAL_PI_BASE_DIR"),
+		dataRoot: requiredAbsolutePath("CIHEAL_DATA_ROOT"),
 	};
 }

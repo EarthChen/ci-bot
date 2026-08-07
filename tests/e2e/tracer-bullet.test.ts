@@ -97,6 +97,7 @@ function pipelineFailedBody(
       sha,
       status: "failed",
     },
+    merge_request: { source_branch: ref, iid: pipelineId },
     project: {
       id: projectId,
       web_url: `https://gitlab.example.com/${projectId}`,
@@ -170,35 +171,31 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
     expect(dingtalk!.length).toBe(1);
     expect(dingtalk![0].title).toContain("成功");
 
-    // Exactly one MR was created.
-    const mrs = await readSidecar<
-      Array<{
-        projectId: string;
-        sourceBranch: string;
-        targetBranch: string;
-        title: string;
-        body: string;
-        diagnosis: { failureClass: number; summary: string };
-        fixFiles: readonly string[];
-      }>
-    >("glab-mr-creates.json");
-    expect(mrs).not.toBeNull();
-    expect(mrs!.length).toBe(1);
-    expect(mrs![0].projectId).toBe("proj-1");
-    expect(mrs![0].targetBranch).toBe("feature/x");
-    expect(mrs![0].diagnosis.failureClass).toBe(1);
+    // Exactly one MR outcome recorded. The current architecture has the agent
+    // create the MR itself (git push + glab mr create) and return its URL;
+    // the bot records the outcome via audit-trace.json (it does not call
+    // glab). Assert on the authoritative git diff + outcome, not a sidecar
+    // the bot no longer writes.
+    const audit = await readSidecar<{
+      event: { projectId: string };
+      outcome: string;
+      diagnosis: { failureClass: number; summary: string };
+      mrUrl?: string;
+      diff: string;
+    }>("audit-trace.json");
+    expect(audit).not.toBeNull();
+    expect(audit!.outcome).toBe("mr");
+    expect(audit!.mrUrl).toBeTruthy();
+    expect(audit!.event.projectId).toBe("proj-1");
+    expect(audit!.diagnosis.failureClass).toBe(1);
 
     // G3 permission boundary: the fix touches ONLY test files (src/main
-    // forbidden). Assert on the actual recorded fix file paths, not just
-    // the MR body text — this is the safety invariant that keeps the bot
-    // safe to run unsupervised. A stub returning a src/main path would fail
-    // here (and is covered by the G3-violation case below).
-    expect(mrs![0].fixFiles.length).toBe(1);
-    expect(mrs![0].fixFiles[0]).toContain("CalculatorTest");
-    for (const p of mrs![0].fixFiles) {
-      expect(p).not.toMatch(/^src\/main\//);
-    }
-    expect(mrs![0].title).toContain("[ci-self-heal]");
+    // forbidden). Assert on the authoritative git diff, not the MR body text
+    // — this is the safety invariant that keeps the bot safe to run
+    // unsupervised. A stub returning a src/main path would fail here (and is
+    // covered by the G3-violation case below).
+    expect(audit!.diff).toContain("CalculatorTest");
+    expect(audit!.diff).not.toContain("src/main/");
   });
 
   it("dedupes retried webhooks for the same pipeline id", async () => {
@@ -217,12 +214,16 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
 
     await scheduler.idle();
 
-    // Only ONE MR created for proj-2/900_200.
-    const mrs = await readSidecar<
-      Array<{ projectId: string }>
-    >("glab-mr-creates.json");
-    expect(mrs).not.toBeNull();
-    expect(mrs!.filter((m) => m.projectId === "proj-2").length).toBe(1);
+    // Only ONE MR outcome recorded for proj-2/900_200: the retry was deduped
+    // by the scheduler, so the worker ran exactly once. The agent creates the
+    // MR; the bot records the outcome via audit-trace.json.
+    const audit = await readSidecar<{
+      event: { projectId: string };
+      outcome: string;
+    }>("audit-trace.json");
+    expect(audit).not.toBeNull();
+    expect(audit!.event.projectId).toBe("proj-2");
+    expect(audit!.outcome).toBe("mr");
   });
 
   it("ignores non-failed pipelines (no repair triggered)", async () => {

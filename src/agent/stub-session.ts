@@ -145,10 +145,21 @@ function cannedResultFromEnv(): AgentResult {
 		failureClass,
 		summary: summaryMap[kind] ?? summaryMap.test,
 	};
+	// The current architecture has the agent create the MR itself (git push +
+	// glab mr create) and return its URL; the bot only consumes mrUrl. The
+	// stub mirrors that contract. `src-main` intentionally omits mrUrl so the
+	// run-repair escalates (G3 boundary: a src/main edit must not produce an
+	// MR) — G3 validation is skipped, so the missing mrUrl is the escalation
+	// trigger, exactly as the G3 e2e asserts.
+	const mrUrl =
+		kind === "src-main"
+			? undefined
+			: "https://gitlab.example.com/example/project/-/merge_requests/1";
 	return {
 		kind: "fixed",
 		diagnosis,
 		summary: summaryMap[kind] ?? "修正 CalculatorTest 断言为期望值 5。",
+		mrUrl,
 	};
 }
 

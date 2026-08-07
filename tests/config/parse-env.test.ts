@@ -8,6 +8,7 @@ const requiredConfig = {
 	DINGTALK_CLIENT_SECRET: "secret-xyz",
 	CIHEAL_BOT_ROOT: "/opt/ci-self-heal-bot",
 	CIHEAL_PI_BASE_DIR: "/run/secrets/pi-agent",
+	CIHEAL_DATA_ROOT: "/var/lib/ci-self-heal",
 };
 
 afterEach(() => {
@@ -57,8 +58,20 @@ describe("loadConfig", () => {
 		expect(loadConfig()).toMatchObject({
 			botRoot: requiredConfig.CIHEAL_BOT_ROOT,
 			piBaseDir: requiredConfig.CIHEAL_PI_BASE_DIR,
+			dataRoot: requiredConfig.CIHEAL_DATA_ROOT,
 		});
-	});
+});
+
+		it("rejects relative data root at startup", () => {
+			for (const [key, value] of Object.entries(requiredConfig)) {
+						vi.stubEnv(key, value);
+			}
+			vi.stubEnv("CIHEAL_DATA_ROOT", "data/ci-self-heal");
+
+			expect(() => loadConfig()).toThrow(
+						"CIHEAL_DATA_ROOT must be an absolute path",
+			);
+		});
 
 	it("rejects relative Pi configuration directories at startup", () => {
 		for (const [key, value] of Object.entries(requiredConfig)) {

@@ -1,0 +1,13 @@
+{
+	"bare": {
+		"maxAgeDays": 30,
+		"maxEntries": 100
+	},
+	"audit": {
+		"maxAgeDays": 90
+	},
+	"logs": {
+		"maxSize": "10MB",
+		"keep": 5
+	}
+}

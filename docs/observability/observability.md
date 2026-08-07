@@ -20,13 +20,13 @@
 
 - 每次修复 append 一行 JSONL 到 worker cwd `metrics.jsonl`（projectId/pipelineId/outcome/tokens/cost/durationMs/createdAt）。
 - 聚合脚本 `scripts/metrics-summary.mjs` 读 work root 下所有 metrics.jsonl，算：成功率、转交率、失败率、平均修复时长、总 token、总成本、平均成本/修复。
-- 用法：`pnpm run metrics [workRoot]`（默认 `$CIHEAL_WORK_ROOT`）。
+- 用法：`pnpm run metrics [auditRoot]`（默认 `$CIHEAL_DATA_ROOT/audit`）。
 - v1 文件存储，无外部依赖。演进接缝：append 点不变，换 sink（Prometheus pushgateway）是 write-only 改动。
 
 ## 自故障告警
 
 | 故障类型 | 检测方式 | 告警 |
-|---|---|---|
+| --- | --- | --- |
 | worker 全死 | scheduler 连续 crash 计数 ≥ `BOT_WORKER_CRASH_THRESHOLD`（默认 3） | 钉钉"自故障"告警，计数重置防刷屏 |
 | 配额耗尽 | RealAgentRunner turn_end token 累计超 `BOT_BUDGET_TOKENS`/`BOT_BUDGET_PER_TURN_TOKENS` → `session.abort()` | 钉钉"预算告警"（ticket 02 已落地） |
 | webhook 不可达 | **部署级**，bot 代码不检测（进程挂了没法自己告警） | 外部探活（uptime monitor）→ 钉钉，文档化为演进接缝 |
@@ -43,7 +43,7 @@
 ## 演进接缝
 
 | 触发 | 机制 |
-|---|---|
+| --- | --- |
 | 需要查询聚合指标 / 历史趋势 | metrics.jsonl → Prometheus pushgateway + Grafana dashboard |
 | 多通道告警 | 钉钉 → 钉钉 + 邮件 / PagerDuty |
 | webhook 不可达主动告警 | 外部 uptime monitor（不在 bot 代码，部署运维域） |

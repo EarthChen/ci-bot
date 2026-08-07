@@ -13,8 +13,10 @@
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
 import { logger } from "../util/log.js";
-import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, appendFileSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
 import { join as joinPath, basename } from "node:path";
+import { resolveAuditDir as resolveAuditDirPath } from "../config/paths.js";
+import { resolveRetentionPolicy } from "../config/retention.js";
 
 /**
  * G5 audit record — persisted per repair so a bad fix can be traced back
@@ -23,7 +25,7 @@ import { join as joinPath, basename } from "node:path";
  * it across the process seam. Production deployment ships these to log/object
  * storage (ticket 07 evolution seam).
  */
-interface AuditTrace {
+export interface AuditTrace {
 	/** The pipeline event this repair handled (ties a trace to a pipeline). */
 	readonly event: {
 		readonly projectId: string;
@@ -115,10 +117,32 @@ export function metricLine(trace: AuditTrace): string {
 
 /** Resolve the durable audit directory (survives per-event cwd deletion). */
 export function resolveAuditDir(): string {
-	const base =
-		process.env.CIHEAL_AUDIT_DIR ??
-		joinPath(process.env.CIHEAL_BOT_ROOT ?? process.cwd(), ".audit");
-	return base;
+	return resolveAuditDirPath();
+}
+
+/**
+ * Passive audit cleanup: drop per-pipeline buckets whose last write is older
+ * than retention.audit.maxAgeDays. Runs opportunistically inside
+ * persistDurable (best-effort, never throws into the write path).
+ */
+function pruneAudit(): void {
+	try {
+		const dir = resolveAuditDir();
+		if (!existsSync(dir)) return;
+		const maxAgeDays = resolveRetentionPolicy().audit.maxAgeDays;
+		const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+		for (const e of readdirSync(dir)) {
+			try {
+				const bucket = joinPath(dir, e);
+				if (statSync(bucket).mtimeMs < cutoff)
+					rmSync(bucket, { recursive: true, force: true });
+			} catch {
+				// best-effort
+			}
+		}
+	} catch {
+		// retention policy unreadable or dir missing — skip this pass.
+	}
 }
 
 /** Write the audit trace sidecar to the worker cwd (best-effort, never throws). */
@@ -138,7 +162,7 @@ function writeAuditTrace(cwd: string, trace: AuditTrace): void {
 	// without an external metrics store. v1 file-based (G7: no external deps);
 	// production ships lines to a metrics pipeline (Prometheus evolution seam).
 	appendMetric(cwd, trace);
-	// Durable copy: persist to CIHEAL_AUDIT_DIR so the trace survives cwd
+	// Durable copy: persist to <CIHEAL_DATA_ROOT>/audit so the trace survives cwd
 	// cleanup (ticket 07 evolution seam — production ships to object storage).
 	// Bucketed by pipelineId; the run file is named by the per-event worktree
 	// id (basename(cwd)) so re-runs never overwrite a prior attempt.
@@ -148,6 +172,7 @@ function writeAuditTrace(cwd: string, trace: AuditTrace): void {
 /** Persist the audit trace + metric to the durable audit dir (best-effort). */
 export function persistDurable(cwd: string, trace: AuditTrace): void {
 	try {
+		pruneAudit();
 		const dir = joinPath(resolveAuditDir(), String(trace.event.pipelineId));
 		mkdirSync(dir, { recursive: true });
 		const runId = basename(cwd);

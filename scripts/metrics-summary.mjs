@@ -1,23 +1,24 @@
 /**
  * Metrics aggregator (ticket 07) — reads metrics.jsonl files under the bot
- * work root and prints aggregate stats: success rate, avg repair time,
+ * audit root and prints aggregate stats: success rate, avg repair time,
  * cost per repair, repair count.
  *
  * v1 file-based (G7: no external deps). Evolution seam: ship lines to
  * Prometheus + Grafana instead of reading files.
  *
- * Usage: node scripts/metrics-summary.mjs [workRoot]
- *   workRoot defaults to $CIHEAL_WORK_ROOT or os.tmpdir()/ci-self-heal-work
+ * Usage: node scripts/metrics-summary.mjs [auditRoot]
+ *   auditRoot defaults to $CIHEAL_DATA_ROOT/audit (or os.tmpdir()/ci-self-heal-work)
  */
 
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const workRoot =
+const auditRoot =
 	process.argv[2] ??
-	process.env.CIHEAL_WORK_ROOT ??
-	join(tmpdir(), "ci-self-heal-work");
+	(process.env.CIHEAL_DATA_ROOT
+		? join(process.env.CIHEAL_DATA_ROOT, "audit")
+		: join(tmpdir(), "ci-self-heal-work"));
 
 async function collectLines(root) {
 	const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
@@ -38,11 +39,11 @@ async function collectLines(root) {
 	return lines;
 }
 
-const lines = await collectLines(workRoot);
+const lines = await collectLines(auditRoot);
 if (lines.length === 0) {
 	console.log(
 		JSON.stringify(
-			{ workRoot, count: 0, note: "no metrics.jsonl found" },
+			{ auditRoot, count: 0, note: "no metrics.jsonl found" },
 			null,
 			2,
 		),
@@ -59,7 +60,7 @@ const totalCost = lines.reduce((s, l) => s + (l.cost ?? 0), 0);
 const totalDuration = lines.reduce((s, l) => s + (l.durationMs ?? 0), 0);
 
 const summary = {
-	workRoot,
+	auditRoot,
 	count,
 	successRate: count > 0 ? successes / count : 0,
 	escalationRate: count > 0 ? escalations / count : 0,

@@ -73,10 +73,15 @@ export class StubAgentRunner implements AgentRunner {
 			joinPath(input.cwd, "src/test/java/com/example/CalculatorTest.java"),
 			"package com.example;\n// fixed assertion: assertEquals(5, ...)\n",
 		);
+		// The agent creates the MR itself (git push + glab mr create) and returns
+		// its URL; the bot only consumes mrUrl (it does not call glab). Mirror the
+		// stubSessionFactory contract so the tracer-bullet (which drives this
+		// StubAgentRunner via the default CIHEAL_AGENT_MODE) produces an MR outcome.
 		return {
 			kind: "fixed",
 			diagnosis,
 			summary: "修正 CalculatorTest 断言为期望值 5。",
+			mrUrl: "https://gitlab.example.com/example/project/-/merge_requests/1",
 		};
 	}
 }

@@ -33,10 +33,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { logger } from "../util/log.js";
+import { resolveBareRoot } from "../config/paths.js";
+import { resolveRetentionPolicy } from "../config/retention.js";
 import type { PipelineEvent } from "../types.js";
 
 const exec = promisify(execFile);
@@ -50,8 +51,70 @@ interface BareClone {
 }
 
 const bareClones = new Map<string, BareClone>();
-export const bareRoot =
-	process.env.CIHEAL_BARE_ROOT ?? join(tmpdir(), "ci-self-heal-bare");
+
+/**
+ * Resolve the shared bare-clone cache root, derived from CIHEAL_DATA_ROOT.
+ * Kept as a function (not a const) so it reads env lazily — the module is
+ * imported by the main process before .env is loaded.
+ */
+export function bareRoot(): string {
+	return resolveBareRoot();
+}
+
+/**
+ * Passive bare-cache cleanup, run opportunistically inside ensureBareClone:
+ * evict clones whose last write is older than retention.bare.maxAgeDays, and
+ * cap the total entry count at retention.bare.maxEntries (LRU by mtime).
+ * Best-effort — never throws into the clone path.
+ */
+async function pruneBareCache(): Promise<void> {
+	try {
+		const root = bareRoot();
+		const { maxAgeDays, maxEntries } = resolveRetentionPolicy().bare;
+		const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+		let entries = await readdir(root, { withFileTypes: true });
+		entries = entries.filter(
+			(e) => e.isDirectory() && !e.name.startsWith("."),
+		);
+		// Pass 1: drop anything older than maxAgeDays.
+		for (const e of entries) {
+			try {
+				const s = await stat(join(root, e.name));
+				if (s.mtimeMs < cutoff)
+					await rm(join(root, e.name), { recursive: true, force: true });
+			} catch {
+				// best-effort
+			}
+		}
+		// Pass 2: if still over maxEntries, evict oldest by mtime (LRU).
+		if (maxEntries > 0) {
+			entries = (await readdir(root, { withFileTypes: true })).filter(
+				(e) => e.isDirectory() && !e.name.startsWith("."),
+			);
+			if (entries.length > maxEntries) {
+				const withMtime = await Promise.all(
+					entries.map(async (e) => {
+						try {
+							return {
+								name: e.name,
+								mtimeMs: (await stat(join(root, e.name))).mtimeMs,
+							};
+						} catch {
+							return { name: e.name, mtimeMs: Number.MAX_SAFE_INTEGER };
+						}
+					}),
+				);
+				withMtime.sort((a, b) => a.mtimeMs - b.mtimeMs);
+				const evict = withMtime.slice(0, withMtime.length - maxEntries);
+				for (const { name } of evict) {
+					await rm(join(root, name), { recursive: true, force: true }).catch(() => {});
+				}
+			}
+		}
+	} catch {
+		// retention policy unreadable or dir missing — skip cleanup this pass.
+	}
+}
 
 /**
  * Ensure the shared bare clone for a project exists and is up-to-date.
@@ -64,10 +127,12 @@ async function ensureBareClone(
 ): Promise<string> {
 	let clone = bareClones.get(projectId);
 	const barePath =
-		clone?.barePath ?? join(bareRoot, projectId.replace(/[/:]/g, "-"));
+		clone?.barePath ?? join(bareRoot(), projectId.replace(/[/:]/g, "-"));
 
 	if (!clone) {
-		await mkdir(bareRoot, { recursive: true });
+		await mkdir(bareRoot(), { recursive: true });
+		// Passive cleanup: evict expired / over-capacity clones opportunistically.
+		await pruneBareCache();
 		// 复用磁盘上已有的合法 bare clone（跨进程重启 / 手动重跑也能命中），
 		// 仅当目录缺失或损坏时才全新 clone；否则残留/不完整的 clone 目录会让
 		// 后续每次 clone 都因 "destination already exists" 失败。
@@ -215,6 +280,13 @@ async function fakeWorktree(
 		],
 		{ cwd: repoPath },
 	);
+	// The webhook pipeline sha (event.sha) does not exist in this canned repo,
+	// yet the worker's extractPatch runs `git diff <sha>`. Seed a tag named after
+	// the sha so the diff resolves against the baseline commit. Test-only
+	// (CIHEAL_WORKTREE_MODE=fake); real worktrees carry the actual failed sha.
+	if (/^[A-Za-z0-9._-]+$/.test(event.sha)) {
+		await exec("git", ["tag", event.sha, "HEAD"], { cwd: repoPath });
+	}
 	return repoPath;
 }
 

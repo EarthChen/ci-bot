@@ -23,7 +23,7 @@ import type { AgentRunner } from "../agent/runner.js";
 import { StubAgentRunner } from "../agent/runner.js";
 import { RealAgentRunner } from "../agent/real-runner.js";
 import { stubSessionFactory } from "../agent/stub-session.js";
-import type { GitLabClient } from "../gitlab/glab-client.js";
+import type { GitLabClient, MrPipelineStatus } from "../gitlab/glab-client.js";
 import { GlabGitLabClient } from "../gitlab/glab-client.js";
 import { DWClient } from "dingtalk-stream";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
@@ -144,6 +144,7 @@ export interface FakeGlabRecorder {
 
 function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
 	const createdMrs: FakeGlabRecorder["createdMrs"] = [];
+	let mrStatusCalls = 0;
 	const client: GitLabClient & FakeGlabRecorder = {
 		createdMrs,
 		async fetchCiLog(): Promise<string> {
@@ -168,6 +169,21 @@ function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
 		},
 		async fetchMrDiff(): Promise<string> {
 			return "";
+		},
+		async fetchMrPipelineStatus(): Promise<MrPipelineStatus> {
+			// CIHEAL_STUB_MR_STATUS 控制监控结果：
+			//   "success"      (默认) — 监控立即通过，不触发重试
+			//   "failed"       — 始终失败（重试耗尽后转交）
+			//   "fail-then-pass" — 首次失败、其后通过（验证复用 session 重试）
+			const mode = process.env.CIHEAL_STUB_MR_STATUS ?? "success";
+			if (mode === "fail-then-pass") {
+				mrStatusCalls += 1;
+				return {
+				status: mrStatusCalls === 1 ? "failed" : "success",
+				pipelineId: 999,
+				};
+			}
+			return { status: mode as MrPipelineStatus["status"], pipelineId: 999 };
 		},
 		async createMr(params): Promise<{ url: string }> {
 			const rec = {

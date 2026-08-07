@@ -38,7 +38,12 @@ const WORK_ROOT = await mkdtemp(join(tmpdir(), "ciheal-e2e-"));
 const workerManager = new SubprocessWorkerManager({
   timeoutMs: 60_000,
   keepWork: true, // keep cwd so the test can read sidecars
-  env: { CIHEAL_WORKTREE_MODE: "fake" },
+  // CIHEAL_STUB_MR_STATUS=fail-then-pass 让监控首次 CI 失败、其后通过，
+  // 以此驱动「复用 session 重试」全链路（仍应产出 mr 结果）。
+  env: {
+    CIHEAL_WORKTREE_MODE: "fake",
+    CIHEAL_STUB_MR_STATUS: "fail-then-pass",
+  },
 });
 
 const scheduler = new Scheduler({
@@ -196,6 +201,16 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
     // covered by the G3-violation case below).
     expect(audit!.diff).toContain("CalculatorTest");
     expect(audit!.diff).not.toContain("src/main/");
+
+    // Spill files the bot writes into the worktree (CI log / MR diff) must
+    // never enter the authoritative patch (they would otherwise pollute the
+    // diff and trip the diff-whitelist validator).
+    expect(audit!.diff).not.toContain("ci-log");
+    expect(audit!.diff).not.toContain("mr-diff.patch");
+
+    // With CIHEAL_STUB_MR_STATUS=fail-then-pass the monitor forces one retry
+    // (reuse session) before CI passes; the outcome must still be a mergeable MR.
+    expect(audit!.outcome).toBe("mr");
   });
 
   it("dedupes retried webhooks for the same pipeline id", async () => {

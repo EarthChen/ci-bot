@@ -13,6 +13,13 @@ export interface CreatedMr {
 	readonly url: string;
 }
 
+/** Status of an MR's latest pipeline (the gate the repair must satisfy). */
+export interface MrPipelineStatus {
+	readonly status: "success" | "failed" | "pending" | "unknown";
+	/** Latest pipeline id (for fetching its CI log on failure); null if unknown. */
+	readonly pipelineId: number | null;
+}
+
 /**
  * A function that runs a glab CLI subcommand and returns stdout.
  * Injection seam: production uses the real child_process; tests use a fake.
@@ -24,6 +31,11 @@ export interface GitLabClient {
 	fetchCiLog(projectId: string, pipelineId: number): Promise<string>;
 	/** Fetch the MR diff (if a related MR exists) — empty string if none. */
 	fetchMrDiff(projectId: string, mrIid: number): Promise<string>;
+	/** Poll the MR's latest pipeline status (used to verify the repair MR). */
+	fetchMrPipelineStatus(
+		projectId: string,
+		mrIid: number,
+	): Promise<MrPipelineStatus>;
 	/** Create a MR with the given git patch + diagnosis summary. */
 	createMr(params: {
 		projectId: string;
@@ -38,6 +50,36 @@ export interface GitLabClient {
 /** glab-backed implementation. Token read from env at call time. */
 export class GlabGitLabClient implements GitLabClient {
 	constructor(private readonly runGlab: GlabRunner) {}
+
+	async fetchMrPipelineStatus(
+		projectId: string,
+		mrIid: number,
+	): Promise<MrPipelineStatus> {
+		// MR-triggered pipelines: the latest pipeline for the MR is what we watch.
+		const out = await this.runGlab([
+			"api",
+			`/projects/${projectId}/merge_requests/${mrIid}/pipelines?per_page=1&order_by=id&sort=desc`,
+		]);
+		const arr = parsePipelines(out);
+		const p = arr[0];
+		if (!p || !p.status) return { status: "unknown", pipelineId: null };
+		const s = String(p.status);
+		const status: MrPipelineStatus["status"] =
+			s === "success"
+				? "success"
+				: s === "failed"
+					? "failed"
+					: s === "pending" ||
+					  s === "running" ||
+					  s === "created" ||
+					  s === "waiting_for_resource"
+					? "pending"
+					: "unknown";
+		return {
+			status,
+			pipelineId: typeof p.id === "number" ? p.id : null,
+		};
+	}
 
 	async fetchCiLog(projectId: string, pipelineId: number): Promise<string> {
 		// Headless CI-log fetch via the REST API. `glab ci trace` is a TUI-only,
@@ -153,6 +195,21 @@ function parseJobs(s: string): JobSummary[] {
 	try {
 		const parsed = JSON.parse(s);
 		return Array.isArray(parsed) ? (parsed as JobSummary[]) : [];
+	} catch {
+		return [];
+	}
+}
+
+interface PipelineSummary {
+	readonly id?: number;
+	readonly status?: string;
+}
+
+/** Parse the MR-pipelines JSON array returned by `glab api`; tolerate empty/bad output. */
+function parsePipelines(s: string): PipelineSummary[] {
+	try {
+		const parsed = JSON.parse(s);
+		return Array.isArray(parsed) ? (parsed as PipelineSummary[]) : [];
 	} catch {
 		return [];
 	}

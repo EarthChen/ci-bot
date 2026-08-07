@@ -55,6 +55,37 @@ function writeText(abs: string, content: string): void {
 	writeFileSync(abs, content, "utf8");
 }
 
+/**
+ * Build the prompt the bot injects when an MR's CI still fails and the agent
+ * must continue within the SAME session + worktree, updating (not recreating)
+ * the existing MR. The new CI log is written to a file; the prompt only gives
+ * its path (never the log text) so large logs stay out of the LLM context.
+ */
+export function buildContinuePrompt(
+	input: AgentRunInput,
+	priorMrUrl: string,
+	newCiLog: string,
+): string {
+	const ciLogPath = joinPath(input.cwd, "ci-log-retry.txt");
+	writeText(ciLogPath, newCiLog);
+	return [
+		`# CI 仍失败，继续修复（复用本次 session，勿新建 MR）`,
+		``,
+		`你之前开的 MR（必须更新同一 MR，不要新建）：`,
+		`- MR URL：${priorMrUrl}`,
+		`- 源分支（继续 push 到此更新 MR）：${input.sourceBranch}`,
+		`- 目标分支：${input.targetBranch}`,
+		``,
+		`# 新的 CI 失败日志`,
+		`用 read 工具读取：${ciLogPath}`,
+		``,
+		`# 任务`,
+		`1. 读新 CI 日志，定位仍失败的根因。遵守范围闸：test 失败只改测试/文档；static-analysis/Checkstyle 可改 diff 内 src/main；超出 diff 转交。`,
+		`2. 修复后 git add → git commit → git push origin ${input.sourceBranch}（更新同一 MR，勿新建 MR）。`,
+		`3. 末条消息输出结构化 JSON：fixed 填同一 mrUrl，或 escalated 说明转交原因。`,
+	].join("\n");
+}
+
 /** CI Repair scheduling policy: serialize per projectId, request up to 4 parallel repos. */
 export const CI_REPAIR_SCHEDULING_POLICY: SchedulingPolicy = {
 	serialKey: (event) => event.projectId,

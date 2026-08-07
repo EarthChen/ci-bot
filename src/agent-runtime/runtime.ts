@@ -37,9 +37,15 @@ export interface RuntimeSessionBundle {
 	readonly dispose: () => void;
 }
 
-export interface RuntimeSessionFactory {
-	<Input>(request: RuntimeSessionRequest<Input>): Promise<RuntimeSessionBundle>;
+/** A started session kept open for follow-up prompts (retry across CI runs). */
+export interface RuntimeOpenSession {
+	readonly result: RuntimeRunResult;
+	readonly session: AgentSession;
+	readonly dispose: () => void;
 }
+
+export type RuntimeSessionFactory = 
+	<Input>(request: RuntimeSessionRequest<Input>) => Promise<RuntimeSessionBundle>
 
 export interface RuntimeRunRequest<Input> {
 	readonly cwd: string;
@@ -114,10 +120,10 @@ export class SharedAgentRuntime {
 			const breachReason = monitor.breachReason();
 			if (breachReason) {
 				return {
-					status: "budget_exceeded",
-					reason: breachReason,
-					metrics: monitor.metrics(),
-				};
+				status: "budget_exceeded",
+				reason: breachReason,
+				metrics: monitor.metrics(),
+			};
 			}
 			return {
 				status: "completed",
@@ -129,10 +135,10 @@ export class SharedAgentRuntime {
 			const breachReason = monitor.breachReason();
 			if (breachReason) {
 				return {
-					status: "budget_exceeded",
-					reason: breachReason,
-					metrics: monitor.metrics(),
-				};
+				status: "budget_exceeded",
+				reason: breachReason,
+				metrics: monitor.metrics(),
+			};
 			}
 			return {
 				status: "failed",
@@ -142,6 +148,114 @@ export class SharedAgentRuntime {
 		} finally {
 			monitor.unsubscribe();
 			bundle.dispose();
+		}
+	}
+
+	/**
+	 * Start a session but keep it open (no dispose) so the caller can re-prompt
+	 * it via {@link continueSession} after an external CI re-check (retry loop).
+	 */
+	async runSession<Input>(
+		request: RuntimeRunRequest<Input>,
+	): Promise<RuntimeOpenSession> {
+		let bundle: RuntimeSessionBundle;
+		try {
+			bundle = await this.sessionFactory({
+				cwd: request.cwd,
+				definition: request.definition,
+			});
+		} catch (err) {
+			logger.error({ err }, "shared agent session setup failed");
+			return {
+				result: {
+				status: "failed",
+				failure: "session_setup_failed",
+				metrics: { turns: 0, tokens: 0 },
+				},
+			session: undefined as unknown as AgentSession,
+				dispose: () => {},
+			};
+		}
+		const monitor = subscribeBudget(bundle.session, this.budget);
+		try {
+			await bundle.session.prompt(
+				request.definition.buildPrompt(request.input),
+			);
+			const breachReason = monitor.breachReason();
+			const result: RuntimeRunResult = breachReason
+				? {
+					status: "budget_exceeded",
+					reason: breachReason,
+					metrics: monitor.metrics(),
+				}
+				: {
+					status: "completed",
+					finalText: extractLastAssistantText(bundle.session),
+					metrics: monitor.metrics(),
+				};
+			return { result, session: bundle.session, dispose: bundle.dispose };
+		} catch (err) {
+			logger.error({ err }, "shared agent session execution failed");
+			const breachReason = monitor.breachReason();
+			const result: RuntimeRunResult = breachReason
+				? {
+					status: "budget_exceeded",
+				reason: breachReason,
+				metrics: monitor.metrics(),
+				}
+				: {
+					status: "failed",
+					failure: "session_execution_failed",
+					metrics: monitor.metrics(),
+				};
+			return { result, session: bundle.session, dispose: bundle.dispose };
+		} finally {
+			monitor.unsubscribe();
+		}
+	}
+
+	/**
+	 * Re-prompt an already-open session (same conversation, cumulative budget).
+	 * Used when an MR's CI still fails and the bot wants the agent to continue
+	 * fixing within the same worktree + session.
+	 */
+	async continueSession(
+		session: AgentSession,
+		prompt: string,
+	): Promise<RuntimeRunResult> {
+		const monitor = subscribeBudget(session, this.budget);
+		try {
+			await session.prompt(prompt);
+			const breachReason = monitor.breachReason();
+			if (breachReason) {
+				return {
+				status: "budget_exceeded",
+				reason: breachReason,
+				metrics: monitor.metrics(),
+			};
+			}
+			return {
+				status: "completed",
+				finalText: extractLastAssistantText(session),
+				metrics: monitor.metrics(),
+			};
+		} catch (err) {
+			logger.error({ err }, "shared agent session continue failed");
+			const breachReason = monitor.breachReason();
+			if (breachReason) {
+				return {
+				status: "budget_exceeded",
+				reason: breachReason,
+				metrics: monitor.metrics(),
+			};
+			}
+			return {
+				status: "failed",
+				failure: "session_execution_failed",
+				metrics: monitor.metrics(),
+			};
+		} finally {
+			monitor.unsubscribe();
 		}
 	}
 }

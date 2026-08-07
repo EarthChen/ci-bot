@@ -9,7 +9,7 @@ CI 单测自愈 bot：headless 长驻 TS 服务，监听 GitLab pipeline 失败 
 ## Stack
 
 - **语言/运行时**：TypeScript（ES2022, NodeNext），Node ≥ 20
-- **SDK**：`@earendil-works/pi-coding-agent` 0.83.0（agent 能力 + skill 加载 + session 管理）
+- **SDK**：`@earendil-works/pi-coding-agent` 0.84.0（agent 能力 + skill 加载 + session 管理）
 - **Web 框架**：Fastify 5（webhook 接收）
 - **日志**：pino 9（结构化 JSON）
 - **钉钉**：`dingtalk-stream` SDK（Stream 模式：主进程 WebSocket 接收 + SDK API 推送）

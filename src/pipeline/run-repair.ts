@@ -10,10 +10,11 @@
  *   5. on "escalated": notify DingTalk (escalation), no MR
  */
 
-import type { AgentRunner } from "../agent/runner.js";
-import type { GitLabClient } from "../gitlab/glab-client.js";
+import type { AgentRunner, AgentRunInput } from "../agent/runner.js";
+import { parseMrIid } from "../agent/runner.js";
+import type { GitLabClient, MrPipelineStatus } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
-import type { PipelineEvent, RepairOutcome, Patch } from "../types.js";
+import type { PipelineEvent, RepairOutcome, Patch, AgentResult } from "../types.js";
 import { logger } from "../util/log.js";
 import type { Worktree } from "./worktree.js";
 import { finishRepair, repairCost } from "./repair-outcome.js";
@@ -126,19 +127,27 @@ export async function runRepair(
 	// guild-policy-outreach) so merging the fix MR updates the source MR's CI.
 	// Push pipelines: target the pipeline's ref directly.
 	const targetBranch = event.mrSourceBranch ?? event.ref;
+	// Fetch the MR diff so the agent can scope edits to the diff file set and
+	// the bot can whitelist-validate the resulting patch (G0 diff gate).
+	const mrDiff = event.mrIid
+		? await glab.fetchMrDiff(event.projectId, event.mrIid)
+		: "";
+	const diffFiles = parseDiffFiles(mrDiff);
+
+	const agentInput: AgentRunInput = {
+		projectId: event.projectId,
+		pipelineId: event.pipelineId,
+		ref: event.ref,
+		sha: event.sha,
+		ciLog,
+		mrDiff,
+		cwd: repoCwd,
+		sourceBranch,
+		targetBranch,
+	};
 	let result;
 	try {
-		result = await agent.run({
-			projectId: event.projectId,
-			pipelineId: event.pipelineId,
-			ref: event.ref,
-			sha: event.sha,
-			ciLog,
-			mrDiff: "",
-			cwd: repoCwd,
-			sourceBranch,
-			targetBranch,
-		});
+		result = await agent.run(agentInput);
 	} catch (err) {
 		return finishRepair({
 			dingtalk,
@@ -176,27 +185,46 @@ export async function runRepair(
 		});
 	}
 
-	// 4. result.kind === "fixed" — extract the real patch from the agent's
-	//    working tree (git diff is authoritative; the agent's self-reported
-	//    content is NOT trusted). Then G3-validate + re-run tests in a clean
-	//    checkout to prove the fix is genuinely green without stray src/main
-	//    edits that could have made tests pass illegitimately.
-	let patch;
+	// 4. result.kind === "fixed" — extract the authoritative patch, validate it
+	//    against the MR diff whitelist, then monitor the MR's CI and retry by
+	//    reusing the agent session if CI stays red. The CI re-run is the
+	//    verification gate (it re-checks the exact failing stage), so no
+	//    separate test runner is needed.
+	let outcome: RepairOutcome;
 	try {
-		patch = await extractPatch(repoCwd, result.summary, event.sha);
-	} catch (err) {
-		return finishRepair({
-			dingtalk,
-			cwd: deps.cwd,
+		outcome = await repairFixed({
+			deps,
 			event,
-			removeWorktree: worktree.remove,
-			result: {
-				kind: "failed",
-				summary: "extract-patch",
-				error: errMessage(err),
-			},
+			repoCwd,
+			result,
+			diffFiles,
+			agentInput,
+			agentMetrics,
 		});
+	} finally {
+		agent.close();
 	}
+	return outcome;
+}
+
+/**
+ * Post-"fixed" pipeline: extract the real patch, whitelist-validate it, then
+ * monitor the MR's CI. If CI stays red, reuse the agent's open session to
+ * continue fixing (updating the same MR), up to CIHEAL_RETRY_LIMIT times.
+ */
+async function repairFixed(args: {
+	deps: WorkerDeps;
+	event: PipelineEvent;
+	repoCwd: string;
+	result: Extract<AgentResult, { kind: "fixed" }>;
+	diffFiles: readonly string[];
+	agentInput: AgentRunInput;
+	agentMetrics: { turns: number; tokens: number; cost: number; durationMs: number };
+}): Promise<RepairOutcome> {
+	const { deps, event, repoCwd, result, diffFiles, agentInput } = args;
+	const { glab, dingtalk, worktree } = deps;
+
+	const patch = await extractPatch(repoCwd, result.summary, event.sha);
 	if (patch.paths.length === 0) {
 		return finishRepair({
 			dingtalk,
@@ -208,20 +236,29 @@ export async function runRepair(
 				summary: "empty patch after agent reported fixed",
 				diagnosis: result.diagnosis,
 				diff: patch.diff,
-				metrics: agentMetrics,
+				metrics: args.agentMetrics,
 			},
 		});
 	}
-	// G3 路径校验 + 测试验证均跳过（人工 review 兜底，MR 不自动合并）：
-	// - validatePatchPaths 用 TEST_PATH_RE 硬编码 src/test|it/、docs/ 判定
-	// - verifyTwoLayer 硬编码 Mvn/Gradle 命令（mavenTestArg/inferMavenModule）
-	// 非 Java 项目（Python tests/、Go *_test.go、JS __tests__/）会被误杀。
-	// 通用化方向：信任 agent 提供验证命令、bot 独立执行看 exit code
-	// （不信任自述结果）；当前 v1 靠人工 review。以下函数保留以备恢复。
-	void validatePatchPaths;
+	const g3 = validatePatchPaths(patch, diffFiles);
+	if (g3) {
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			removeWorktree: worktree.remove,
+			result: {
+				kind: "escalated",
+				summary: `G3/diff 违规：${g3}`,
+				diagnosis: result.diagnosis,
+				diff: patch.diff,
+				metrics: args.agentMetrics,
+			},
+		});
+	}
+	// 两层测试验证（verifyTwoLayer）v1 仍禁用：MR-CI 重跑即为 re-verify；
+	// 其 Mvn/Gradle 硬编码对非 Java 项目误杀，故靠 CI 重跑兜底。
 	void verifyTwoLayer;
-	// MR 由 agent 自己提交（git push + glab mr create + 返回 mrUrl）。
-	// bot 从结构化输出取 mrUrl，不信任时可选 glab mr list 验证。
 	if (!result.mrUrl) {
 		return finishRepair({
 			dingtalk,
@@ -233,45 +270,173 @@ export async function runRepair(
 				summary: "agent reported fixed but did not create MR (no mrUrl)",
 				diagnosis: result.diagnosis,
 				diff: patch.diff,
-				metrics: agentMetrics,
+				metrics: args.agentMetrics,
+			},
+		});
+	}
+
+	// Monitor the MR's CI + retry by reusing the agent session.
+	const mrIid = parseMrIid(result.mrUrl);
+	let currentResult = result;
+	let currentPatch = patch;
+	let lastStatus: MrPipelineStatus["status"] | "unmonitored" =
+		mrIid == null ? "unmonitored" : "pending";
+	const maxRetries = readIntEnv("CIHEAL_RETRY_LIMIT", 2);
+	const pollIntervalMs = readIntEnv("CIHEAL_POLL_INTERVAL_MS", 10_000);
+	const maxPolls = readIntEnv("CIHEAL_POLL_LIMIT", 30);
+	let attempt = 0;
+	let polls = 0;
+	if (mrIid != null) {
+		while (attempt < maxRetries) {
+			const st = await glab.fetchMrPipelineStatus(event.projectId, mrIid);
+			lastStatus = st.status;
+			if (st.status === "success" || st.status === "unknown") break;
+			if (st.status === "pending") {
+				if (polls++ >= maxPolls) break;
+				await sleep(pollIntervalMs);
+				continue;
+			}
+			// failed: reuse the agent session to continue fixing the same MR.
+			if (st.pipelineId == null) break;
+			const newCiLog = await glab.fetchCiLog(event.projectId, st.pipelineId);
+			const cont = await deps.agent.continue(
+				agentInput,
+				result.mrUrl,
+				newCiLog,
+			);
+			if (cont.kind === "escalated") {
+				return finishRepair({
+					dingtalk,
+					cwd: deps.cwd,
+					event,
+					removeWorktree: worktree.remove,
+					result: {
+						kind: "escalated",
+						summary: cont.reason,
+						diagnosis: cont.diagnosis,
+						diff: currentPatch.diff,
+						metrics: args.agentMetrics,
+					},
+				});
+			}
+			const p2 = await extractPatch(repoCwd, cont.summary, event.sha);
+			const g3b = validatePatchPaths(p2, diffFiles);
+			if (p2.paths.length === 0 || g3b) {
+				return finishRepair({
+					dingtalk,
+					cwd: deps.cwd,
+					event,
+					removeWorktree: worktree.remove,
+					result: {
+						kind: "escalated",
+						summary:
+							p2.paths.length === 0
+								? "retry produced empty patch"
+								: `retry G3/diff 违规：${g3b}`,
+						diagnosis: cont.diagnosis,
+						diff: p2.diff,
+						metrics: args.agentMetrics,
+					},
+				});
+			}
+			currentResult = cont;
+			currentPatch = p2;
+			attempt++;
+		}
+	}
+
+	if (mrIid == null || lastStatus === "success" || lastStatus === "unknown") {
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			removeWorktree: worktree.remove,
+			result: {
+				kind: "mr",
+				summary: currentResult.diagnosis.summary,
+				diagnosis: currentResult.diagnosis,
+				diff: currentPatch.diff,
+				mrUrl: currentResult.mrUrl ?? result.mrUrl,
+				metrics: args.agentMetrics,
 			},
 		});
 	}
 	return finishRepair({
 		dingtalk,
 		cwd: deps.cwd,
-			event,
-			removeWorktree: worktree.remove,
-			result: {
-			kind: "mr",
-			summary: result.diagnosis.summary,
-			diagnosis: result.diagnosis,
-			diff: patch.diff,
-			mrUrl: result.mrUrl,
-			metrics: agentMetrics,
+		event,
+		removeWorktree: worktree.remove,
+		result: {
+			kind: "escalated",
+		summary: `MR CI 仍红，重试 ${attempt} 次后转交人工`,
+		diagnosis: currentResult.diagnosis,
+		diff: currentPatch.diff,
+		metrics: args.agentMetrics,
 		},
 	});
 }
 
-function shortSha(sha: string): string {
-	return sha.slice(0, 8);
-}
+/** Spill files (CI log / MR diff) the bot writes into the worktree — must
+ *  never appear in the extracted patch. */
+const SPILL_RE = /(^|\/)(ci-log.*\.txt|mr-diff\.patch)$/;
 
-/**
- * G3 permission boundary: the bot may ONLY write test + doc files.
- * Any path under a production source tree (src/main for Java/Maven, or
- * a generic src path not under a test directory) is forbidden and causes
- * the repair to escalate instead of creating an MR.
- *
- * Returns a human-readable violation reason, or null if all paths are safe.
- */
-function validatePatchPaths(patch: Patch): string | null {
+/** Whitelist-validate a patch (G0 diff gate): every path must be in the MR
+ *  diff file set (or, with no diff context, a non-production test/doc path).
+ *  Build/CI config is always forbidden. */
+function validatePatchPaths(patch: Patch, diffFiles: readonly string[]): string | null {
 	for (const p of patch.paths) {
-		if (isProductionPath(p)) {
-			return `patch touches production code: ${p}`;
+		if (isForbiddenConfig(p)) return `patch touches build/CI config: ${p}`;
+		if (diffFiles.length === 0) {
+			if (isProductionPath(p)) {
+				return `patch touches production code with no diff context: ${p}`;
+			}
+		} else if (!diffFiles.includes(p)) {
+			return `patch touches file outside MR diff: ${p}`;
 		}
 	}
 	return null;
+}
+
+/** Parse the changed file set from a `git diff` text (MR diff). */
+function parseDiffFiles(diff: string): string[] {
+	const files: string[] = [];
+	for (const line of diff.split("\n")) {
+		const m = line.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/);
+		if (m) files.push(m[2]);
+	}
+	return files;
+}
+
+/** Build/CI config files are never editable, even inside the MR diff. */
+function isForbiddenConfig(p: string): boolean {
+	return /(^|\/)(pom\.xml|build\.gradle|build\.gradle\.kts|settings\.gradle|settings\.gradle\.kts|Dockerfile|\.gitlab-ci\.yml)$/.test(
+		p,
+	);
+}
+
+/** Drop spill-file hunks from a unified diff so they never enter the patch. */
+function stripSpillDiff(diff: string): string {
+	return diff
+		.split(/\n(?=diff --git )/)
+		.filter((hunk) => {
+			const m = hunk.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/m);
+			const path = m ? m[2] : "";
+			return !SPILL_RE.test(path);
+		})
+		.join("\n");
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readIntEnv(name: string, fallback: number): number {
+	const v = Number(process.env[name]);
+	return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+function shortSha(sha: string): string {
+	return sha.slice(0, 8);
 }
 
 /**
@@ -292,7 +457,7 @@ async function extractPatch(
 	// has no record of them). Spill files live outside repoCwd so they never
 	// pollute the patch.
 	await exec("git", ["add", "-A"], { cwd });
-	const { stdout: diff } = await exec(
+	const { stdout: rawDiff } = await exec(
 		"git",
 		["diff", "--no-color", baseSha],
 		{ cwd },
@@ -305,7 +470,9 @@ async function extractPatch(
 	const paths = namesOut
 		.split("\n")
 		.map((s) => s.trim())
-		.filter(Boolean);
+		.filter(Boolean)
+		.filter((p) => !SPILL_RE.test(p));
+	const diff = stripSpillDiff(rawDiff);
 	return { diff, paths, summary };
 }
 

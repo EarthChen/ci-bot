@@ -1,32 +1,12 @@
 [
 	{
-		"provider": "kilolocal",
-		"model": "tencent/hy3:free",
-		"defaultThinkingLevel": "medium",
-		"compaction": {
-			"enabled": true,
-			"reserveTokens": 16384,
-			"keepRecentTokens": 20000
-		}
-	},
-	{
-		"provider": "MOMO本地",
-		"model": "qwen3.7-max",
+		"provider": "amar-coding-plan",
+		"model": "qwen3.8-max",
 		"defaultThinkingLevel": "high",
 		"compaction": {
 			"enabled": true,
-			"reserveTokens": 16384,
-			"keepRecentTokens": 20000
-		}
-	},
-	{
-		"provider": "MOMO本地",
-		"model": "glm-5.2",
-		"defaultThinkingLevel": "high",
-		"compaction": {
-			"enabled": true,
-			"reserveTokens": 16384,
-			"keepRecentTokens": 20000
+			"reserveTokens": 32768,
+			"keepRecentTokens": 40000
 		}
 	}
 ]

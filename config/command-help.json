@@ -1,0 +1,19 @@
+{
+	"commands": {
+		"/route": {
+			"summary": "管理 CI 失败通知的群路由（哪些仓库的报错发到哪个群）",
+			"usage": [
+				"`/route add <pattern>` 把仓库 pattern（支持 `*`/`?` 通配）绑定到**当前群**",
+				"`/route rm <pattern>` 删除路由",
+				"`/route list` 列出全部动态路由"
+			]
+		},
+		"/help": {
+			"summary": "显示本帮助",
+			"usage": [
+				"`/help` 列出所有命令",
+				"`/help <命令>` 显示单个命令的详细用法（如 `/help /route`）"
+			]
+		}
+	}
+}

@@ -33,33 +33,13 @@ function fakeRuntime(opts: {
 
 const candidates: readonly ModelCandidate[] = [
 	{
-		provider: "kilolocal",
-		model: "tencent/hy3:free",
-		defaultThinkingLevel: "medium",
-		compaction: {
-			enabled: true,
-			reserveTokens: 16384,
-			keepRecentTokens: 20000,
-		},
-	},
-	{
-		provider: "MOMO本地",
-		model: "qwen3.7-max",
+		provider: "amar-coding-plan",
+		model: "qwen3.8-max",
 		defaultThinkingLevel: "high",
 		compaction: {
 			enabled: true,
-			reserveTokens: 16384,
-			keepRecentTokens: 20000,
-		},
-	},
-	{
-		provider: "MOMO本地",
-		model: "glm-5.2",
-		defaultThinkingLevel: "high",
-		compaction: {
-			enabled: true,
-			reserveTokens: 16384,
-			keepRecentTokens: 20000,
+			reserveTokens: 32768,
+			keepRecentTokens: 40000,
 		},
 	},
 ];
@@ -89,19 +69,35 @@ describe("loadModelCandidates", () => {
 });
 
 describe("selectModelCandidate", () => {
+	const selectionCandidates: readonly ModelCandidate[] = [
+		{
+			provider: "amar-coding-plan",
+			model: "qwen3.8-max",
+			defaultThinkingLevel: "high",
+		},
+		{
+			provider: "amar-coding-plan",
+			model: "qwen3.8-fallback",
+			defaultThinkingLevel: "high",
+		},
+	];
+
 	it("selects the first available model without key injection", async () => {
 		const runtime = fakeRuntime({
 			models: {
-				"MOMO本地/qwen3.7-max": undefined,
-				"MOMO本地/glm-5.2": { id: "glm-5.2" },
+				"amar-coding-plan/qwen3.8-max": undefined,
+				"amar-coding-plan/qwen3.8-fallback": { id: "qwen3.8-fallback" },
 			},
-			available: ["glm-5.2"],
+			available: ["qwen3.8-fallback"],
 		});
 
-		const selected = await selectModelCandidate(runtime, candidates);
+		const selected = await selectModelCandidate(
+			runtime,
+			selectionCandidates,
+		);
 
-		expect(selected.candidate).toEqual(candidates[2]);
-		expect(selected.model).toEqual({ id: "glm-5.2" });
+		expect(selected.candidate).toEqual(selectionCandidates[1]);
+		expect(selected.model).toEqual({ id: "qwen3.8-fallback" });
 	});
 
 	it("fails loudly when no candidate has an available model", async () => {

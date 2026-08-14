@@ -49,7 +49,28 @@ export interface GitLabClient {
 
 /** glab-backed implementation. Token read from env at call time. */
 export class GlabGitLabClient implements GitLabClient {
+	/** Cache of resolved path_with_namespace per numeric project id. */
+	private readonly projectPaths = new Map<string, string>();
+
 	constructor(private readonly runGlab: GlabRunner) {}
+
+	/**
+	 * Resolve the glab -R repo selector (OWNER/REPO) from a numeric project id.
+	 * glab 1.112 -R rejects bare ids ("Expected the [HOST/]OWNER/[NAMESPACE/]REPO
+	 * format"), so -R-based commands must go through the resolved path.
+	 */
+	private async resolveRepoRef(projectId: string): Promise<string> {
+		const cached = this.projectPaths.get(projectId);
+		if (cached) return cached;
+		const out = await this.runGlab(["api", `/projects/${projectId}`]);
+		const parsed = safeParse(out);
+		const path = parsed?.path_with_namespace;
+		if (typeof path !== "string" || path.length === 0) {
+			throw new Error(`cannot resolve project path for ${projectId}`);
+		}
+		this.projectPaths.set(projectId, path);
+		return path;
+	}
 
 	async fetchMrPipelineStatus(
 		projectId: string,
@@ -108,13 +129,9 @@ export class GlabGitLabClient implements GitLabClient {
 	}
 
 	async fetchMrDiff(projectId: string, mrIid: number): Promise<string> {
-		return this.runGlab([
-			"mr",
-			"diff",
-			String(mrIid),
-			"--project",
-			String(projectId),
-		]);
+		const repo = await this.resolveRepoRef(projectId);
+		// glab 1.112 mr diff rejects --project ("Unknown flag"); -R needs OWNER/REPO.
+		return this.runGlab(["mr", "diff", String(mrIid), "-R", repo]);
 	}
 
 	async createMr(params: {
@@ -126,14 +143,14 @@ export class GlabGitLabClient implements GitLabClient {
 		patch: Patch;
 	}): Promise<CreatedMr> {
 		const body = buildMrBody(params.diagnosis, params.patch);
+		const repo = await this.resolveRepoRef(params.projectId);
 		// glab mr create outputs JSON with web_url when --output json is used.
 		const out = await this.runGlab([
 			"mr",
 			"create",
-			// glab 1.112 mr create 用 -R/--repo 指定项目（支持 OWNER/REPO 或 project ID）；
-			// --project 是 fetch 路径用的，mr create 不支持（"Unknown flag: --project"）。
+			// glab 1.112 -R 只接受 OWNER/REPO（数字 project ID 会被拒），先解析 path。
 			"-R",
-			String(params.projectId),
+			repo,
 			"--source-branch",
 			params.sourceBranch,
 			"--target-branch",

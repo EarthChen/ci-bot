@@ -51,10 +51,28 @@ export class StreamDingTalkNotifier implements DingTalkNotifier {
 		this.post = opts.post ?? defaultPost;
 	}
 
+	/** Send to the notifier's default group (legacy repair-result messages). */
 	async send(message: DingTalkMessage): Promise<void> {
+		// Preserve the historical body shape: title also rendered as a heading.
+		await this.sendTo(this.conversationId, {
+			title: message.title,
+			text: `### ${message.title}\n\n${message.text}`,
+		});
+	}
+
+	/**
+	 * Send markdown to an explicit group conversation. The text body is sent
+	 * verbatim (title is only the DingTalk preview line) — matches
+	 * code-review-bot's send_markdown, used by the routed CI-failure
+	 * notification fan-out.
+	 */
+	async sendTo(
+		conversationId: string,
+		message: DingTalkMessage,
+	): Promise<void> {
 		// Boundary validation: a configured group target is required before
 		// hitting the external API (avoids a silent 400 with empty openConversationId).
-		if (!this.conversationId) {
+		if (!conversationId) {
 			throw new Error(
 				"StreamDingTalkNotifier: conversationId is required for group push",
 			);
@@ -63,7 +81,7 @@ export class StreamDingTalkNotifier implements DingTalkNotifier {
 		const token = await this.client.getAccessToken();
 		const msgParam = JSON.stringify({
 			title: message.title,
-			text: `### ${message.title}\n\n${message.text}`,
+			text: message.text,
 		});
 
 		await this.post(
@@ -72,7 +90,7 @@ export class StreamDingTalkNotifier implements DingTalkNotifier {
 				msgKey: "sampleMarkdown",
 				msgParam,
 				robotCode: this.robotCode,
-				openConversationId: this.conversationId,
+				openConversationId: conversationId,
 			},
 			token,
 		);

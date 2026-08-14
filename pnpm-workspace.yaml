@@ -2,6 +2,7 @@ allowBuilds:
   "@google/genai": true
   "protobufjs": true
   "esbuild": true
+  better-sqlite3: true
 minimumReleaseAgeExclude:
   - '@earendil-works/pi-agent-core@0.84.0'
   - '@earendil-works/pi-ai@0.84.0'

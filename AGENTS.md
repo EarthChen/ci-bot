@@ -13,6 +13,7 @@ CI 单测自愈 bot：headless 长驻 TS 服务，监听 GitLab pipeline 失败 
 - **Web 框架**：Fastify 5（webhook 接收）
 - **日志**：pino 9（结构化 JSON）
 - **钉钉**：`dingtalk-stream` SDK（Stream 模式：主进程 WebSocket 接收 + SDK API 推送）
+- **存储**：better-sqlite3（动态群路由 SQLite，WAL；原生模块，已入 `allowBuilds` 审批）
 - **测试**：vitest 2（forks singleFork，子进程测试隔离）
 - **构建**：tsc 直出 `dist/`（无 bundler）
 - **包管理**：pnpm（lockfile 提交；`onlyBuiltDependencies` 已声明）
@@ -37,7 +38,7 @@ pnpm metrics          # node scripts/metrics-summary.mjs
 src/
   main.ts                  # 入口：config + Fastify + StreamDingTalkBot/Notifier + scheduler + worker manager
   config/index.ts          # .env 解析 + 配置校验；必填 CIHEAL_BOT_ROOT / CIHEAL_PI_BASE_DIR（绝对路径）缺失即抛
-  webhook/receiver.ts      # POST /webhook：IP allowlist → 限流 → X-Gitlab-Token 验签 → 项目ID路径穿越校验 → 去重 → 入队
+  webhook/receiver.ts      # POST /webhook：IP allowlist → 限流 → X-Gitlab-Token 验签 → 项目ID路径穿越校验 → 修复开关（URL query `repair=1|true`，缺参=纯播报 notify-only）→ 去重 → 入队 + 分叉群通知
   agent-runtime/scheduler.ts  # 调度能力（通用层）：per-key 串行 + 跨 key 并行（effective=min(maxParallel,maxWorkers)），pipeline-id 幂等去重 + worker 崩溃自警；SchedulingPolicy 由 vertical agent 声明
   worker/
     manager.ts             # SubprocessWorkerManager：per-event spawn 子进程，cwd/env 隔离；从 CIHEAL_PI_BASE_DIR 复制 Pi auth/models 到 .pi-agent
@@ -59,8 +60,13 @@ src/
     dingtalk.ts            # DingTalkNotifier 接口 + InMemory（测试）
     stream-dingtalk.ts     # StreamDingTalkNotifier：SDK API 推送（groupMessages/send）
     stream-bot.ts          # DingTalkStreamBot：主进程 WebSocket 接收 TOPIC_ROBOT
+    pipeline-notification.ts  # CI 失败群通知模板（移植 code-review-bot）+ 路由通知工厂
+    project-router.ts      # project 路径→群会话路由（五层：动态精确/通配→静态精确/通配→default）
+    route-store.ts         # SQLite 动态路由存储（webhook_routes 表；/route 写、resolve 每次直读）
+    route-command.ts / help-command.ts  # 群命令：/route add|rm|list（add 绑定当前群）、/help（仅群聊）
+    command-help.ts        # 命令帮助文案外置加载与渲染（config/command-help.json）
   types.ts / util/log.ts   # 领域类型 + pino logger
-config/                    # model-candidates.json + model-profiles.json（bot-owned，非敏感）
+config/                    # model-candidates.json + group-routing.json + command-help.json（bot-owned，非敏感）
 .pi/                       # bot 基础 settings.json（retry / skill-commands 全局策略）
 tests/                     # agent-runtime / agent / config / e2e / worker / notify / webhook / fixture
 ```
@@ -82,7 +88,7 @@ tests/                     # agent-runtime / agent / config / e2e / worker / not
 
 - **G3 权限边界**：bot 只写测试/文档，`src/main` 禁碰。发现生产代码 bug → 转交人工。`validatePatchPaths` 在 createMR 前校验，违规即升级不建 MR
 - **绝不自动 merge**：所有 MR 强制人工 review
-- **钉钉通知与 MR 解耦**：agent 永不持有钉钉工具；bot 代码在确定性 pipeline 节点（成功/转交/异常/崩溃自警）调钉钉
+- **钉钉通知与 MR 解耦**：agent 永不持有钉钉工具；bot 代码在确定性 pipeline 节点（webhook 即时播报/成功/转交/异常/崩溃自警）调钉钉。群通知路由：静态 `config/group-routing.json` + 动态 SQLite（群内 `/route add <pattern>` 绑定当前群，优先级高于静态；`/help` 查看命令）。`CIHEAL_DINGTALK_MODE=fake` 时主进程播报与命令回复改为记录不推送
 - **预算软上限**：SharedAgentRuntime 在 `turn_end` 累计 token，超 `BOT_BUDGET_TOKENS`（总 200k）或 `BOT_BUDGET_PER_TURN_TOKENS`（单 turn 50k）→ `session.abort()` + 钉钉告警。软上限风险：abort 在 turn 结束后触发，单 turn 可能已超支
 - **class 5 早筛**：bot 在 spawn agent 前用关键词粗筛编译/依赖错，省预算
 - **class 3 读 spec**：补缺失测试时断言 spec 规定的正确行为，而非当前代码行为（避免固化 bug）
@@ -96,3 +102,4 @@ tests/                     # agent-runtime / agent / config / e2e / worker / not
 - **Triage labels**：needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix（见 `docs/agents/triage-labels.md`）
 - **Domain docs**：根 `CONTEXT.md` + `docs/adr/`（见 `docs/agents/domain.md`）
 - **Shared runtime ADR**：`docs/adr/0002-shared-runtime-static-vertical-agents.md`
+- **Real-run playbook**：`docs/real-run-playbook.md`（真实链路端到端运行：预检 → 选 pipeline → webhook 投递 → 监控 → 结果解读）

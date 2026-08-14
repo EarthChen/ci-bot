@@ -22,7 +22,20 @@ export interface DingTalkNotifier {
 /** Simple in-memory notifier that records calls (for tests / dry-run). */
 export class InMemoryDingTalkNotifier implements DingTalkNotifier {
 	readonly sent: DingTalkMessage[] = [];
+	/** Group-targeted sends recorded with their conversation id (tests / dry-run). */
+	readonly sentGroups: Array<{
+		readonly conversationId: string;
+		readonly message: DingTalkMessage;
+	}> = [];
+
 	async send(message: DingTalkMessage): Promise<void> {
 		this.sent.push(message);
+	}
+
+	async sendTo(
+		conversationId: string,
+		message: DingTalkMessage,
+	): Promise<void> {
+		this.sentGroups.push({ conversationId, message });
 	}
 }

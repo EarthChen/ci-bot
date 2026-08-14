@@ -197,3 +197,52 @@ describe("DingTalkStreamBot", () => {
 		expect(disconnect).toHaveBeenCalledOnce();
 	});
 });
+
+describe("StreamDingTalkNotifier.sendTo", () => {
+	it("sends markdown verbatim to an explicit group (no heading prepend)", async () => {
+		const fakeToken = "fake-token-123";
+		const post = vi.fn().mockResolvedValue(undefined);
+		const client = {
+			getAccessToken: vi.fn().mockResolvedValue(fakeToken),
+		} as unknown as DWClient;
+
+		const notifier = new StreamDingTalkNotifier({
+			client,
+			robotCode: "robot-001",
+			conversationId: "conv-default",
+			post,
+		});
+
+		const body = "### ❌ CI Pipeline Failed\n\n- **项目**: ultron/x\n";
+		await notifier.sendTo("conv-routed", {
+			title: "❌ CI Failed: ultron/x",
+			text: body,
+		});
+
+		expect(post).toHaveBeenCalledWith(
+			"https://api.dingtalk.com/v1.0/robot/groupMessages/send",
+			{
+				msgKey: "sampleMarkdown",
+				msgParam: JSON.stringify({ title: "❌ CI Failed: ultron/x", text: body }),
+				robotCode: "robot-001",
+				openConversationId: "conv-routed",
+			},
+			fakeToken,
+		);
+	});
+
+	it("throws on an empty explicit conversationId", async () => {
+		const client = {
+			getAccessToken: vi.fn().mockResolvedValue("token"),
+		} as unknown as DWClient;
+		const notifier = new StreamDingTalkNotifier({
+			client,
+			robotCode: "robot-001",
+			conversationId: "conv-default",
+		});
+
+		await expect(
+			notifier.sendTo("", { title: "t", text: "x" }),
+		).rejects.toThrow(/conversationId/i);
+	});
+});

@@ -10,6 +10,7 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Scheduler } from "../agent-runtime/scheduler.js";
+import type { PipelineFailureNotifier } from "../notify/pipeline-notification.js";
 import type { PipelineEvent } from "../types.js";
 import { logger } from "../util/log.js";
 
@@ -88,6 +89,8 @@ function extractProjectUrl(project: Record<string, unknown>): string {
 export interface MountWebhookDeps {
 	readonly scheduler: Scheduler;
 	readonly config: WebhookConfig;
+	/** Immediate CI-failure group notification (optional; ported from code-review-bot). */
+	readonly pipelineNotifier?: PipelineFailureNotifier;
 }
 
 /** Rate-limit state (in-memory; ticket 07 may move to SQLite-backed). */
@@ -135,11 +138,23 @@ export async function mountWebhook(
 			return reply.code(202).send({ status: "ignored" });
 		}
 
-		// 5. Enqueue (idempotent by pipeline id).
+		// 5. Repair opt-in gate: only `repair=1|true` in the webhook URL query
+		//    triggers the auto-repair; other events take the notify-only path
+		//    (CI-failure group broadcast, code-review-bot parity).
+		if (!isRepairRequested(req.query)) {
+			await notifyQuietly(deps, req.body, event.pipelineId);
+			return reply.code(202).send({ status: "notify-only" });
+		}
+
+		// 6. Enqueue (idempotent by pipeline id).
 		const status = deps.scheduler.enqueue(event);
 		if (status === "duplicate") {
 			return reply.code(202).send({ status: "duplicate" });
 		}
+		// 7. Immediate group notification (ported from code-review-bot's
+		//    PipelineHandler). Decoupled from enqueue: a notification failure
+		//    must never affect the already-queued repair.
+		await notifyQuietly(deps, req.body, event.pipelineId);
 		return reply.code(202).send({ status: "queued" });
 	});
 }
@@ -158,4 +173,31 @@ function rateAllowed(ip: string, max: number, windowMs: number): boolean {
 	}
 	bucket.count += 1;
 	return bucket.count <= max;
+}
+
+/** Repair opt-in switch: `repair=1|true` (case-insensitive) in the webhook
+ *  URL query triggers the auto-repair; anything else (absent/0/false) skips
+ *  it. GitLab webhook URLs are configured per project, so opting a project in
+ *  is just appending `?repair=1` to its webhook URL. */
+export function isRepairRequested(query: unknown): boolean {
+	if (typeof query !== "object" || query === null) return false;
+	const raw = (query as Record<string, unknown>).repair;
+	const value = Array.isArray(raw) ? raw[0] : raw;
+	if (typeof value !== "string") return false;
+	const normalized = value.toLowerCase();
+	return normalized === "1" || normalized === "true";
+}
+
+/** Immediate group notification; failures only warn, never affect the flow. */
+async function notifyQuietly(
+	deps: MountWebhookDeps,
+	rawPayload: unknown,
+	pipelineId: number,
+): Promise<void> {
+	if (!deps.pipelineNotifier) return;
+	try {
+		await deps.pipelineNotifier.notify(rawPayload);
+	} catch (err) {
+		logger.warn({ err, pipelineId }, "pipeline failure notification failed");
+	}
 }

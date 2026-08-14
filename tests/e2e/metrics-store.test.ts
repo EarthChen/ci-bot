@@ -51,7 +51,7 @@ async function postWebhook(
 	body: unknown,
 	token = WEBHOOK_SECRET,
 ): Promise<{ status: number; json: unknown }> {
-	const res = await fetch(`${base}/webhook`, {
+	const res = await fetch(`${base}/webhook?repair=1`, {
 		method: "POST",
 		headers: { "content-type": "application/json", "x-gitlab-token": token },
 		body: JSON.stringify(body),

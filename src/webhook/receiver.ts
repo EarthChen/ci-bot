@@ -91,6 +91,10 @@ export interface MountWebhookDeps {
 	readonly config: WebhookConfig;
 	/** Immediate CI-failure group notification (optional; ported from code-review-bot). */
 	readonly pipelineNotifier?: PipelineFailureNotifier;
+	/** Fired after a NEW pipeline event is accepted (enqueued) — e.g. decision
+	 *  invalidation (T07). Errors are caught and logged: the enqueue already
+	 *  happened, so the webhook response must never be affected. */
+	readonly onPipelineAccepted?: (event: PipelineEvent) => Promise<void>;
 }
 
 /** Rate-limit state (in-memory; ticket 07 may move to SQLite-backed). */
@@ -150,6 +154,19 @@ export async function mountWebhook(
 		const status = deps.scheduler.enqueue(event);
 		if (status === "duplicate") {
 			return reply.code(202).send({ status: "duplicate" });
+		}
+		// 6b. Lifecycle hook (T07): a NEW accepted pipeline invalidates the
+		//     project's stale awaiting decisions. Failures are caught — the
+		//     enqueue already happened; the response must not be affected.
+		if (deps.onPipelineAccepted) {
+			try {
+				await deps.onPipelineAccepted(event);
+			} catch (err) {
+				logger.warn(
+					{ err, pipelineId: event.pipelineId },
+					"onPipelineAccepted hook failed",
+				);
+			}
 		}
 		// 7. Immediate group notification (ported from code-review-bot's
 		//    PipelineHandler). Decoupled from enqueue: a notification failure

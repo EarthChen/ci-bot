@@ -188,6 +188,37 @@ export class DecisionStore {
 		return rows.map(rowToRecord);
 	}
 
+	/**
+	 * Invalidate every awaiting decision of a project (T07) — called when a
+	 * new pipeline for the project is accepted, so humans never decide on a
+	 * stale sha. Atomic single transaction; terminal rows never change.
+	 * Returns the prior (pre-invalidation) records for cleanup + notification.
+	 */
+	invalidateByProject(projectId: string): DecisionRecord[] {
+		const invalidate = this.db.transaction((pid: string) => {
+			const rows = this.db
+				.prepare(
+					"SELECT * FROM decisions WHERE project_id = ? AND status = 'awaiting_decision' ORDER BY created_at",
+				)
+				.all(pid) as DecisionRow[];
+			if (rows.length === 0) {
+				return [];
+			}
+			const now = new Date().toISOString();
+			this.db
+				.prepare(
+					`UPDATE decisions SET
+						status = 'invalidated',
+						decided_by = 'system:new-pipeline',
+						decided_at = ?
+					WHERE project_id = ? AND status = 'awaiting_decision'`,
+				)
+				.run(now, pid);
+			return rows.map(rowToRecord);
+		});
+		return invalidate(projectId);
+	}
+
 	sweepExpired(): string[] {
 		const now = new Date().toISOString();
 		const rows = this.db

@@ -7,6 +7,8 @@ import {
 	parsePipelinePayload,
 	type WebhookConfig,
 } from "../../src/webhook/receiver.js";
+import type { PipelineEvent } from "../../src/types.js";
+
 
 function failedPipeline(projectId: string | number): unknown {
 	return {
@@ -52,6 +54,7 @@ describe("webhook pipeline-failure notification fan-out", () => {
 		notifier?: PipelineFailureNotifier;
 		/** Query string appended to /webhook (defaults to the repair opt-in). */
 		query?: string;
+		onPipelineAccepted?: (event: PipelineEvent) => Promise<void>;
 	}) {
 		const app = Fastify();
 		const scheduler = {
@@ -61,6 +64,9 @@ describe("webhook pipeline-failure notification fan-out", () => {
 			scheduler,
 			config: webhookConfig,
 			...(opts.notifier ? { pipelineNotifier: opts.notifier } : {}),
+			...(opts.onPipelineAccepted
+				? { onPipelineAccepted: opts.onPipelineAccepted }
+				: {}),
 		});
 		const payload = failedPipeline(12345) as Record<string, unknown>;
 		const res = await app.inject({
@@ -143,5 +149,49 @@ describe("webhook pipeline-failure notification fan-out", () => {
 
 		expect(res.json()).toEqual({ status: "queued" });
 		expect(scheduler.enqueue).toHaveBeenCalledOnce();
+	});
+
+	it("fires onPipelineAccepted with the parsed event when enqueued", async () => {
+		const onPipelineAccepted = vi.fn().mockResolvedValue(undefined);
+		const { res } = await injectWebhook({ enqueue: "queued", onPipelineAccepted });
+
+		expect(res.json()).toEqual({ status: "queued" });
+		expect(onPipelineAccepted).toHaveBeenCalledOnce();
+		expect(onPipelineAccepted).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "12345", pipelineId: 101 }),
+		);
+	});
+
+	it("does not fire onPipelineAccepted on duplicate events", async () => {
+		const onPipelineAccepted = vi.fn().mockResolvedValue(undefined);
+		const { res } = await injectWebhook({
+			enqueue: "duplicate",
+			onPipelineAccepted,
+		});
+
+		expect(res.json()).toEqual({ status: "duplicate" });
+		expect(onPipelineAccepted).not.toHaveBeenCalled();
+	});
+
+	it("does not fire onPipelineAccepted on the notify-only path", async () => {
+		const onPipelineAccepted = vi.fn().mockResolvedValue(undefined);
+		const { res } = await injectWebhook({
+			enqueue: "queued",
+			query: "",
+			onPipelineAccepted,
+		});
+
+		expect(res.json()).toEqual({ status: "notify-only" });
+		expect(onPipelineAccepted).not.toHaveBeenCalled();
+	});
+
+	it("still responds queued when onPipelineAccepted throws", async () => {
+		const onPipelineAccepted = vi
+			.fn()
+			.mockRejectedValue(new Error("invalidation blew up"));
+		const { res } = await injectWebhook({ enqueue: "queued", onPipelineAccepted });
+
+		expect(res.statusCode).toBe(202);
+		expect(res.json()).toEqual({ status: "queued" });
 	});
 });

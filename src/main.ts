@@ -30,6 +30,7 @@ import {
 import { handleRouteCommand } from "./notify/route-command.js";
 import { handleHelpCommand } from "./notify/help-command.js";
 import { handleHealCommand } from "./decision/heal-command.js";
+import { createDecisionLifecycle } from "./decision/lifecycle.js";
 import { loadGroupRouting, ProjectRouter } from "./notify/project-router.js";
 import { DingTalkStreamBot } from "./notify/stream-bot.js";
 import { logger } from "./util/log.js";
@@ -89,6 +90,14 @@ async function main(): Promise<void> {
 	// sent from the main process through the project router (same group as
 	// the webhook failure broadcast).
 	const escalationNotifier = createEscalationNotifier({
+		router: projectRouter,
+		sender: groupSender,
+	});
+
+	// Decision lifecycle (T07): a newly accepted pipeline invalidates the
+	// project's stale awaiting decisions (store + scene cleanup + notify).
+	const decisionLifecycle = createDecisionLifecycle({
+		store: decisionStore,
 		router: projectRouter,
 		sender: groupSender,
 	});
@@ -182,6 +191,7 @@ async function main(): Promise<void> {
 			rateLimitWindowMs: 60_000,
 		},
 		pipelineNotifier,
+		onPipelineAccepted: (event) => decisionLifecycle.onNewPipeline(event),
 	});
 
 	await app.listen({ port: config.port, host: "0.0.0.0" });

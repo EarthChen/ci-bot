@@ -201,6 +201,58 @@ describe("DecisionStore", () => {
 		});
 	});
 
+	describe("invalidateByProject", () => {
+		it("invalidates all awaiting decisions of the project and returns them", () => {
+			store.create(makeCreateParams({ decision_id: "D-1", project_id: "proj-A" }));
+			store.create(makeCreateParams({ decision_id: "D-2", project_id: "proj-A", pipeline_id: "pipe-2" }));
+			store.create(makeCreateParams({ decision_id: "D-other", project_id: "proj-B" }));
+
+			const invalidated = store.invalidateByProject("proj-A");
+
+			expect(invalidated.map((r) => r.decision_id)).toEqual(["D-1", "D-2"]);
+			// Returned records carry the pre-invalidation state (cleanup + notify).
+			expect(invalidated[0].status).toBe("awaiting_decision");
+			expect(invalidated[0].cwd_path).toBe("/tmp/work/uuid-1");
+			expect(invalidated[0].event_json).toBe(JSON.stringify(makeEvent()));
+
+			const d1 = store.get("D-1")!;
+			expect(d1.status).toBe("invalidated");
+			expect(d1.decided_by).toBe("system:new-pipeline");
+			expect(d1.decided_at).toBeTruthy();
+			expect(store.get("D-2")!.status).toBe("invalidated");
+			// Other projects untouched.
+			expect(store.get("D-other")!.status).toBe("awaiting_decision");
+		});
+
+		it("never transitions terminal-state rows", () => {
+			const terminal: DecisionStatus[] = [
+				"resumed",
+				"closed",
+				"dropped",
+				"expired",
+				"invalidated",
+			];
+			for (const status of terminal) {
+				store.create(makeCreateParams({ decision_id: `D-${status}`, status }));
+			}
+			store.create(makeCreateParams({ decision_id: "D-awaiting" }));
+
+			const invalidated = store.invalidateByProject("proj-1");
+
+			expect(invalidated.map((r) => r.decision_id)).toEqual(["D-awaiting"]);
+			for (const status of terminal) {
+				expect(store.get(`D-${status}`)!.status).toBe(status);
+			}
+		});
+
+		it("returns empty array when the project has no awaiting decisions", () => {
+			store.create(makeCreateParams({ decision_id: "D-closed", status: "closed" }));
+			expect(store.invalidateByProject("proj-1")).toEqual([]);
+			expect(store.invalidateByProject("proj-unknown")).toEqual([]);
+			expect(store.get("D-closed")!.status).toBe("closed");
+		});
+	});
+
 	describe("persistence", () => {
 		it("persists across reopen (real SQLite file)", () => {
 			store.create(makeCreateParams({ decision_id: "D-persist" }));

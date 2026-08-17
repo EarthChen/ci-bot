@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
 	Scheduler,
 	type ScheduledWorker,
@@ -6,7 +6,11 @@ import {
 } from "../../src/agent-runtime/scheduler.js";
 import { CI_REPAIR_SCHEDULING_POLICY } from "../../src/agent/ci-repair-definition.js";
 import { join } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import type { PipelineEvent, RepairOutcome } from "../../src/types.js";
+import { DecisionStore } from "../../src/decision/store.js";
+import type { DecisionRecord } from "../../src/decision/store.js";
 
 function makeEvent(projectId: string, pipelineId: number): PipelineEvent {
 	return {
@@ -238,7 +242,10 @@ describe("Scheduler — 决策注册（decidable escalated）", () => {
 
 describe("Scheduler — routed escalation 通知（T04）", () => {
 	function notifySpy() {
-		return { notifyEscalated: vi.fn(async () => {}) };
+		return {
+			notifyEscalated: vi.fn(async () => {}),
+			notifyResumeTerminal: vi.fn(async () => {}),
+		};
 	}
 
 	it("decidable escalated → 先注册决策，再带 decision 通知", async () => {
@@ -349,6 +356,7 @@ describe("Scheduler — routed escalation 通知（T04）", () => {
 			notifyEscalated: vi.fn(async () => {
 				throw new Error("dingtalk down");
 			}),
+			notifyResumeTerminal: vi.fn(async () => {}),
 		};
 		const scheduler = new Scheduler({
 			workerManager: {
@@ -511,5 +519,135 @@ describe("Scheduler — enqueueResume（T05）", () => {
 		release();
 		await scheduler.idle();
 		expect(runResume).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("Scheduler — resume 二次转交终局通知（T09）", () => {
+	let dir: string;
+	let store: DecisionStore;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "t09-scheduler-"));
+		store = new DecisionStore(join(dir, "decisions.db"));
+	});
+	afterEach(() => {
+		store.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	/** Seed a decision the way /heal test leaves it: claimed as resumed. */
+	function seedResumedDecision(): DecisionRecord {
+		store.create({
+			decision_id: "D-1-ab12",
+			pipeline_id: "1",
+			project_id: "A",
+			event_json: JSON.stringify(makeEvent("A", 1)),
+			cwd_path: "/tmp/retained/work-1",
+			session_path: "/tmp/retained/work-1/.pi-agent",
+			branch: "ci-self-heal/main-abc12345",
+			expires_at: "2026-08-18T00:00:00.000Z",
+		});
+		store.updateStatus("D-1-ab12", {
+			status: "resumed",
+			decided_by: "staff-1",
+			decision_value: "test",
+		});
+		const record = store.get("D-1-ab12");
+		if (!record) throw new Error("seed failed");
+		return record;
+	}
+
+	function resumeScheduler(outcome: RepairOutcome, notifier: {
+		notifyEscalated: ReturnType<typeof vi.fn>;
+		notifyResumeTerminal: ReturnType<typeof vi.fn>;
+	}) {
+		return new Scheduler({
+			workerManager: {
+				run: async () => ({ kind: "escalated" as const, summary: "x" }),
+				runResume: async () => outcome,
+			},
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+			decisionStore: store,
+			escalationNotifier: notifier,
+		});
+	}
+
+	it("resume escalated → ONE 终局 routed 通知；无新决策行，resumed 行不变", async () => {
+		const record = seedResumedDecision();
+		const notifier = {
+			notifyEscalated: vi.fn(async () => {}),
+			notifyResumeTerminal: vi.fn(async () => {}),
+		};
+		const scheduler = resumeScheduler(
+			{ kind: "escalated", summary: "second escalation" },
+			notifier,
+		);
+		await scheduler.enqueueResume(record);
+		await scheduler.idle();
+
+		expect(notifier.notifyResumeTerminal).toHaveBeenCalledTimes(1);
+		expect(notifier.notifyResumeTerminal.mock.calls[0][0]).toEqual(makeEvent("A", 1));
+		expect(notifier.notifyResumeTerminal.mock.calls[0][1]).toMatchObject({
+			kind: "escalated",
+			summary: "second escalation",
+		});
+		expect(notifier.notifyEscalated).not.toHaveBeenCalled();
+
+		// One-round intervention: NO new decision row; the resumed row is terminal.
+		expect(store.listByStatus("awaiting_decision")).toEqual([]);
+		expect(store.listByProject("A")).toHaveLength(1);
+		expect(store.get("D-1-ab12")!.status).toBe("resumed");
+	});
+
+	it("resume mr → 主进程零通知（worker 已发成功通知）", async () => {
+		const record = seedResumedDecision();
+		const notifier = {
+			notifyEscalated: vi.fn(async () => {}),
+			notifyResumeTerminal: vi.fn(async () => {}),
+		};
+		const scheduler = resumeScheduler(
+			{ kind: "mr", summary: "fixed", mrUrl: "https://mr/1" },
+			notifier,
+		);
+		await scheduler.enqueueResume(record);
+		await scheduler.idle();
+		expect(notifier.notifyResumeTerminal).not.toHaveBeenCalled();
+		expect(notifier.notifyEscalated).not.toHaveBeenCalled();
+	});
+
+	it("resume failed → 主进程零通知（worker 已发失败通知）", async () => {
+		const record = seedResumedDecision();
+		const notifier = {
+			notifyEscalated: vi.fn(async () => {}),
+			notifyResumeTerminal: vi.fn(async () => {}),
+		};
+		const scheduler = resumeScheduler(
+			{ kind: "failed", summary: "agent-resume", error: "boom" },
+			notifier,
+		);
+		await scheduler.enqueueResume(record);
+		await scheduler.idle();
+		expect(notifier.notifyResumeTerminal).not.toHaveBeenCalled();
+		expect(notifier.notifyEscalated).not.toHaveBeenCalled();
+	});
+
+	it("终局通知抛错 → scheduler 不崩溃", async () => {
+		const record = seedResumedDecision();
+		const notifier = {
+			notifyEscalated: vi.fn(async () => {}),
+			notifyResumeTerminal: vi.fn(async () => {
+				throw new Error("dingtalk down");
+			}),
+		};
+		const scheduler = resumeScheduler(
+			{ kind: "escalated", summary: "second escalation" },
+			notifier,
+		);
+		await scheduler.enqueueResume(record);
+		await scheduler.idle();
+		expect(notifier.notifyResumeTerminal).toHaveBeenCalledTimes(1);
+		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0 });
 	});
 });

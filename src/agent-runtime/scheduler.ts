@@ -326,7 +326,7 @@ export class Scheduler {
 		this.activeKeys.add(key);
 		this.running++;
 		try {
-			await this.deps.workerManager.runResume!(task);
+			const outcome = await this.deps.workerManager.runResume!(task);
 			logger.info(
 				{
 					decisionId: task.decision.decisionId,
@@ -335,6 +335,12 @@ export class Scheduler {
 				},
 				"resume completed",
 			);
+			// T09: a second escalation after a human decision is TERMINAL —
+			// one routed notification, never a new decision. mr/failed outcomes
+			// are worker-notified already; the main process stays silent.
+			if (outcome.kind === "escalated") {
+				await this.sendResumeTerminalNotification(task.event, outcome);
+			}
 		} catch (err) {
 			const error = err instanceof Error ? err.message : String(err);
 			logger.error(
@@ -345,6 +351,23 @@ export class Scheduler {
 			this.running--;
 			this.activeKeys.delete(key);
 			void this.pump();
+		}
+	}
+
+	/**
+	 * Terminal routed notification for a resume that escalated again (T09).
+	 * Fail-loud in log only — never crash the scheduler over a notification.
+	 */
+	private async sendResumeTerminalNotification(
+		event: PipelineEvent,
+		outcome: Extract<RepairOutcome, { kind: "escalated" }>,
+	): Promise<void> {
+		const notifier = this.deps.escalationNotifier;
+		if (!notifier) return;
+		try {
+			await notifier.notifyResumeTerminal(event, outcome);
+		} catch (err) {
+			logger.error({ err, event }, "resume terminal notification failed");
 		}
 	}
 

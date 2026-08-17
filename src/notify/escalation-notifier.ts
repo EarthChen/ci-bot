@@ -35,6 +35,11 @@ export interface EscalationNotifier {
 		outcome: EscalatedOutcome,
 		decision?: EscalationDecision,
 	): Promise<void>;
+	/** T09: terminal notification after a resumed escalation (one-round limit). */
+	notifyResumeTerminal(
+		event: PipelineEvent,
+		outcome: EscalatedOutcome,
+	): Promise<void>;
 }
 
 export interface EscalationNotifierDeps {
@@ -81,6 +86,22 @@ function buildDecisionMessage(
 	};
 }
 
+/** Terminal message after a human-decided resume escalates again (T09). */
+function buildResumeTerminalMessage(
+	event: PipelineEvent,
+	reason: string,
+): DingTalkMessage {
+	return {
+		title: "CI 自愈二次转交（终局）",
+		text: [
+			`项目 ${event.projectId}`,
+			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
+			`原因：${reason}`,
+			`说明：人工介入后仍无法修复，请人工接手`,
+		].join("\n"),
+	};
+}
+
 /**
  * Wire the routed escalation notifier. Unrouted projects are skipped with a
  * warning (same degradation as the webhook failure broadcast); transport
@@ -106,6 +127,20 @@ export function createEscalationNotifier(
 					? buildDecisionMessage(event, outcome, decision)
 					: buildHandoffMessage(event, outcome.summary);
 			await deps.sender.sendTo(conversationId, message);
+		},
+		async notifyResumeTerminal(event, outcome) {
+			const conversationId = deps.router.resolve(event.projectId);
+			if (!conversationId) {
+				logger.warn(
+					{ projectId: event.projectId, pipelineId: event.pipelineId },
+					"resume terminal notification skipped: no group route",
+				);
+				return;
+			}
+			await deps.sender.sendTo(
+				conversationId,
+				buildResumeTerminalMessage(event, outcome.summary),
+			);
 		},
 	};
 }

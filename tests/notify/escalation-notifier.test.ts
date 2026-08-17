@@ -94,3 +94,33 @@ describe("createEscalationNotifier — routed escalation 通知", () => {
 		expect(sender.sentGroups).toEqual([]);
 	});
 });
+
+describe("notifyResumeTerminal — 二次转交终局通知（T09）", () => {
+	it("终局消息路由到项目群：标题 + 原因 + 人工接手说明", async () => {
+		const { notifier, sender } = makeNotifier();
+		await notifier.notifyResumeTerminal(event, {
+			kind: "escalated",
+			summary: "second escalation",
+		});
+
+		expect(sender.sentGroups).toHaveLength(1);
+		const { conversationId, message } = sender.sentGroups[0];
+		expect(conversationId).toBe("cid-A");
+		expect(message.title).toBe("CI 自愈二次转交（终局）");
+		expect(message.text).toContain("proj-A");
+		expect(message.text).toContain("main @ abcdef12");
+		expect(message.text).toContain("原因：second escalation");
+		expect(message.text).toContain("人工介入后仍无法修复");
+	});
+
+	it("项目无路由 → 不发送、不抛错", async () => {
+		const { notifier, sender } = makeNotifier();
+		await expect(
+			notifier.notifyResumeTerminal(
+				{ ...event, projectId: "proj-unrouted" },
+				{ kind: "escalated", summary: "x" },
+			),
+		).resolves.toBeUndefined();
+		expect(sender.sentGroups).toEqual([]);
+	});
+});

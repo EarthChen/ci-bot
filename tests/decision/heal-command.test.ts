@@ -19,6 +19,10 @@ const event = {
 	projectUrl: "https://git.example.com/proj-heal",
 };
 
+
+/** Injected usage text — proves rejection replies use the dep, not an inline copy. */
+const USAGE_TEXT =
+	"用法：\n- `/heal <决策id> test|prod|drop [备注]` (injected-from-config)";
 function message(
 	text: string,
 	overrides: Partial<DingTalkIncomingMessage> = {},
@@ -49,7 +53,7 @@ describe("handleHealCommand", () => {
 		store = new DecisionStore(join(dir, "decisions.db"));
 		reply = vi.fn().mockResolvedValue(undefined);
 		enqueueResume = vi.fn().mockResolvedValue(undefined);
-		deps = { store, reply, enqueueResume };
+		deps = { store, reply, enqueueResume, usageText: USAGE_TEXT };
 		// A retained scene the prod/drop branches clean up.
 		cwd = join(dir, "work-42");
 		mkdirSync(cwd, { recursive: true });
@@ -102,6 +106,7 @@ describe("handleHealCommand", () => {
 		await handleHealCommand(deps, message("/heal"));
 		const msg = reply.mock.calls[0][1] as DingTalkMessage;
 		expect(msg.text).toContain("/heal");
+		expect(msg.text).toContain("injected-from-config");
 		expect(enqueueResume).not.toHaveBeenCalled();
 	});
 
@@ -110,6 +115,7 @@ describe("handleHealCommand", () => {
 		await handleHealCommand(deps, message("/heal D-42-ab12 frobnicate"));
 		const msg = reply.mock.calls[0][1] as DingTalkMessage;
 		expect(msg.text).toContain("/heal");
+		expect(msg.text).toContain("injected-from-config");
 		expect(store.get("D-42-ab12")!.status).toBe("awaiting_decision");
 		expect(enqueueResume).not.toHaveBeenCalled();
 	});

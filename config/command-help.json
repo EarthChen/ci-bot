@@ -8,6 +8,15 @@
 				"`/route list` 列出全部动态路由"
 			]
 		},
+		"/heal": {
+			"summary": "对保留现场的转交失败做人工决策（test/prod/drop）",
+			"usage": [
+				"`/heal <决策id> test|prod|drop [备注]` 对「CI 自愈待人工决策」转交消息中的决策 id 做出决策（仅群聊）",
+				"`test` 按测试问题继续修复（备注可附 spec 规定的正确行为）",
+				"`prod` 确认源码 bug，关闭事件并清理现场，人工修复源码",
+				"`drop` 丢弃该失败并清理现场"
+			]
+		},
 		"/help": {
 			"summary": "显示本帮助",
 			"usage": [

@@ -14,7 +14,8 @@
  * Terminal decisions are never re-consumed. Invalid input is rejected with
  * usage — a human must never believe a decision took effect when it didn't.
  *
- * Usage text is inline for now; T10 externalizes it to command-help.json.
+ * Usage text is injected via deps.usageText from config/command-help.json
+ * (T10; single source of truth with /help, same pattern as /route).
  */
 
 import type { DingTalkMessage } from "../notify/dingtalk.js";
@@ -27,12 +28,6 @@ import type { DecisionRecord, DecisionStore } from "./store.js";
 const HEAL_VALUES = ["test", "prod", "drop"] as const;
 type HealValue = (typeof HEAL_VALUES)[number];
 
-const USAGE_TEXT = [
-	"用法：`/heal <决策id> test|prod|drop [备注]`",
-	"- test：按测试问题继续修复（备注可附 spec 规定的正确行为）",
-	"- prod：确认源码 bug，关闭事件并清理现场，人工修复源码",
-	"- drop：丢弃该失败并清理现场",
-].join("\n");
 
 export interface HealCommandDeps {
 	readonly store: DecisionStore;
@@ -40,6 +35,11 @@ export interface HealCommandDeps {
 	reply(conversationId: string, message: DingTalkMessage): Promise<void>;
 	/** Schedule the resume worker for a `test` decision (scheduler.enqueueResume). */
 	enqueueResume(record: DecisionRecord): Promise<void>;
+	/**
+	 * Bulleted usage text for rejection replies — injected from
+	 * config/command-help.json (single source of truth with /help).
+	 */
+	readonly usageText: string;
 }
 
 /**
@@ -63,13 +63,13 @@ export async function handleHealCommand(
 	const remark = args.slice(2).join(" ");
 
 	if (!id || !value || !HEAL_VALUES.includes(value)) {
-		await sendReply(deps, message, "命令格式不正确。", USAGE_TEXT);
+		await sendReply(deps, message, "命令格式不正确。", deps.usageText);
 		return true;
 	}
 
 	const record = deps.store.get(id);
 	if (!record) {
-		await sendReply(deps, message, `未找到决策 ${id}`, USAGE_TEXT);
+		await sendReply(deps, message, `未找到决策 ${id}`, deps.usageText);
 		return true;
 	}
 	if (record.status !== "awaiting_decision") {

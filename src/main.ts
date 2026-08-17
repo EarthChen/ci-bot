@@ -113,6 +113,7 @@ async function main(): Promise<void> {
 		join(config.botRoot, "config", "command-help.json"),
 	);
 	const routeUsageText = buildUsageText(commandHelp, "/route");
+	const healUsageText = buildUsageText(commandHelp, "/heal");
 
 	// Stream bot: WebSocket receiver in main process (long-lived).
 	// Group commands: /route (dynamic group routing), /help (externalized help).
@@ -137,6 +138,7 @@ async function main(): Promise<void> {
 							store: decisionStore,
 							reply,
 							enqueueResume: (record) => scheduler.enqueueResume(record),
+						usageText: healUsageText,
 						},
 						message,
 					)

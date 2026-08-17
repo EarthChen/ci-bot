@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildCommandHelp,
@@ -51,6 +52,17 @@ describe("loadCommandHelp", () => {
 		const file = join(dir, "bad-shape.json");
 		writeFileSync(file, JSON.stringify({ commands: { "/x": { summary: "s" } } }));
 		expect(() => loadCommandHelp(file)).toThrow(/usage/);
+	});
+
+	it("accepts the shipped config/command-help.json with a /heal entry", () => {
+		const shipped = fileURLToPath(
+			new URL("../../config/command-help.json", import.meta.url),
+		);
+		const config = loadCommandHelp(shipped);
+		const heal = config.commands["/heal"];
+		expect(heal).toBeDefined();
+		expect(heal!.summary).toBeTruthy();
+		expect(heal!.usage.length).toBeGreaterThan(0);
 	});
 });
 

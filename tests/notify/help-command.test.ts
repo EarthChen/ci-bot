@@ -10,6 +10,10 @@ import type { DingTalkIncomingMessage } from "../../src/notify/stream-bot.js";
 const HELP_CONFIG: CommandHelpConfig = {
 	commands: {
 		"/route": { summary: "管理群路由", usage: ["`/route add <pattern>` 绑定当前群"] },
+		"/heal": {
+			summary: "对转交的 CI 失败做人工决策",
+			usage: ["`/heal <决策id> test|prod|drop [备注]` 决策转交事件"],
+		},
 		"/help": { summary: "显示本帮助", usage: ["`/help` 列出所有命令"] },
 	},
 };
@@ -55,6 +59,8 @@ describe("handleHelpCommand", () => {
 		expect(reply.mock.calls[0][0]).toBe("cid-group");
 		expect(msg.text).toContain("/route");
 		expect(msg.text).toContain("管理群路由");
+		expect(msg.text).toContain("/heal");
+		expect(msg.text).toContain("对转交的 CI 失败做人工决策");
 		expect(msg.text).toContain("/help");
 	});
 
@@ -66,6 +72,19 @@ describe("handleHelpCommand", () => {
 		const msg = reply.mock.calls[0][1] as DingTalkMessage;
 		expect(msg.title).toBe("/route");
 		expect(msg.text).toContain("`/route add <pattern>` 绑定当前群");
+	});
+
+	it("shows /heal detail, accepting the bare name", async () => {
+		const { deps: d, reply } = deps();
+
+		await handleHelpCommand(d, message("/help heal"));
+
+		const msg = reply.mock.calls[0][1] as DingTalkMessage;
+		expect(msg.title).toBe("/heal");
+		expect(msg.text).toContain("对转交的 CI 失败做人工决策");
+		expect(msg.text).toContain(
+			"`/heal <决策id> test|prod|drop [备注]` 决策转交事件",
+		);
 	});
 
 	it("replies with the index for an unknown command (still handled)", async () => {

@@ -11,18 +11,18 @@
  */
 
 import type { AgentResult } from "../types.js";
-import type { AgentRunner, AgentRunInput } from "./runner.js";
+import type { AgentRunner, AgentRunInput, ResumeDecision } from "./runner.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import { logger } from "../util/log.js";
 import { join as joinPath } from "node:path";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type {
 	BudgetConfig,
 	RuntimeSessionBundle,
 } from "../agent-runtime/runtime.js";
 import { SharedAgentRuntime } from "../agent-runtime/runtime.js";
-import { createCiRepairDefinition, buildContinuePrompt } from "./ci-repair-definition.js";
+import { createCiRepairDefinition, createCiResumeDefinition, buildContinuePrompt } from "./ci-repair-definition.js";
 import { tryParseAgentJson } from "../agents/ci-repair/result-parser.js";
 
 // Re-export for backward compatibility
@@ -31,6 +31,8 @@ export type { BudgetConfig };
 /** Factory for creating a session bundle (DI seam for tests). */
 export type SessionFactory = (
 	input: AgentRunInput,
+	/** T06: set on resume — re-open this retained session file instead of a fresh session. */
+	resume?: { readonly sessionFile: string },
 ) => Promise<RuntimeSessionBundle>;
 
 /**
@@ -146,6 +148,63 @@ export class RealAgentRunner implements AgentRunner {
 		this.activeDispose = undefined;
 	}
 
+	/**
+	 * Resume a retained escalation after a human decision (T06). Re-opens the
+	 * retained session (fail loud when missing — never silently start fresh),
+	 * injects the decision prompt as a new user message, and runs with a FRESH
+	 * budget (this runner instance is fresh per resume worker).
+	 */
+	async resume(
+		input: AgentRunInput,
+		decision: ResumeDecision,
+	): Promise<AgentResult> {
+		let sessionFile: string;
+		try {
+			sessionFile = findSessionFile(process.env.PI_CODING_AGENT_DIR ?? "");
+		} catch (err) {
+			return this.escalateError(err);
+		}
+		const ciFactory = this.sessionFactory;
+		const runtime = new SharedAgentRuntime({
+			sessionFactory: async () => ciFactory(input, { sessionFile }),
+			budget: this.budget,
+		});
+		const definition = createCiResumeDefinition(input.cwd, decision);
+		const opened = await runtime.runSession({
+			definition,
+			input,
+			cwd: input.cwd,
+		});
+		this.activeSession = opened.session;
+		this.activeDispose = opened.dispose;
+
+		let agentResult: AgentResult;
+		switch (opened.result.status) {
+			case "completed":
+				agentResult = this.parseResult(opened.result.finalText);
+				break;
+			case "budget_exceeded":
+				agentResult = this.escalateBudget(opened.result.reason);
+				break;
+			case "failed":
+				agentResult = this.escalateError(
+					new Error(`session ${opened.result.failure}`),
+				);
+				break;
+		}
+
+		if (opened.result.status === "budget_exceeded" && this.dingtalk) {
+			void this.dingtalk
+				.send({
+					title: "CI 自愈预算告警",
+					text: `项目 ${input.projectId} pipeline ${input.pipelineId} 恢复预算超限：${opened.result.reason}`,
+			})
+				.catch((err) => logger.warn({ err }, "budget alert failed"));
+		}
+
+		return { ...agentResult, metrics: opened.result.metrics };
+	}
+
 	/** Parse the final assistant text JSON into an AgentResult. */
 	private parseResult(text: string): AgentResult {
 		if (!text) {
@@ -189,9 +248,10 @@ export class RealAgentRunner implements AgentRunner {
  */
 async function defaultSessionFactory(
 	input: AgentRunInput,
+	resume?: { readonly sessionFile: string },
 ): Promise<RuntimeSessionBundle> {
 	const definition = createCiRepairDefinition(input.cwd);
-	const session = await createDefaultSession(input, definition);
+	const session = await createDefaultSession(input, definition, resume?.sessionFile);
 	return {
 		session,
 		// P1-3: 持久化完整 agent session messages 到审计目录（完整 jsonl，用于审计/排查）。
@@ -219,6 +279,8 @@ async function defaultSessionFactory(
 async function createDefaultSession(
 	input: AgentRunInput,
 	definition: import("../agent-runtime/runtime.js").AgentDefinition<AgentRunInput>,
+	/** T06: re-open a retained session file instead of creating a fresh one. */
+	resumeSessionFile?: string,
 ): Promise<AgentSession> {
 	const {
 		createAgentSession,
@@ -278,7 +340,12 @@ async function createDefaultSession(
 		modelRuntime,
 		resourceLoader,
 		settingsManager,
-		sessionManager: SessionManager.inMemory(input.cwd),
+		// T06: sessions are PERSISTED (create, not inMemory) so a retained scene
+		// carries its jsonl under <agentDir>/sessions/ for a later /heal resume.
+		// Resume re-opens the exact retained session file.
+		sessionManager: resumeSessionFile
+			? SessionManager.open(resumeSessionFile)
+			: SessionManager.create(input.cwd),
 		tools: ["read", "grep", "find", "ls", "bash"],
 	});
 
@@ -299,10 +366,48 @@ function resolveBotRoot(): string {
 /** Keep provider responses and credential details out of MR and DingTalk output. */
 function safeExternalErrorMessage(err: unknown): string {
 	const message = err instanceof Error ? err.message : "unknown error";
+	// T06: bot-controlled marker — safe to surface verbatim.
+	if (message.includes("session 文件缺失")) return message;
 	if (message.includes("no available model candidate")) {
 		return "没有可用的模型候选";
 	}
 	if (message.includes("PI_CODING_AGENT_DIR")) return "worker 配置目录缺失";
 	if (message.includes("CIHEAL_BOT_ROOT")) return "bot 发布配置缺失";
 	return "agent 运行失败；详情见服务日志";
+}
+
+/**
+ * Discover the most recent retained session jsonl under an agent dir (T06).
+ * Pi persists sessions under `<agentDir>/sessions/<encoded-cwd>/`; fall back
+ * to any *.jsonl under the agent dir. Fail loud when none exists — a resume
+ * must never silently start a fresh session.
+ */
+export function findSessionFile(agentDir: string): string {
+	if (!agentDir) {
+		throw new Error("session 文件缺失：agent dir 未配置");
+	}
+	const underSessions = collectJsonl(joinPath(agentDir, "sessions"));
+	const candidates = underSessions.length > 0 ? underSessions : collectJsonl(agentDir);
+	if (candidates.length === 0) {
+		throw new Error(`session 文件缺失：${agentDir} 下无 *.jsonl`);
+	}
+	candidates.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+	return candidates[0];
+}
+
+/** Recursively collect *.jsonl files under a root (missing root → []). */
+function collectJsonl(root: string): string[] {
+	let entries: import("node:fs").Dirent[];
+	try {
+		entries = readdirSync(root, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const found: string[] = [];
+	for (const entry of entries) {
+		const full = joinPath(root, entry.name);
+		if (entry.isDirectory()) found.push(...collectJsonl(full));
+		else if (entry.isFile() && entry.name.endsWith(".jsonl")) found.push(full);
+	}
+	return found;
 }

@@ -37,6 +37,7 @@ import {
 	type TestRunner,
 	type TestRunResult,
 } from "../pipeline/run-repair.js";
+import { runResumeRepair } from "../pipeline/run-resume.js";
 import { defaultWorktree } from "../pipeline/worktree.js";
 
 /** Write JSON to a path, creating parent dirs (best-effort, never throws in caller). */
@@ -53,6 +54,14 @@ async function writeJSON(path: string, value: unknown): Promise<void> {
 export interface WorkerTask {
 	readonly event: PipelineEvent;
 	readonly cwd: string;
+	/** T06: "resume" routes to the decision-resume pipeline; absent = repair. */
+	readonly mode?: "resume";
+	/** T06: required when mode === "resume" (scheduler envelope contract, T05). */
+	readonly decision?: {
+		readonly decisionId: string;
+		readonly value: "test";
+		readonly remark: string;
+	};
 }
 
 function pickAgent(dingtalk: DingTalkNotifier): AgentRunner {
@@ -291,6 +300,30 @@ export async function runWorker(task: WorkerTask): Promise<RepairOutcome> {
 	return runRepair(deps, task.event);
 }
 
+/**
+ * Resume a retained scene after a human decision (T06). Same dep picking as
+ * runWorker; the orchestration skips CI-log fetch / worktree creation and
+ * starts at agent.resume inside the retained cwd.
+ */
+export async function runResumeWorker(task: WorkerTask): Promise<RepairOutcome> {
+	if (!task.decision) {
+		throw new Error("resume task missing decision envelope");
+	}
+	const dingtalk = pickDingTalk(task.cwd);
+	const agent = pickAgent(dingtalk);
+	const glab = pickGlab(task.cwd);
+	const verifyRunner = pickVerify(task.cwd);
+	const deps: WorkerDeps = {
+		agent,
+		glab,
+		dingtalk,
+		cwd: task.cwd,
+		verifyRunner,
+		worktree: defaultWorktree,
+	};
+	return runResumeRepair(deps, task.event, task.decision);
+}
+
 /** Entry point invoked by the worker manager subprocess. */
 export async function main(): Promise<void> {
 	const taskJson = process.env.CIHEAL_WORKER_TASK;
@@ -305,7 +338,10 @@ export async function main(): Promise<void> {
 	}
 
 	// Make the fake recorders observable by the test via env (if present).
-	const result = await runWorker(task);
+	const result =
+		task.mode === "resume"
+			? await runResumeWorker(task)
+			: await runWorker(task);
 	const resultFile = process.env.CIHEAL_RESULT_FILE;
 	if (resultFile) {
 		mkdirSync(dirname(resultFile), { recursive: true });

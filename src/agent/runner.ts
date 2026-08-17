@@ -33,6 +33,12 @@ export interface AgentRunInput {
 	readonly targetBranch: string;
 }
 
+/** Human decision slice handed to a resume run (T06). */
+export interface ResumeDecision {
+	readonly value: "test";
+	readonly remark: string;
+}
+
 export interface AgentRunner {
 	/** Run one agent session. Returns the structured outcome. */
 	run(input: AgentRunInput): Promise<AgentResult>;
@@ -46,6 +52,13 @@ export interface AgentRunner {
 		priorMrUrl: string,
 		newCiLog: string,
 	): Promise<AgentResult>;
+	/**
+	 * Resume a retained escalation after a human decision (T06). OPTIONAL —
+	 * runners without resume support make runResumeRepair fail loud. Re-opens
+	 * the retained session, injects the decision as a new user message, and
+	 * runs with a FRESH budget (the runner instance is fresh per worker).
+	 */
+	resume?(input: AgentRunInput, decision: ResumeDecision): Promise<AgentResult>;
 	/** Release any open session/resources held across a retry loop. */
 	close(): void;
 }
@@ -128,6 +141,15 @@ export class StubAgentRunner implements AgentRunner {
 			summary: "重试修正 CalculatorTest 断言为 5。",
 			mrUrl: priorMrUrl,
 		};
+	}
+
+	/**
+	 * Canned resume (T06): reuses the run() fix behavior — the stub writes its
+	 * canned test fix into the retained repo and reports fixed, so e2e stub
+	 * mode exercises the full resume pipeline without an LLM.
+	 */
+	async resume(input: AgentRunInput, _decision: ResumeDecision): Promise<AgentResult> {
+		return this.run(input);
 	}
 
 	close(): void {

@@ -86,6 +86,34 @@ export function buildContinuePrompt(
 	].join("\n");
 }
 
+/**
+ * Build the prompt the bot injects when a human decision (/heal test) resumes
+ * a retained escalation (T06). The decision is FINAL: the failure is treated
+ * as a test-side issue, the human remark (when present) is authoritative spec
+ * context. G3 stays enforced. Ends with the same structured JSON contract.
+ */
+export function buildDecisionPrompt(decision: {
+	readonly value: string;
+	readonly remark: string;
+}): string {
+	return [
+		`# 人工决策已下达（最终决定，必须遵照执行）`,
+		``,
+		`决策（/heal ${decision.value}）：该失败按测试侧问题处理，继续修复。`,
+		decision.remark
+			? `人工备注（权威 spec 上下文，以其为准）：\n${decision.remark}`
+			: `（无人工备注。）`,
+		``,
+		`# 范围闸（不变）`,
+		`- 只允许改测试/文档；src/main 生产代码一律禁碰（G3）。`,
+		``,
+		`# 任务`,
+		`1. 基于本 session 此前的诊断与上述决策继续修复，并自行运行测试确认。`,
+		`2. 修复后 git add → git commit → git push 到当前自愈分支（更新同一 MR，勿新建）。`,
+		`3. 末条消息输出结构化 JSON：fixed（含 mrUrl）或 escalated（说明转交原因）。`,
+	].join("\n");
+}
+
 /** CI Repair scheduling policy: serialize per projectId, request up to 4 parallel repos. */
 export const CI_REPAIR_SCHEDULING_POLICY: SchedulingPolicy = {
 	serialKey: (event) => event.projectId,
@@ -93,15 +121,15 @@ export const CI_REPAIR_SCHEDULING_POLICY: SchedulingPolicy = {
 };
 
 /**
- * Create a CI repair definition bound to a specific worker cwd.
- * Resource paths are resolved lazily when accessed (not at creation time),
- * so that tests injecting their own sessionFactory don't need CIHEAL_BOT_ROOT.
+ * Shared definition factory: id + lazy resources are identical across the
+ * repair and resume variants; only the first user prompt differs.
  */
-export function createCiRepairDefinition(
-	cwd: string,
+function makeDefinition(
+	id: string,
+	buildPrompt: (input: AgentRunInput) => string,
 ): AgentDefinition<AgentRunInput> {
 	return {
-		id: "ci-repair",
+		id,
 		modelPolicy: "default",
 		capabilityProfile: "workspace-coding",
 		schedulingPolicy: CI_REPAIR_SCHEDULING_POLICY,
@@ -112,6 +140,29 @@ export function createCiRepairDefinition(
 				skillPaths: [joinPath(resources, "skills", "ci-self-heal-playbook")],
 			};
 		},
-		buildPrompt: (input) => buildCiPrompt(input, cwd),
+		buildPrompt,
 	};
+}
+
+/**
+ * Create a CI repair definition bound to a specific worker cwd.
+ * Resource paths are resolved lazily when accessed (not at creation time),
+ * so that tests injecting their own sessionFactory don't need CIHEAL_BOT_ROOT.
+ */
+export function createCiRepairDefinition(
+	cwd: string,
+): AgentDefinition<AgentRunInput> {
+	return makeDefinition("ci-repair", (input) => buildCiPrompt(input, cwd));
+}
+
+/**
+ * Resume variant (T06): re-opened session receives the human decision prompt
+ * instead of the original CI task prompt.
+ */
+export function createCiResumeDefinition(
+	cwd: string,
+	decision: { readonly value: string; readonly remark: string },
+): AgentDefinition<AgentRunInput> {
+	void cwd;
+	return makeDefinition("ci-repair-resume", () => buildDecisionPrompt(decision));
 }

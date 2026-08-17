@@ -56,6 +56,10 @@ export interface AuditTrace {
 	readonly cost: number;
 	/** Ticket 07: repair wall-clock duration in ms. */
 	readonly durationMs: number;
+	/** T06: set on resume runs — the decision that triggered this resume. */
+	readonly decisionId?: string;
+	/** T06: intervention chain depth (1 = first resume round). */
+	readonly chainDepth?: number;
 }
 
 /** Metrics slice embedded in an audit trace. */
@@ -262,8 +266,10 @@ export async function finishRepair(args: {
 	result: RepairResult;
 	/** Injected worktree cleanup seam (best-effort). */
 	removeWorktree: (cwd: string) => Promise<void>;
+	/** T06: resume-run audit context (decision chain) threaded into the trace. */
+	audit?: { readonly decisionId?: string; readonly chainDepth?: number };
 }): Promise<RepairOutcome> {
-	const { dingtalk, cwd, event, result, removeWorktree } = args;
+	const { dingtalk, cwd, event, result, removeWorktree, audit } = args;
 	const metrics = result.metrics ?? ZERO_METRICS;
 	const diff = result.diff ?? "";
 	const reasoning =
@@ -293,6 +299,7 @@ export async function finishRepair(args: {
 		mrUrl: result.mrUrl,
 		createdAt: new Date().toISOString(),
 		...metrics,
+		...(audit ?? {}),
 	});
 
 	// Scene retention: a decidable escalation keeps the worktree + cwd so a

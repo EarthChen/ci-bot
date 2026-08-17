@@ -232,7 +232,7 @@ export async function runRepair(
  * monitor the MR's CI. If CI stays red, reuse the agent's open session to
  * continue fixing (updating the same MR), up to CIHEAL_RETRY_LIMIT times.
  */
-async function repairFixed(args: {
+export async function repairFixed(args: {
 	deps: WorkerDeps;
 	event: PipelineEvent;
 	repoCwd: string;
@@ -240,8 +240,10 @@ async function repairFixed(args: {
 	diffFiles: readonly string[];
 	agentInput: AgentRunInput;
 	agentMetrics: { turns: number; tokens: number; cost: number; durationMs: number };
+	/** T06: resume-run audit context (decision chain) threaded into every trace. */
+	audit?: { readonly decisionId?: string; readonly chainDepth?: number };
 }): Promise<RepairOutcome> {
-	const { deps, event, repoCwd, result, diffFiles, agentInput } = args;
+	const { deps, event, repoCwd, result, diffFiles, agentInput, audit } = args;
 	const { glab, dingtalk, worktree } = deps;
 
 	const patch = await extractPatch(repoCwd, result.summary, event.sha);
@@ -251,6 +253,7 @@ async function repairFixed(args: {
 			cwd: deps.cwd,
 			event,
 			removeWorktree: worktree.remove,
+			audit,
 			result: {
 				kind: "escalated",
 				summary: "empty patch after agent reported fixed",
@@ -267,6 +270,7 @@ async function repairFixed(args: {
 			cwd: deps.cwd,
 			event,
 			removeWorktree: worktree.remove,
+			audit,
 			result: {
 				kind: "escalated",
 				summary: `G3/diff 违规：${g3}`,
@@ -285,6 +289,7 @@ async function repairFixed(args: {
 			cwd: deps.cwd,
 			event,
 			removeWorktree: worktree.remove,
+			audit,
 			result: {
 				kind: "escalated",
 				summary: "agent reported fixed but did not create MR (no mrUrl)",
@@ -330,6 +335,7 @@ async function repairFixed(args: {
 					cwd: deps.cwd,
 					event,
 					removeWorktree: worktree.remove,
+					audit,
 					result: {
 						kind: "escalated",
 						summary: cont.reason,
@@ -347,6 +353,7 @@ async function repairFixed(args: {
 					cwd: deps.cwd,
 					event,
 					removeWorktree: worktree.remove,
+					audit,
 					result: {
 						kind: "escalated",
 						summary:
@@ -371,6 +378,7 @@ async function repairFixed(args: {
 			cwd: deps.cwd,
 			event,
 			removeWorktree: worktree.remove,
+			audit,
 			result: {
 				kind: "mr",
 				summary: currentResult.diagnosis.summary,
@@ -386,6 +394,7 @@ async function repairFixed(args: {
 		cwd: deps.cwd,
 		event,
 		removeWorktree: worktree.remove,
+		audit,
 		result: {
 			kind: "escalated",
 		summary: `MR CI 仍红，重试 ${attempt} 次后转交人工`,
@@ -418,7 +427,7 @@ function validatePatchPaths(patch: Patch, diffFiles: readonly string[]): string 
 }
 
 /** Parse the changed file set from a `git diff` text (MR diff). */
-function parseDiffFiles(diff: string): string[] {
+export function parseDiffFiles(diff: string): string[] {
 	const files: string[] = [];
 	for (const line of diff.split("\n")) {
 		const m = line.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/);

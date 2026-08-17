@@ -61,6 +61,11 @@ export type AgentResult =
 			readonly kind: "escalated";
 			readonly diagnosis: Diagnosis;
 			readonly reason: string;
+			/** Where the escalation came from: the agent's own structured output
+			 *  ("agent") or a bot/runner-generated fallback such as budget exceeded,
+			 *  session error, or unparseable output ("runtime"). Only agent-sourced
+			 *  escalations may enter the awaiting-decision state (/heal). */
+			readonly source: "agent" | "runtime";
 			readonly metrics?: AgentMetrics;
 	  };
 
@@ -85,7 +90,16 @@ export interface Patch {
 /** Final outcome the bot records for a single pipeline (drives MR + DingTalk). */
 export type RepairOutcome =
 	| { readonly kind: "mr"; readonly mrUrl: string; readonly summary: string }
-	| { readonly kind: "escalated"; readonly summary: string }
+	| {
+			readonly kind: "escalated";
+			readonly summary: string;
+			/** True when this escalation is decidable (agent-initiated with a
+			 *  diagnosis): the scene (cwd/worktree/branch) is retained and the main
+			 *  process registers a decision awaiting a human /heal reply. */
+			readonly decidable?: boolean;
+			/** result.diagnosis.summary — carried for the routed decision notification (T04). */
+			readonly diagnosisSummary?: string;
+	  }
 	| {
 			readonly kind: "failed";
 			readonly summary: string;

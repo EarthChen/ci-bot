@@ -26,6 +26,9 @@ import { Scheduler } from "../../src/agent-runtime/scheduler.js";
 import { CI_REPAIR_SCHEDULING_POLICY } from "../../src/agent/ci-repair-definition.js";
 import { SubprocessWorkerManager } from "../../src/worker/manager.js";
 import { mountWebhook } from "../../src/webhook/receiver.js";
+import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
+import { createEscalationNotifier } from "../../src/notify/escalation-notifier.js";
+import { ProjectRouter } from "../../src/notify/project-router.js";
 
 const WEBHOOK_SECRET = "test-secret-token";
 
@@ -85,6 +88,8 @@ async function setupBot(env: Record<string, string>): Promise<{
 	scheduler: Scheduler;
 	base: string;
 	workRoot: string;
+	/** Main-process routed escalation recorder (T04). */
+	escalations: InMemoryDingTalkNotifier;
 	cleanup: () => Promise<void>;
 }> {
 	const workRoot = await mkdtemp(join(tmpdir(), "ciheal-real-"));
@@ -100,11 +105,17 @@ async function setupBot(env: Record<string, string>): Promise<{
 			...env,
 		},
 	});
+	// T04: escalated notifications are main-process + routed (ProjectRouter).
+	const escalations = new InMemoryDingTalkNotifier();
 	const scheduler = new Scheduler({
 		workerManager,
 		workRoot,
 		maxWorkers: 1,
 		policy: CI_REPAIR_SCHEDULING_POLICY,
+		escalationNotifier: createEscalationNotifier({
+			router: new ProjectRouter({}, "cid-e2e-default"),
+			sender: escalations,
+		}),
 	});
 	const app = Fastify({ logger: false });
 	await mountWebhook(app, {
@@ -124,6 +135,7 @@ async function setupBot(env: Record<string, string>): Promise<{
 		scheduler,
 		base,
 		workRoot,
+		escalations,
 		cleanup: async () => {
 			await app.close();
 			await rm(workRoot, { recursive: true, force: true }).catch(() => {});
@@ -191,13 +203,17 @@ describe("real agent runner: webhook → MR → DingTalk (ticket 02 fixture)", (
 			);
 			expect(mrs).toBeNull();
 
-			// Escalation DingTalk sent.
-			const dingtalk = await readSidecar<Array<{ title: string }>>(
+			// T04: escalation 通知移至主进程路由（worker sidecar 为空）。
+			const workerSent = await readSidecar<Array<{ title: string }>>(
 				bot.workRoot,
 				"dingtalk-sent.json",
 			);
-			expect(dingtalk).not.toBeNull();
-			expect(dingtalk!.some((d) => d.title.includes("转交"))).toBe(true);
+			expect(workerSent).toBeNull();
+			expect(
+				bot.escalations.sentGroups.some((g) =>
+					g.message.title.includes("转交"),
+				),
+			).toBe(true);
 		} finally {
 			await bot.cleanup();
 		}
@@ -220,13 +236,17 @@ describe("real agent runner: webhook → MR → DingTalk (ticket 02 fixture)", (
 			);
 			expect(mrs).toBeNull();
 
-			// Escalation DingTalk sent.
-			const dingtalk = await readSidecar<Array<{ title: string }>>(
+			// T04: escalation 通知移至主进程路由（worker sidecar 为空）。
+			const workerSent = await readSidecar<Array<{ title: string }>>(
 				bot.workRoot,
 				"dingtalk-sent.json",
 			);
-			expect(dingtalk).not.toBeNull();
-			expect(dingtalk!.some((d) => d.title.includes("转交"))).toBe(true);
+			expect(workerSent).toBeNull();
+			expect(
+				bot.escalations.sentGroups.some((g) =>
+					g.message.title.includes("转交"),
+				),
+			).toBe(true);
 		} finally {
 			await bot.cleanup();
 		}
@@ -263,9 +283,15 @@ describe("real agent runner: webhook → MR → DingTalk (ticket 02 fixture)", (
 			expect(dingtalk).not.toBeNull();
 			expect(dingtalk!.some((d) => d.title.includes("预算"))).toBe(true);
 
-			// Escalation DingTalk also sent (budget breach escalates the event).
+			// T04: escalation 通知移至主进程路由（worker sidecar 只有预算告警）；
+			// 预算超限同样触发 escalated outcome 的主进程通知。
 			expect(
-				dingtalk!.some((d) => d.title.includes("转交")),
+				dingtalk!.every((d) => !d.title.includes("转交")),
+			).toBe(true);
+			expect(
+				bot.escalations.sentGroups.some((g) =>
+					g.message.title.includes("转交"),
+				),
 			).toBe(true);
 		} finally {
 			await bot.cleanup();

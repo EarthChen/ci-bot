@@ -57,6 +57,21 @@ export interface WorkerDeps {
 	readonly verifyRunner?: TestRunner;
 }
 
+/**
+ * True when an agent result is a decidable escalation: the agent itself
+ * chose to escalate (source "agent") and attached a diagnosis. Only such
+ * escalations may enter the awaiting-decision state (scene retention +
+ * /heal). Runner-generated escalations (budget exceeded / session error /
+ * unparseable output) stay pure handoffs.
+ */
+export function isDecidableEscalation(result: AgentResult): boolean {
+	return (
+		result.kind === "escalated" &&
+		result.source === "agent" &&
+		Boolean(result.diagnosis)
+	);
+}
+
 export async function runRepair(
 	deps: WorkerDeps,
 	event: PipelineEvent,
@@ -171,6 +186,10 @@ export async function runRepair(
 
 	// 3. Branch on the structured agent result.
 	if (result.kind === "escalated") {
+		// Scene retention (T03): only an agent-initiated escalation with a
+		// diagnosis is decidable — finishRepair then skips the worktree cleanup
+		// and flags the outcome so the main process registers a decision.
+		const decidable = isDecidableEscalation(result);
 		return finishRepair({
 			dingtalk,
 			cwd: deps.cwd,
@@ -181,6 +200,7 @@ export async function runRepair(
 				summary: result.reason,
 				diagnosis: result.diagnosis,
 				metrics: agentMetrics,
+				...(decidable ? { decidable: true } : {}),
 			},
 		});
 	}

@@ -105,6 +105,7 @@ function cannedResultFromEnv(): AgentResult {
 			kind: "escalated",
 			diagnosis: { failureClass: 4, summary: "（stub）flaky，转交人工" },
 			reason: "stub escalation: flaky test",
+			source: "agent",
 		};
 	}
 	if (kind === "class3-no-spec") {
@@ -115,6 +116,7 @@ function cannedResultFromEnv(): AgentResult {
 				summary: "（stub）spec 不可读/缺失，转交人工",
 			},
 			reason: "stub escalation: spec unreadable",
+			source: "agent",
 		};
 	}
 	if (kind === "class3-mismatch") {
@@ -125,6 +127,7 @@ function cannedResultFromEnv(): AgentResult {
 				summary: "（stub）代码行为 ≠ spec，转交人工",
 			},
 			reason: "stub escalation: code ≠ spec",
+			source: "agent",
 		};
 	}
 	// Fixed variants (class 1/2/3).

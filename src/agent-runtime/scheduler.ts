@@ -15,10 +15,18 @@
  * concrete subprocess worker + DingTalk notifier (no runtime→bot dependency).
  */
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { logger } from "../util/log.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
+import type { CreateDecisionParams, DecisionStore } from "../decision/store.js";
+import type {
+	EscalationDecision,
+	EscalationNotifier,
+} from "../notify/escalation-notifier.js";
+
+/** Default decision TTL: 24h (overridable via CIHEAL_DECISION_TTL_MS). */
+const DEFAULT_DECISION_TTL_MS = 86_400_000;
 
 /** A unit of work the scheduler can run (abstract; the bot provides the impl). */
 export interface ScheduledWorker {
@@ -50,6 +58,12 @@ export interface SchedulerDeps {
 	readonly maxWorkers: number;
 	readonly notifier?: SchedulerNotifier;
 	readonly workerCrashThreshold?: number;
+	/** Decision store (main process). When present, a decidable escalated
+	 *  outcome registers an awaiting_decision record (scene retention, T03). */
+	readonly decisionStore?: Pick<DecisionStore, "create">;
+	/** Routed escalation notifier (main process, T04). When present, every
+	 *  escalated outcome triggers a routed group notification. */
+	readonly escalationNotifier?: EscalationNotifier;
 }
 
 export type EnqueueStatus = "queued" | "duplicate";
@@ -126,6 +140,15 @@ export class Scheduler {
 			const outcome = await this.deps.workerManager.run(event, cwd);
 			this.crashCount = 0; // reset on success — transient crashes don't accumulate.
 			logger.info({ event, outcome: outcome.kind }, "repair completed");
+			if (outcome.kind === "escalated") {
+				// Order (T04): register the decision FIRST so the routed notification
+				// carries the real decision id; a registration failure degrades to the
+				// plain message (decision undefined) instead of crashing the scheduler.
+				const decision = outcome.decidable
+					? this.registerDecision(event, cwd)
+					: undefined;
+				await this.sendEscalationNotification(event, outcome, decision);
+			}
 		} catch (err) {
 			const error = err instanceof Error ? err.message : String(err);
 			logger.error({ event, error }, "worker crashed");
@@ -149,6 +172,72 @@ export class Scheduler {
 			}
 		} finally {
 			this.inflight.delete(dedupKey(event));
+		}
+	}
+
+	/**
+	 * Register a human decision for a decidable escalation (T03). Runs in the
+	 * main process AFTER the worker retained its scene; the decision id and TTL
+	 * are bot-owned. Fail-loud: a create failure is logged at error level — the
+	 * scene stays on disk but the decision is lost and needs manual cleanup.
+	 */
+	private registerDecision(
+		event: PipelineEvent,
+		cwd: string,
+	): EscalationDecision | undefined {
+		const store = this.deps.decisionStore;
+		if (!store) return undefined;
+		const suffix = randomBytes(2).toString("hex");
+		const decisionId = `D-${event.pipelineId}-${suffix}`;
+		const ttlMs =
+			Number(process.env.CIHEAL_DECISION_TTL_MS) || DEFAULT_DECISION_TTL_MS;
+		const params: CreateDecisionParams = {
+			decision_id: decisionId,
+			pipeline_id: String(event.pipelineId),
+			project_id: event.projectId,
+			event_json: JSON.stringify(event),
+			cwd_path: cwd,
+			// The exact session jsonl is discovered at resume time (T06).
+			session_path: join(cwd, ".pi-agent"),
+			branch: `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`,
+			expires_at: new Date(Date.now() + ttlMs).toISOString(),
+		};
+		try {
+			store.create(params);
+			logger.info(
+				{
+					decisionId,
+					projectId: event.projectId,
+					pipelineId: event.pipelineId,
+					cwd,
+				},
+				"decision registered (awaiting_decision)",
+			);
+			return { decisionId, expiresAt: params.expires_at };
+		} catch (err) {
+			logger.error(
+				{ err, decisionId, event, cwd },
+				"decision registration failed — scene retained but decision lost; manual cleanup required",
+			);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Main-process routed escalation notification (T04). Fail-loud in log
+	 * only — a notification failure must never crash the scheduler loop.
+	 */
+	private async sendEscalationNotification(
+		event: PipelineEvent,
+		outcome: Extract<RepairOutcome, { kind: "escalated" }>,
+		decision: EscalationDecision | undefined,
+	): Promise<void> {
+		const notifier = this.deps.escalationNotifier;
+		if (!notifier) return;
+		try {
+			await notifier.notifyEscalated(event, outcome, decision);
+		} catch (err) {
+			logger.error({ err, event }, "escalation notification failed");
 		}
 	}
 

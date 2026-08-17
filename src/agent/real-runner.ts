@@ -157,6 +157,7 @@ export class RealAgentRunner implements AgentRunner {
 				kind: "escalated",
 				diagnosis: { failureClass: 4, summary: "agent 未输出合法结构化 JSON" },
 				reason: `unparseable result: ${text.slice(0, 200)}`,
+				source: "runtime",
 			};
 		}
 		return parsed;
@@ -167,6 +168,7 @@ export class RealAgentRunner implements AgentRunner {
 			kind: "escalated",
 			diagnosis: { failureClass: 4, summary: `预算超限：${reason}` },
 			reason: `budget exceeded: ${reason}`,
+			source: "runtime",
 		};
 	}
 
@@ -176,6 +178,7 @@ export class RealAgentRunner implements AgentRunner {
 			kind: "escalated",
 			diagnosis: { failureClass: 4, summary: `agent session 异常：${message}` },
 			reason: `agent error: ${message}`,
+			source: "runtime",
 		};
 	}
 }

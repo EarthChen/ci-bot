@@ -121,20 +121,44 @@ describe("runRepair — 编排 + worktree seam", () => {
 		expect(remove).toHaveBeenCalledWith(cwd);
 	});
 
-	it("agent 返回 escalated → escalated", async () => {
+	it("agent 返回 runtime escalated（预算/异常）→ 非可决策，清理照常", async () => {
 		const { worktree, remove } = fakeWorktree();
 		const dt = new InMemoryDingTalkNotifier();
 		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
 		const agent = stubAgent({
 			kind: "escalated",
-			diagnosis: { failureClass: 3, summary: "x" },
-			reason: "G3",
+			diagnosis: { failureClass: 4, summary: "预算超限" },
+			reason: "budget exceeded",
+			source: "runtime",
 		});
 		const out = await runRepair(
 			{ agent, glab, dingtalk: dt, cwd, worktree },
 			event,
 		);
 		expect(out.kind).toBe("escalated");
+		if (out.kind === "escalated") expect(out.decidable).toBeUndefined();
 		expect(remove).toHaveBeenCalledWith(cwd);
+	});
+
+	it("agent 主动 escalated（source=agent）→ decidable，跳过 worktree 清理", async () => {
+		const { worktree, remove } = fakeWorktree();
+		const dt = new InMemoryDingTalkNotifier();
+		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
+		const agent = stubAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 3, summary: "spec unreadable" },
+			reason: "need human decision",
+			source: "agent",
+		});
+		const out = await runRepair(
+			{ agent, glab, dingtalk: dt, cwd, worktree },
+			event,
+		);
+		expect(out.kind).toBe("escalated");
+		if (out.kind === "escalated") {
+			expect(out.decidable).toBe(true);
+			expect(out.diagnosisSummary).toBe("spec unreadable");
+		}
+		expect(remove).not.toHaveBeenCalled();
 	});
 });

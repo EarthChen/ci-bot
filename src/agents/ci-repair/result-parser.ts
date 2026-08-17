@@ -34,7 +34,7 @@ function normalizeAgentResult(obj: Partial<AgentResult>): AgentResult | null {
 		};
 	}
 	if (obj.kind === "escalated" && diagnosis && typeof obj.reason === "string") {
-		return { kind: "escalated", diagnosis, reason: obj.reason };
+		return { kind: "escalated", diagnosis, reason: obj.reason, source: "agent" };
 	}
 	return null;
 }

@@ -8,6 +8,7 @@
  *   audit/  durable audit traces (persistent, cleaned by retention)
  *   logs/   main bot + worker logs (rotated by pino-roll)
  *   group-routing.db  dynamic webhook routes (SQLite, WAL; /route command)
+ *   decisions.db      human decision state (SQLite, WAL; /heal command)
  *
  * The hard "DATA_ROOT is required" guarantee lives in `loadConfig` (boot-time
  * validation), not here — validate at the boundary, be resilient inside. The
@@ -50,4 +51,9 @@ export function resolveLogDir(): string {
 /** SQLite file holding dynamic webhook routes (/route command). */
 export function resolveRouteDbPath(): string {
 	return join(resolveDataRoot(), "group-routing.db");
+}
+
+/** SQLite file holding human decision state (/heal command). */
+export function resolveDecisionDbPath(): string {
+	return join(resolveDataRoot(), "decisions.db");
 }

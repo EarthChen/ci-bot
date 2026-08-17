@@ -129,6 +129,8 @@ export class SubprocessWorkerManager implements WorkerManager {
 
 		let stdout = "";
 		let stderr = "";
+		/** The worker's parsed outcome (set before return; read in finally). */
+		let outcome: RepairOutcome | undefined;
 		try {
 			const child = await runChild(nodeBin, [entryScript], {
 				cwd,
@@ -161,6 +163,7 @@ export class SubprocessWorkerManager implements WorkerManager {
 					"worker stdout (last 20 lines)",
 				);
 			}
+			outcome = result;
 			return result;
 		} catch {
 			throw new Error(
@@ -169,50 +172,76 @@ export class SubprocessWorkerManager implements WorkerManager {
 			);
 		} finally {
 			// Clean up the per-event cwd so disk doesn't grow. Keep if a test wants
-			// to inspect via keepWork.
-			if (!this.opts.keepWork) {
-				// Clean up the bare repo worktree registration and branch
-				// so re-running the same pipeline does not hit "branch already exists".
-				//
-				// Ordering matters: git holds locks briefly after a worker exits,
-				// so `worktree remove` / `prune` can fail silently (swallowed by
-				// runGit's warn). `branch -D` then fails because the stale worktree
-				// registration still references the branch. `update-ref -d` bypasses
-				// that reference check and deletes the ref directly — the reliable
-				// last resort that prevents residue across re-runs.
-				try {
-					const barePath = join(bareRoot(), event.projectId.replace(/[/:]/g, "-"));
-					const branch = `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`;
-					const runGit = (args: string[]) =>
-						new Promise<void>((resolve) => {
-							execFile("git", args, (err) => {
-								if (err) logger.warn({ err, args }, "worktree cleanup failed");
-								resolve();
-							});
-						});
-					// 1. remove worktree（cwd 仍存在时原子删目录+注册+解除分支引用）。
-					//    -f 丢弃未提交改动。必须在 rm(cwd) 之前：cwd 已删时 remove 行为
-					//    不稳定（实测自动 cleanup 下残留 prunable 注册）。git 无 forget 子命令。
-					await runGit(["--git-dir", barePath, "worktree", "remove", "-f", cwd]);
-					// 2. 兜底删目录（remove 已删则幂等）
-					await rm(cwd, { recursive: true, force: true }).catch(() => {});
-					// 3. prune 清理可能残留的注册
-					await runGit(["--git-dir", barePath, "worktree", "prune", "--expire", "now"]);
-					// 4. 删分支（若 remove 未解除引用）
-					await runGit(["--git-dir", barePath, "branch", "-D", branch]);
-					// 5. 兜底：update-ref -d 直接删 ref，绕过 worktree 引用检查。
-					//    branch -D 会因 stale worktree 注册拒绝删分支；update-ref 不检查
-					//    引用，是防止残留的最后手段（branch 含斜杠，refs/heads/<branch> 合法）。
-					await runGit(["--git-dir", barePath, "update-ref", "-d", `refs/heads/${branch}`]);
-				} catch {
-					// best-effort: bare repo may not exist yet (class-5 early
-					// escalation) or git may not be available; never let
-					// cleanup fail the run.
-				}
+			// to inspect via keepWork. Scene retention (T03): a decidable escalation
+			// also keeps the cwd + worktree + branch so a human decision can resume
+			// the session later; the main process registers the decision.
+			const retained =
+				outcome?.kind === "escalated" && outcome.decidable === true;
+			if (retained) {
+				logger.info(
+					{ projectId: event.projectId, pipelineId: event.pipelineId, cwd },
+					"retaining worker scene for decidable escalation",
+				);
+			}
+			if (!this.opts.keepWork && !retained) {
+				await cleanupScene(event, cwd);
 			}
 		}
 	}
 }
+
+/**
+ * Full scene cleanup for one pipeline event: remove the worktree
+ * registration + directory, the per-event cwd, and the repair branch.
+ * Best-effort — never throws into the caller.
+ *
+ * Shared by the worker manager's per-event finally-block and the
+ * decision-terminal cleanups (prod/drop/expired/invalidated).
+ */
+export async function cleanupScene(
+	event: PipelineEvent,
+	cwd: string,
+): Promise<void> {
+	// Clean up the bare repo worktree registration and branch
+	// so re-running the same pipeline does not hit "branch already exists".
+	//
+	// Ordering matters: git holds locks briefly after a worker exits,
+	// so `worktree remove` / `prune` can fail silently (swallowed by
+	// runGit's warn). `branch -D` then fails because the stale worktree
+	// registration still references the branch. `update-ref -d` bypasses
+	// that reference check and deletes the ref directly — the reliable
+	// last resort that prevents residue across re-runs.
+	try {
+		const barePath = join(bareRoot(), event.projectId.replace(/[/:]/g, "-"));
+		const branch = `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`;
+		const runGit = (args: string[]) =>
+			new Promise<void>((resolve) => {
+				execFile("git", args, (err) => {
+					if (err) logger.warn({ err, args }, "worktree cleanup failed");
+					resolve();
+				});
+			});
+		// 1. remove worktree（cwd 仍存在时原子删目录+注册+解除分支引用）。
+		//    -f 丢弃未提交改动。必须在 rm(cwd) 之前：cwd 已删时 remove 行为
+		//    不稳定（实测自动 cleanup 下残留 prunable 注册）。git 无 forget 子命令。
+		await runGit(["--git-dir", barePath, "worktree", "remove", "-f", cwd]);
+		// 2. 兜底删目录（remove 已删则幂等）
+		await rm(cwd, { recursive: true, force: true }).catch(() => {});
+		// 3. prune 清理可能残留的注册
+		await runGit(["--git-dir", barePath, "worktree", "prune", "--expire", "now"]);
+		// 4. 删分支（若 remove 未解除引用）
+		await runGit(["--git-dir", barePath, "branch", "-D", branch]);
+		// 5. 兜底：update-ref -d 直接删 ref，绕过 worktree 引用检查。
+		//    branch -D 会因 stale worktree 注册拒绝删分支；update-ref 不检查
+		//    引用，是防止残留的最后手段（branch 含斜杠，refs/heads/<branch> 合法）。
+		await runGit(["--git-dir", barePath, "update-ref", "-d", `refs/heads/${branch}`]);
+	} catch {
+		// best-effort: bare repo may not exist yet (class-5 early
+		// escalation) or git may not be available; never let
+		// cleanup fail the run.
+	}
+}
+
 
 /**
  * Copy Pi's standard configuration files into an isolated worker runtime.

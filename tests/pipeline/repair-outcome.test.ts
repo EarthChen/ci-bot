@@ -76,7 +76,7 @@ describe("finishRepair — 统一终态 handler", () => {
 		expect(removeCalls).toContain(cwd);
 	});
 
-	it("escalated: 写审计 + 转交通知", async () => {
+	it("escalated: 写审计，worker 不再发通知（T04 移至主进程路由通知）", async () => {
 		const out = await finishRepair({
 			dingtalk: dt,
 			cwd,
@@ -96,7 +96,7 @@ describe("finishRepair — 统一终态 handler", () => {
 		});
 		const trace = readTrace(cwd);
 		expect(trace.outcome).toBe("escalated");
-		expect(dt.sent[0].title).toBe("CI 自愈转交人工");
+		expect(dt.sent).toEqual([]);
 		expect(removeCalls).toContain(cwd);
 	});
 
@@ -132,6 +132,37 @@ describe("finishRepair — 统一终态 handler", () => {
 		expect(existsSync(join(cwd, "repo"))).toBe(false);
 		expect(removeCalls).toContain(cwd);
 	});
+
+	it("decidable escalated: 跳过清理，审计照常，worker 不发通知，outcome 带 decidable 标记", async () => {
+		mkdirSync(join(cwd, "repo"), { recursive: true });
+		const out = await finishRepair({
+			dingtalk: dt,
+			cwd,
+			event,
+			removeWorktree,
+			result: {
+				kind: "escalated",
+				summary: "need human decision",
+				diagnosis: { failureClass: 3, summary: "spec ambiguous" },
+				decidable: true,
+			},
+		});
+		// outcome 携带 decidable + diagnosisSummary（T04 routed 通知契约）
+		expect(out).toEqual({
+			kind: "escalated",
+			summary: "need human decision",
+			decidable: true,
+			diagnosisSummary: "spec ambiguous",
+		});
+		// 现场保留：worktree 清理被跳过
+		expect(removeCalls).toEqual([]);
+		expect(existsSync(join(cwd, "repo"))).toBe(true);
+		// expand-contract 完成（T04）：worker 侧不再发送 escalated 通知；
+		// 主进程 routed 通知由 scheduler + escalation-notifier 负责。
+		expect(dt.sent).toEqual([]);
+		const trace = readTrace(cwd);
+		expect(trace.outcome).toBe("escalated");
+	});
 });
 describe("repairCost — token cost computation", () => {
 	it("returns 0 for 0 tokens", () => {
@@ -154,8 +185,7 @@ describe("repairCost — token cost computation", () => {
 		);
 		const { repairCost: rc } = fresh as typeof import("../../src/pipeline/repair-outcome.js");
 		expect(rc(1000)).toBe(0.002);
-		if (orig !== undefined) process.env.BOT_TOKEN_UNIT_COST_PER_1K = orig;
-		else delete process.env.BOT_TOKEN_UNIT_COST_PER_1K;
+		if (orig === undefined) delete process.env.BOT_TOKEN_UNIT_COST_PER_1K; else process.env.BOT_TOKEN_UNIT_COST_PER_1K = orig;
 	});
 });
 
@@ -188,8 +218,7 @@ describe("resolveAuditDir — durable audit directory resolution", () => {
 		const orig = process.env.CIHEAL_DATA_ROOT;
 		process.env.CIHEAL_DATA_ROOT = "/tmp/data";
 		expect(resolveAuditDir()).toBe("/tmp/data/audit");
-		if (orig !== undefined) process.env.CIHEAL_DATA_ROOT = orig;
-		else delete process.env.CIHEAL_DATA_ROOT;
+		if (orig === undefined) delete process.env.CIHEAL_DATA_ROOT; else process.env.CIHEAL_DATA_ROOT = orig;
 	});
 });
 
@@ -221,8 +250,7 @@ describe("persistDurable — durable audit trace persistence", () => {
 		// cleanup
 		rmSync(dataDir, { recursive: true, force: true });
 		rmSync(cwd, { recursive: true, force: true });
-		if (origDataRoot !== undefined) process.env.CIHEAL_DATA_ROOT = origDataRoot;
-		else delete process.env.CIHEAL_DATA_ROOT;
+		if (origDataRoot === undefined) delete process.env.CIHEAL_DATA_ROOT; else process.env.CIHEAL_DATA_ROOT = origDataRoot;
 	});
 	it("is best-effort: does not throw on invalid path", () => {
 		expect(() => {

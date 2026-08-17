@@ -21,6 +21,7 @@ import {
 	createPipelineFailureNotifier,
 	type GroupMessageSender,
 } from "./notify/pipeline-notification.js";
+import { createEscalationNotifier } from "./notify/escalation-notifier.js";
 import { WebhookRouteStore } from "./notify/route-store.js";
 import {
 	buildUsageText,
@@ -31,7 +32,8 @@ import { handleHelpCommand } from "./notify/help-command.js";
 import { loadGroupRouting, ProjectRouter } from "./notify/project-router.js";
 import { DingTalkStreamBot } from "./notify/stream-bot.js";
 import { logger } from "./util/log.js";
-import { resolveRouteDbPath, resolveWorkRoot } from "./config/paths.js";
+import { resolveDecisionDbPath, resolveRouteDbPath, resolveWorkRoot } from "./config/paths.js";
+import { DecisionStore } from "./decision/store.js";
 
 async function main(): Promise<void> {
 	loadEnvFile(".env");
@@ -63,6 +65,10 @@ async function main(): Promise<void> {
 	// the router's dynamic layer reads live on every resolve.
 	const routeStore = new WebhookRouteStore(resolveRouteDbPath());
 
+	// Decision store (SQLite under DATA_ROOT): the scheduler registers
+	// awaiting_decision records for decidable escalations (scene retention).
+	const decisionStore = new DecisionStore(resolveDecisionDbPath());
+
 	// Routed CI-failure group notification (ported from code-review-bot):
 	// dynamic exact → dynamic wildcard → static exact → static wildcard → default.
 	const routing = loadGroupRouting(
@@ -74,6 +80,14 @@ async function main(): Promise<void> {
 		() => routeStore.getMapping(),
 	);
 	const pipelineNotifier = createPipelineFailureNotifier({
+		router: projectRouter,
+		sender: groupSender,
+	});
+
+	// Routed escalation notification (T04): all escalated notifications are
+	// sent from the main process through the project router (same group as
+	// the webhook failure broadcast).
+	const escalationNotifier = createEscalationNotifier({
 		router: projectRouter,
 		sender: groupSender,
 	});
@@ -143,6 +157,8 @@ async function main(): Promise<void> {
 		maxWorkers: config.concurrency,
 		notifier,
 		workerCrashThreshold: Number(process.env.BOT_WORKER_CRASH_THRESHOLD ?? "3"),
+		decisionStore,
+		escalationNotifier,
 	});
 
 	await mountWebhook(app, {
@@ -162,6 +178,7 @@ async function main(): Promise<void> {
 	const shutdown = async () => {
 		streamBot.stop();
 		routeStore.close();
+		decisionStore.close();
 		await app.close();
 		process.exit(0);
 	};

@@ -100,6 +100,9 @@ export interface RepairResult {
 	readonly metrics?: RepairMetrics;
 	/** Error detail for failed outcomes. */
 	readonly error?: string;
+	/** Escalated-only: agent-initiated escalation with diagnosis — retain the
+	 *  scene (skip worktree cleanup) and flag the outcome as decidable. */
+	readonly decidable?: boolean;
 }
 
 /** Serialize one audit trace to its metric JSONL line. */
@@ -230,21 +233,6 @@ function notifySuccess(
 	});
 }
 
-function notifyEscalation(
-	dingtalk: DingTalkNotifier,
-	event: PipelineEvent,
-	reason: string,
-): Promise<void> {
-	return dingtalk.send({
-		title: "CI 自愈转交人工",
-		text: [
-			`项目 ${event.projectId}`,
-			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
-			`原因：${reason}`,
-		].join("\n"),
-	});
-}
-
 function notifyFailure(
 	dingtalk: DingTalkNotifier,
 	event: PipelineEvent,
@@ -284,11 +272,11 @@ export async function finishRepair(args: {
 			: (result.error ?? result.summary);
 	const summary = result.diagnosis?.summary ?? result.summary;
 
+	// escalated notifications moved to the main-process routed notifier (T04);
+	// the worker only reports the outcome (mr success / failed still notify here).
 	if (result.kind === "mr") {
 		await notifySuccess(dingtalk, event, result.mrUrl ?? "", summary);
-	} else if (result.kind === "escalated") {
-		await notifyEscalation(dingtalk, event, result.summary);
-	} else {
+	} else if (result.kind === "failed") {
 		logger.error(
 			{ event, stage: result.summary, error: result.error },
 			"repair failed",
@@ -307,12 +295,25 @@ export async function finishRepair(args: {
 		...metrics,
 	});
 
-	await removeWorktree(cwd).catch(() => {});
+	// Scene retention: a decidable escalation keeps the worktree + cwd so a
+	// human decision can resume the session later (T03). Everything else is
+	// cleaned up as before.
+	if (!(result.kind === "escalated" && result.decidable)) {
+		await removeWorktree(cwd).catch(() => {});
+	}
 
 	if (result.kind === "mr") {
 		return { kind: "mr", mrUrl: result.mrUrl ?? "", summary };
 	}
 	if (result.kind === "escalated") {
+		if (result.decidable) {
+			return {
+				kind: "escalated",
+				summary: result.summary,
+				decidable: true,
+				diagnosisSummary: result.diagnosis?.summary,
+			};
+		}
 		return { kind: "escalated", summary: result.summary };
 	}
 	return {

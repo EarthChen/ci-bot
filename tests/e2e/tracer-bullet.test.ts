@@ -28,6 +28,9 @@ import { Scheduler } from "../../src/agent-runtime/scheduler.js";
 import { CI_REPAIR_SCHEDULING_POLICY } from "../../src/agent/ci-repair-definition.js";
 import { SubprocessWorkerManager } from "../../src/worker/manager.js";
 import { mountWebhook } from "../../src/webhook/receiver.js";
+import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
+import { createEscalationNotifier } from "../../src/notify/escalation-notifier.js";
+import { ProjectRouter } from "../../src/notify/project-router.js";
 
 const WEBHOOK_SECRET = "test-secret-token";
 const WORK_ROOT = await mkdtemp(join(tmpdir(), "ciheal-e2e-"));
@@ -263,11 +266,17 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
       keepWork: true,
       env: { CIHEAL_STUB_FIX_KIND: "src-main", CIHEAL_WORKTREE_MODE: "fake" },
     });
+    // T04: escalated notifications are main-process + routed.
+    const g3Escalations = new InMemoryDingTalkNotifier();
     const g3Scheduler = new Scheduler({
       workerManager: g3Manager,
       workRoot: g3WorkRoot,
       maxWorkers: 1,
       policy: CI_REPAIR_SCHEDULING_POLICY,
+      escalationNotifier: createEscalationNotifier({
+        router: new ProjectRouter({}, "cid-e2e-default"),
+        sender: g3Escalations,
+      }),
     });
     const g3App = Fastify({ logger: false });
     await mountWebhook(g3App, {
@@ -327,10 +336,11 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
 
       // No MR created — G3 blocked the production-path fix.
       expect(mrs).toBeNull();
-      // Escalation DingTalk was sent (转交人工), proving the block surfaces.
-      expect(dingtalk).not.toBeNull();
-      expect(dingtalk!.length).toBe(1);
-      expect(dingtalk![0].title).toContain("转交");
+      // T04: the worker sent NO escalation notification (sidecar empty)...
+      expect(dingtalk).toBeNull();
+      // ...the main-process routed notification surfaced the block instead.
+      expect(g3Escalations.sentGroups).toHaveLength(1);
+      expect(g3Escalations.sentGroups[0].message.title).toContain("转交");
     } finally {
       await g3App.close();
       await rm(g3WorkRoot, { recursive: true, force: true }).catch(() => {});

@@ -24,6 +24,9 @@ import { Scheduler } from "../../src/agent-runtime/scheduler.js";
 import { CI_REPAIR_SCHEDULING_POLICY } from "../../src/agent/ci-repair-definition.js";
 import { SubprocessWorkerManager } from "../../src/worker/manager.js";
 import { mountWebhook } from "../../src/webhook/receiver.js";
+import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
+import { createEscalationNotifier } from "../../src/notify/escalation-notifier.js";
+import { ProjectRouter } from "../../src/notify/project-router.js";
 
 const WEBHOOK_SECRET = "test-secret-token";
 
@@ -83,6 +86,8 @@ async function setupBot(env: Record<string, string>): Promise<{
 	scheduler: Scheduler;
 	base: string;
 	workRoot: string;
+	/** Main-process routed escalation recorder (T04). */
+	escalations: InMemoryDingTalkNotifier;
 	cleanup: () => Promise<void>;
 }> {
 	const workRoot = await mkdtemp(join(tmpdir(), "ciheal-g1-"));
@@ -96,11 +101,17 @@ async function setupBot(env: Record<string, string>): Promise<{
 			...env,
 		},
 	});
+	// T04: escalated notifications are main-process + routed (ProjectRouter).
+	const escalations = new InMemoryDingTalkNotifier();
 	const scheduler = new Scheduler({
 		workerManager,
 		workRoot,
 		maxWorkers: 1,
 		policy: CI_REPAIR_SCHEDULING_POLICY,
+		escalationNotifier: createEscalationNotifier({
+			router: new ProjectRouter({}, "cid-e2e-default"),
+			sender: escalations,
+		}),
 	});
 	const app = Fastify({ logger: false });
 	await mountWebhook(app, {
@@ -120,6 +131,7 @@ async function setupBot(env: Record<string, string>): Promise<{
 		scheduler,
 		base,
 		workRoot,
+		escalations,
 		cleanup: async () => {
 			await app.close();
 			await rm(workRoot, { recursive: true, force: true }).catch(() => {});
@@ -210,11 +222,18 @@ describe("G1 taxonomy: webhook → MR / escalation → DingTalk (ticket 03)", ()
 				"glab-mr-creates.json",
 			);
 			expect(mrs).toBeNull();
-			const dingtalk = await readSidecar<
-				Array<{ title: string; text: string }>
-			>(bot.workRoot, "dingtalk-sent.json");
-			expect(dingtalk).not.toBeNull();
-			expect(dingtalk!.some((d) => d.title.includes("转交"))).toBe(true);
+			// T04: worker 不再发送 escalation 通知（sidecar 为空）；
+			// 主进程路由通知到达路由群。
+			const workerSent = await readSidecar<Array<{ title: string }>>(
+				bot.workRoot,
+				"dingtalk-sent.json",
+			);
+			expect(workerSent).toBeNull();
+			expect(
+				bot.escalations.sentGroups.some((g) =>
+					g.message.title.includes("转交"),
+				),
+			).toBe(true);
 		} finally {
 			await bot.cleanup();
 		}
@@ -235,11 +254,17 @@ describe("G1 taxonomy: webhook → MR / escalation → DingTalk (ticket 03)", ()
 				"glab-mr-creates.json",
 			);
 			expect(mrs).toBeNull();
-			const dingtalk = await readSidecar<
-				Array<{ title: string; text: string }>
-			>(bot.workRoot, "dingtalk-sent.json");
-			expect(dingtalk).not.toBeNull();
-			expect(dingtalk!.some((d) => d.title.includes("转交"))).toBe(true);
+			// T04: worker 零 escalation 通知；主进程路由通知到达。
+			const workerSent = await readSidecar<Array<{ title: string }>>(
+				bot.workRoot,
+				"dingtalk-sent.json",
+			);
+			expect(workerSent).toBeNull();
+			expect(
+				bot.escalations.sentGroups.some((g) =>
+					g.message.title.includes("转交"),
+				),
+			).toBe(true);
 		} finally {
 			await bot.cleanup();
 		}
@@ -260,11 +285,17 @@ describe("G1 taxonomy: webhook → MR / escalation → DingTalk (ticket 03)", ()
 				"glab-mr-creates.json",
 			);
 			expect(mrs).toBeNull();
-			const dingtalk = await readSidecar<
-				Array<{ title: string; text: string }>
-			>(bot.workRoot, "dingtalk-sent.json");
-			expect(dingtalk).not.toBeNull();
-			expect(dingtalk!.some((d) => d.title.includes("转交"))).toBe(true);
+			// T04: worker 零 escalation 通知；主进程路由通知到达。
+			const workerSent = await readSidecar<Array<{ title: string }>>(
+				bot.workRoot,
+				"dingtalk-sent.json",
+			);
+			expect(workerSent).toBeNull();
+			expect(
+				bot.escalations.sentGroups.some((g) =>
+					g.message.title.includes("转交"),
+				),
+			).toBe(true);
 		} finally {
 			await bot.cleanup();
 		}
@@ -288,13 +319,15 @@ describe("G1 taxonomy: webhook → MR / escalation → DingTalk (ticket 03)", ()
 				"glab-mr-creates.json",
 			);
 			expect(mrs).toBeNull();
-			// Escalation DingTalk sent with class-5 reason.
-			const dingtalk = await readSidecar<
-				Array<{ title: string; text: string }>
-			>(bot.workRoot, "dingtalk-sent.json");
-			expect(dingtalk).not.toBeNull();
-			expect(dingtalk!.some((d) => d.title.includes("转交"))).toBe(true);
-			expect(dingtalk!.some((d) => d.text.includes("class 5"))).toBe(true);
+			// T04: escalation 通知走主进程路由（worker sidecar 为空），内容含 class-5 原因。
+			const workerSent = await readSidecar<Array<{ title: string }>>(
+				bot.workRoot,
+				"dingtalk-sent.json",
+			);
+			expect(workerSent).toBeNull();
+			const routed = bot.escalations.sentGroups.map((g) => g.message);
+			expect(routed.some((d) => d.title.includes("转交"))).toBe(true);
+			expect(routed.some((d) => d.text.includes("class 5"))).toBe(true);
 		} finally {
 			await bot.cleanup();
 		}

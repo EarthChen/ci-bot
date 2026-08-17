@@ -102,6 +102,11 @@ async function main(): Promise<void> {
 		sender: groupSender,
 	});
 
+	// TTL sweep (T08): expired awaiting decisions are swept, their scenes
+	// cleaned and the routed groups notified. Interval defaults to 60s
+	// (CIHEAL_DECISION_SWEEP_INTERVAL_MS overrides).
+	const ttlSweep = decisionLifecycle.startTtlSweep();
+
 	// Command help text (externalized to config/command-help.json; a missing
 	// file is a deploy error — the loader throws at boot).
 	const commandHelp = loadCommandHelp(
@@ -198,6 +203,7 @@ async function main(): Promise<void> {
 	logger.info({ port: config.port }, "ci-self-heal bot listening");
 
 	const shutdown = async () => {
+		ttlSweep.stop();
 		streamBot.stop();
 		routeStore.close();
 		decisionStore.close();

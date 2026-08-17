@@ -219,25 +219,33 @@ export class DecisionStore {
 		return invalidate(projectId);
 	}
 
-	sweepExpired(): string[] {
-		const now = new Date().toISOString();
-		const rows = this.db
-			.prepare(
-				"SELECT decision_id FROM decisions WHERE status = 'awaiting_decision' AND expires_at < ?",
-			)
-			.all(now) as Array<{ decision_id: string }>;
+	/**
+	 * Sweep expired awaiting decisions (T08): atomically read-then-delete in
+	 * one transaction and return the FULL prior records — the lifecycle sweep
+	 * needs event_json/cwd_path for scene cleanup and the timeout notification.
+	 */
+	sweepExpired(): DecisionRecord[] {
+		const sweep = this.db.transaction(() => {
+			const now = new Date().toISOString();
+			const rows = this.db
+				.prepare(
+					"SELECT * FROM decisions WHERE status = 'awaiting_decision' AND expires_at < ? ORDER BY expires_at",
+				)
+				.all(now) as DecisionRow[];
 
-		if (rows.length === 0) {
-			return [];
-		}
+			if (rows.length === 0) {
+				return [];
+			}
 
-		const ids = rows.map((r) => r.decision_id);
-		const placeholders = ids.map(() => "?").join(", ");
-		this.db
-			.prepare(`DELETE FROM decisions WHERE decision_id IN (${placeholders})`)
-			.run(...ids);
+			const ids = rows.map((r) => r.decision_id);
+			const placeholders = ids.map(() => "?").join(", ");
+			this.db
+				.prepare(`DELETE FROM decisions WHERE decision_id IN (${placeholders})`)
+				.run(...ids);
 
-		return ids;
+			return rows.map(rowToRecord);
+		});
+		return sweep();
 	}
 
 	close(): void {

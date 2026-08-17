@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DecisionStore } from "../../src/decision/store.js";
 import type { DecisionRecord, DecisionStatus } from "../../src/decision/store.js";
@@ -150,7 +151,7 @@ describe("DecisionStore", () => {
 	});
 
 	describe("sweepExpired", () => {
-		it("deletes expired awaiting_decision records and returns their ids", () => {
+		it("deletes expired awaiting decisions and returns the full records", () => {
 			const pastExpiry = new Date(Date.now() - 1000).toISOString();
 			const futureExpiry = new Date(Date.now() + 60_000).toISOString();
 
@@ -158,7 +159,11 @@ describe("DecisionStore", () => {
 				makeCreateParams({ decision_id: "D-expired-1", expires_at: pastExpiry }),
 			);
 			store.create(
-				makeCreateParams({ decision_id: "D-expired-2", expires_at: pastExpiry }),
+				makeCreateParams({
+					decision_id: "D-expired-2",
+					expires_at: pastExpiry,
+					pipeline_id: "pipe-2",
+				}),
 			);
 			store.create(
 				makeCreateParams({ decision_id: "D-valid", expires_at: futureExpiry }),
@@ -166,7 +171,15 @@ describe("DecisionStore", () => {
 
 			const swept = store.sweepExpired();
 			expect(swept).toHaveLength(2);
-			expect(swept.sort()).toEqual(["D-expired-1", "D-expired-2"]);
+			expect(swept.map((r) => r.decision_id).sort()).toEqual([
+				"D-expired-1",
+				"D-expired-2",
+			]);
+			// Full records carry everything the lifecycle sweep needs.
+			const first = swept.find((r) => r.decision_id === "D-expired-1")!;
+			expect(first.status).toBe("awaiting_decision");
+			expect(first.cwd_path).toBe("/tmp/work/uuid-1");
+			expect(first.event_json).toBe(JSON.stringify(makeEvent()));
 
 			expect(store.get("D-expired-1")).toBeUndefined();
 			expect(store.get("D-expired-2")).toBeUndefined();
@@ -192,12 +205,39 @@ describe("DecisionStore", () => {
 			);
 
 			const swept = store.sweepExpired();
-			expect(swept).toEqual(["D-awaiting"]);
+			expect(swept.map((r) => r.decision_id)).toEqual(["D-awaiting"]);
 			expect(store.get("D-closed")).toBeDefined();
 		});
 
 		it("returns empty array when nothing is expired", () => {
 			expect(store.sweepExpired()).toEqual([]);
+		});
+
+		it("is atomic: a failing delete leaves every row intact", () => {
+			const pastExpiry = new Date(Date.now() - 1000).toISOString();
+			store.create(
+				makeCreateParams({ decision_id: "D-a", expires_at: pastExpiry }),
+			);
+			store.create(
+				makeCreateParams({
+					decision_id: "D-b",
+					expires_at: pastExpiry,
+					pipeline_id: "pipe-2",
+				}),
+			);
+
+			// Abort the sweep mid-delete via a SQLite trigger — nothing may be lost.
+			const sideChannel = new Database(join(dir, "decisions.db"));
+			sideChannel.exec(
+				`CREATE TRIGGER abort_sweep BEFORE DELETE ON decisions
+				 WHEN OLD.decision_id = 'D-b'
+				 BEGIN SELECT RAISE(ABORT, 'boom'); END`,
+			);
+			sideChannel.close();
+
+			expect(() => store.sweepExpired()).toThrow(/boom/);
+			expect(store.get("D-a")).toBeDefined();
+			expect(store.get("D-b")).toBeDefined();
 		});
 	});
 

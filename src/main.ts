@@ -29,6 +29,7 @@ import {
 } from "./notify/command-help.js";
 import { handleRouteCommand } from "./notify/route-command.js";
 import { handleHelpCommand } from "./notify/help-command.js";
+import { handleHealCommand } from "./decision/heal-command.js";
 import { loadGroupRouting, ProjectRouter } from "./notify/project-router.js";
 import { DingTalkStreamBot } from "./notify/stream-bot.js";
 import { logger } from "./util/log.js";
@@ -115,6 +116,17 @@ async function main(): Promise<void> {
 				)
 					return;
 				if (await handleHelpCommand({ help: commandHelp, reply }, message))
+					return;
+				if (
+					await handleHealCommand(
+						{
+							store: decisionStore,
+							reply,
+							enqueueResume: (record) => scheduler.enqueueResume(record),
+						},
+						message,
+					)
+				)
 					return;
 			} catch (err) {
 				logger.warn({ err, text: message.text }, "dingtalk command failed");

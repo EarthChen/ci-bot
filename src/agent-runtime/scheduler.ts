@@ -19,7 +19,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { logger } from "../util/log.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
-import type { CreateDecisionParams, DecisionStore } from "../decision/store.js";
+import type { CreateDecisionParams, DecisionRecord, DecisionStore } from "../decision/store.js";
 import type {
 	EscalationDecision,
 	EscalationNotifier,
@@ -31,6 +31,26 @@ const DEFAULT_DECISION_TTL_MS = 86_400_000;
 /** A unit of work the scheduler can run (abstract; the bot provides the impl). */
 export interface ScheduledWorker {
 	run(event: PipelineEvent, cwd: string): Promise<RepairOutcome>;
+	/** Resume a retained scene in place (T05 contract; the worker entry's
+	 *  resume branch is T06). Optional so repair-only workers still conform;
+	 *  enqueueResume rejects loud when it is missing. */
+	runResume?(task: ResumeTask): Promise<RepairOutcome>;
+}
+
+/**
+ * Resume task envelope handed to the worker via CIHEAL_WORKER_TASK (T05
+ * contract, consumed by the worker entry's resume branch in T06). The
+ * worker runs against the RETAINED scene (cwd), not a fresh work dir.
+ */
+export interface ResumeTask {
+	readonly mode: "resume";
+	readonly event: PipelineEvent;
+	readonly cwd: string;
+	readonly decision: {
+		readonly decisionId: string;
+		readonly value: "test";
+		readonly remark: string;
+	};
 }
 
 export interface SchedulerNotifierMessage {
@@ -86,6 +106,10 @@ export class Scheduler {
 	private readonly activeKeys = new Set<string>();
 	private crashCount = 0;
 	private readonly effectiveCap: number;
+	/** Per-key promise chains keeping same-project resumes FIFO (T05). */
+	private readonly resumeChains = new Map<string, Promise<void>>();
+	/** Resumes scheduled but not yet finished (extends idle(), T05). */
+	private pendingResumes = 0;
 
 	constructor(private readonly deps: SchedulerDeps) {
 		this.effectiveCap = Math.max(
@@ -241,9 +265,96 @@ export class Scheduler {
 		}
 	}
 
+	/**
+	 * Schedule a resume run for a `test` decision (T05). The resume runs
+	 * against the RETAINED cwd (no fresh work dir) and is serialized under
+	 * the same per-key policy as repairs (a resume never races a new webhook
+	 * repair for the same project), but BYPASSES pipeline-id dedup — the
+	 * original pipeline already completed.
+	 *
+	 * Resolves once the resume is scheduled; rejects loud on misconfiguration
+	 * (no decisionStore / no runResume support / corrupt event_json) so the
+	 * /heal command can compensate (revert to awaiting_decision) and retry.
+	 */
+	async enqueueResume(record: DecisionRecord): Promise<void> {
+		if (!this.deps.decisionStore) {
+			throw new Error(
+				"scheduler misconfiguration: decisionStore is required for resume",
+			);
+		}
+		if (!this.deps.workerManager.runResume) {
+			throw new Error(
+				"scheduler misconfiguration: workerManager.runResume is required for resume",
+			);
+		}
+		const event = JSON.parse(record.event_json) as PipelineEvent;
+		const task: ResumeTask = {
+			mode: "resume",
+			event,
+			cwd: record.cwd_path,
+			decision: {
+				decisionId: record.decision_id,
+				value: "test",
+				remark: record.remark ?? "",
+			},
+		};
+		const key = this.deps.policy.serialKey(event);
+		// FIFO per key: chain onto the previous resume for the same project.
+		const previous = this.resumeChains.get(key) ?? Promise.resolve();
+		const link = previous
+			.catch(() => {})
+			.then(() => this.runResumeSerialized(task));
+		const tracked = link.finally(() => {
+			this.pendingResumes--;
+		});
+		this.resumeChains.set(key, tracked.catch(() => {}));
+		this.pendingResumes++;
+		void tracked.catch(() => {});
+	}
+
+	/**
+	 * Run one resume task under the per-key serialization + global cap (same
+	 * invariants as pump()). Worker failures are logged, never rethrown — a
+	 * failed resume is terminal for that decision (one-round intervention).
+	 */
+	private async runResumeSerialized(task: ResumeTask): Promise<void> {
+		const key = this.deps.policy.serialKey(task.event);
+		// Check-then-set is atomic: single-threaded, no await in between.
+		while (this.activeKeys.has(key) || this.running >= this.effectiveCap) {
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		this.activeKeys.add(key);
+		this.running++;
+		try {
+			await this.deps.workerManager.runResume!(task);
+			logger.info(
+				{
+					decisionId: task.decision.decisionId,
+					projectId: task.event.projectId,
+					cwd: task.cwd,
+				},
+				"resume completed",
+			);
+		} catch (err) {
+			const error = err instanceof Error ? err.message : String(err);
+			logger.error(
+				{ error, decisionId: task.decision.decisionId, cwd: task.cwd },
+				"resume worker failed",
+			);
+		} finally {
+			this.running--;
+			this.activeKeys.delete(key);
+			void this.pump();
+		}
+	}
+
 	/** Test affordance: wait until the queue is drained. */
 	async idle(): Promise<void> {
-		while (this.running > 0 || this.queue.length > 0) {
+		while (
+			this.running > 0 ||
+			this.queue.length > 0 ||
+			this.pendingResumes > 0
+		) {
 			await new Promise((r) => setTimeout(r, 10));
 		}
 	}

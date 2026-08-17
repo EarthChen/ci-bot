@@ -365,3 +365,151 @@ describe("Scheduler — routed escalation 通知（T04）", () => {
 		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0 });
 	});
 });
+
+describe("Scheduler — enqueueResume（T05）", () => {
+	function makeRecord(overrides: Partial<{ decision_id: string; cwd_path: string; event_json: string }> = {}) {
+		return {
+			decision_id: overrides.decision_id ?? "D-1-ab12",
+			pipeline_id: "1",
+			project_id: "A",
+			event_json: overrides.event_json ?? JSON.stringify(makeEvent("A", 1)),
+			cwd_path: overrides.cwd_path ?? "/tmp/retained/work-1",
+			session_path: "/tmp/retained/work-1/.pi-agent",
+			branch: "ci-self-heal/main-abc12345",
+			status: "resumed" as const,
+			created_at: "2026-08-17T00:00:00.000Z",
+			expires_at: "2026-08-18T00:00:00.000Z",
+			decided_by: "staff-1",
+			decision_value: "test",
+			remark: "spec says five",
+			decided_at: "2026-08-17T01:00:00.000Z",
+		};
+	}
+
+	function resumeScheduler(workerManager: {
+		run: (event: PipelineEvent, cwd: string) => Promise<import("../../src/types.js").RepairOutcome>;
+		runResume?: (task: import("../../src/agent-runtime/scheduler.js").ResumeTask) => Promise<import("../../src/types.js").RepairOutcome>;
+	}) {
+		return new Scheduler({
+			workerManager,
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 2,
+			decisionStore: { create: vi.fn() },
+		});
+	}
+
+	it("无 decisionStore → 配置错误，直接 reject（fail loud）", async () => {
+		const scheduler = new Scheduler({
+			workerManager: { run: async () => ({ kind: "escalated" as const, summary: "x" }) },
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+		});
+		await expect(scheduler.enqueueResume(makeRecord())).rejects.toThrow(
+			/decisionStore/,
+		);
+	});
+
+	it("worker 不支持 runResume → reject（fail loud）", async () => {
+		const scheduler = resumeScheduler({
+			run: async () => ({ kind: "escalated" as const, summary: "x" }),
+		});
+		await expect(scheduler.enqueueResume(makeRecord())).rejects.toThrow(
+			/runResume/,
+		);
+	});
+
+	it("resume 信封符合契约：mode/event/cwd/decision 来自保留记录", async () => {
+		const runResume = vi.fn(async () => ({
+			kind: "escalated" as const,
+			summary: "terminal",
+		}));
+		const scheduler = resumeScheduler({
+			run: async () => ({ kind: "escalated" as const, summary: "x" }),
+			runResume,
+		});
+		await scheduler.enqueueResume(makeRecord());
+		await scheduler.idle();
+
+		expect(runResume).toHaveBeenCalledTimes(1);
+		expect(runResume.mock.calls[0][0]).toEqual({
+			mode: "resume",
+			event: makeEvent("A", 1),
+			cwd: "/tmp/retained/work-1",
+			decision: {
+				decisionId: "D-1-ab12",
+				value: "test",
+				remark: "spec says five",
+			},
+		});
+	});
+
+	it("同 project 的 resume 串行于在途 repair（不并行、不抢先）", async () => {
+		const timeline: string[] = [];
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => (release = r));
+		const scheduler = resumeScheduler({
+			run: async () => {
+				await gate;
+				timeline.push("repair");
+				return { kind: "escalated" as const, summary: "x" };
+			},
+			runResume: async () => {
+				timeline.push("resume");
+				return { kind: "escalated" as const, summary: "terminal" };
+			},
+		});
+		scheduler.enqueue(makeEvent("A", 1));
+		while (scheduler.stats().running === 0) {
+			await new Promise((r) => setTimeout(r, 5));
+		}
+		await scheduler.enqueueResume(makeRecord());
+		await new Promise((r) => setTimeout(r, 30));
+		// repair 仍在途 → resume 必须等待（per-key serial）
+		expect(timeline).toEqual([]);
+		release();
+		await scheduler.idle();
+		expect(timeline).toEqual(["repair", "resume"]);
+	});
+
+	it("同 key 连续两个 resume → FIFO 顺序执行", async () => {
+		const order: string[] = [];
+		const scheduler = resumeScheduler({
+			run: async () => ({ kind: "escalated" as const, summary: "x" }),
+			runResume: async (task) => {
+				order.push(task.decision.decisionId);
+				await new Promise((r) => setTimeout(r, 20));
+				return { kind: "escalated" as const, summary: "terminal" };
+			},
+		});
+		await scheduler.enqueueResume(makeRecord({ decision_id: "D-1-first" }));
+		await scheduler.enqueueResume(makeRecord({ decision_id: "D-1-second" }));
+		await scheduler.idle();
+		expect(order).toEqual(["D-1-first", "D-1-second"]);
+	});
+
+	it("resume 不走 pipeline-id 去重：repair 在途时同 pipeline 仍可 resume", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => (release = r));
+		const runResume = vi.fn(async () => ({
+			kind: "escalated" as const,
+			summary: "terminal",
+		}));
+		const scheduler = resumeScheduler({
+			run: async () => {
+				await gate;
+				return { kind: "escalated" as const, summary: "x" };
+			},
+			runResume,
+		});
+		scheduler.enqueue(makeEvent("A", 1)); // pipeline A:1 在途（inflight 占用）
+		while (scheduler.stats().running === 0) {
+			await new Promise((r) => setTimeout(r, 5));
+		}
+		await scheduler.enqueueResume(makeRecord()); // 同 pipeline，不应被去重丢弃
+		release();
+		await scheduler.idle();
+		expect(runResume).toHaveBeenCalledTimes(1);
+	});
+});

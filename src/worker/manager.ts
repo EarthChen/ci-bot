@@ -23,6 +23,7 @@ import { isAbsolute, join, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { logger } from "../util/log.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
+import type { ResumeTask } from "../agent-runtime/scheduler.js";
 import { bareRoot } from "../pipeline/worktree.js";
 import { resolveAuditDir } from "../pipeline/repair-outcome.js";
 
@@ -31,6 +32,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export interface WorkerManager {
 	/** Spawn a worker for the given event + cwd, return its outcome. */
 	run(event: PipelineEvent, cwd: string): Promise<RepairOutcome>;
+	/** Resume a retained scene in place (T05; scheduler-driven). */
+	runResume?(task: ResumeTask): Promise<RepairOutcome>;
 }
 
 export interface WorkerSpawnOptions {
@@ -57,6 +60,25 @@ export class SubprocessWorkerManager implements WorkerManager {
 	constructor(private readonly opts: WorkerSpawnOptions = {}) {}
 
 	async run(event: PipelineEvent, cwd: string): Promise<RepairOutcome> {
+		return this.spawnWorker(event, cwd, { event, cwd }, true);
+	}
+
+	/**
+	 * Resume a retained scene in place (T05). Runs inside the retained cwd
+	 * with a `mode: "resume"` task envelope. Completion is terminal for the
+	 * decision (one-round intervention) — the scene is always cleaned up
+	 * afterwards, even if the resume outcome would normally re-retain.
+	 */
+	async runResume(task: ResumeTask): Promise<RepairOutcome> {
+		return this.spawnWorker(task.event, task.cwd, task, false);
+	}
+
+	private async spawnWorker(
+		event: PipelineEvent,
+		cwd: string,
+		taskEnvelope: unknown,
+		retainDecidable: boolean,
+	): Promise<RepairOutcome> {
 		await mkdir(cwd, { recursive: true });
 		const resultFile = join(cwd, "result.json");
 
@@ -76,7 +98,7 @@ export class SubprocessWorkerManager implements WorkerManager {
 			// best-effort — worker will fall back to stdout logging
 		}
 
-		const task = { event, cwd };
+		const task = taskEnvelope;
 
 		const nodeBin = this.opts.nodeBin ?? process.execPath;
 		const entryScript = this.opts.entryScript ?? defaultEntryScript();
@@ -176,7 +198,9 @@ export class SubprocessWorkerManager implements WorkerManager {
 			// also keeps the cwd + worktree + branch so a human decision can resume
 			// the session later; the main process registers the decision.
 			const retained =
-				outcome?.kind === "escalated" && outcome.decidable === true;
+				retainDecidable &&
+				outcome?.kind === "escalated" &&
+				outcome.decidable === true;
 			if (retained) {
 				logger.info(
 					{ projectId: event.projectId, pipelineId: event.pipelineId, cwd },

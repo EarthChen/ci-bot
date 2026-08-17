@@ -55,3 +55,23 @@ _Avoid_: a separate agent runtime, a prompt with implicit privileges, dynamic ag
 **Shared agent runtime**:
 The common Pi session, model configuration, authentication, worker lifecycle, concurrency limits, timeout, cleanup, and execution machinery reused by all vertical agents. It alone creates workers and controls their scheduling, but does not decide business success or mandate business validation.
 _Avoid_: rebuilding an agent runtime per business agent, vertical-agent worker creation, generic business workflow engine
+
+**Human decision**:
+A structured instruction (test/prod/drop + optional remark) that resolves agent diagnostic uncertainty without granting new permissions.
+_Avoid_: treating a decision as authorization to modify production code, free-text replies without command structure
+
+**Awaiting decision**:
+An escalated sub-state where the scene is freeze-dried and the bot waits for a /heal command.
+_Avoid_: retaining scenes for non-decidable escalations, indefinite retention without TTL
+
+**Resume**:
+Cross-process session recovery that carries decision context into a continued repair pipeline.
+_Avoid_: in-process session reuse (same worker), starting a fresh session without history
+
+**Decision invalidation**:
+Automatic voiding of an awaiting decision when a new pipeline arrives for the same project.
+_Avoid_: manual invalidation, continuing repair on stale sha
+
+**Retained scene**:
+The preserved cwd + worktree + session + branch set that enables resume.
+_Avoid_: partial retention (session without worktree), permanent retention without TTL

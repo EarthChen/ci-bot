@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done (commit db437d6)
 
 - [ ] SQLite 独立 db 文件（DATA_ROOT 下），WAL 模式，表结构包含 decision_id/pipeline_id/project_id/event_json/cwd_path/session_path/branch/status/created_at/expires_at/decided_by/decision_value/remark/decided_at
 - [ ] CRUD 操作：create / get / update status / list by status / list by project_id

@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done (commit 7c67325)
 
 - [ ] CONTEXT.md 新增词汇：Human decision、Awaiting decision、Resume、Decision invalidation、Retained scene（含 _Avoid_ 反模式）
 - [ ] docs/adr/0005-escalation-scene-retention.md：记录从 per-event 临时 worker 到部分 worker 长生命周期的架构转变、磁盘 vs 可恢复性权衡、一轮介入限制的 rationale

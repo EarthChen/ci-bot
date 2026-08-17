@@ -4,7 +4,7 @@
 
 **Blocked by:** 03, 04
 
-**Status:** ready-for-agent
+**Status:** done (commit 70baded)
 
 - [ ] DecisionStore 新增 invalidateByProject(projectId)：将该项目所有 awaiting_decision 标记为 invalidated，返回被作废的 decision 列表
 - [ ] lifecycle 模块暴露 onNewPipeline(event) hook：调用 invalidateByProject + 对每个被作废决策清理现场 + routed 通知"决策已作废（新 pipeline #N 到达）"

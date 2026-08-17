@@ -4,7 +4,7 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** done (commit aec975b)
 
 - [ ] config/command-help.json 新增 /heal 条目：命令格式、参数说明、示例
 - [ ] /help 回复中包含 /heal 说明，格式与现有 /route 一致

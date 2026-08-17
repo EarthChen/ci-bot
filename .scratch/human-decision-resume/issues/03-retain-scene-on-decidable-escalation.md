@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 02
 
-**Status:** ready-for-agent
+**Status:** done (commit db437d6)
 
 - [ ] finishRepair 接收 `decidable` 标志；为 true 时跳过 removeWorktree + 保留 cwd
 - [ ] runRepair 在 isDecidableEscalation 为 true 时：生成 decision_id（D-<pipelineId>-<rand4>），写入 DecisionStore（status=awaiting_decision, expires_at=now+TTL），跳过 finishRepair 的 notifyEscalation

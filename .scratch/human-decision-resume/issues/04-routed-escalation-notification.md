@@ -4,7 +4,7 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** done (commit db437d6)
 
 - [ ] 新增 escalation-notifier 模块：接收 ProjectRouter + GroupMessageSender + DecisionStore，按 event.projectId 路由发送
 - [ ] 可决策 escalated 消息体：diagnosis 摘要 + 决策 id + `/heal D-xxx test|prod|drop` 命令模板 + 过期时间

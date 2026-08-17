@@ -4,7 +4,7 @@
 
 **Blocked by:** 06, 07, 08, 09
 
-**Status:** ready-for-agent
+**Status:** done (commit 6b8183e)
 
 - [ ] e2e：agent escalated → 路由群收到带 id 的转交消息 → /heal test 备注 → 新 worker 用原 session 继续 → MR 创建成功
 - [ ] e2e：/heal prod → 现场清理 + audit outcome=human_confirmed_prod + 群通知

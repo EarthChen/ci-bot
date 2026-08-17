@@ -4,7 +4,7 @@
 
 **Blocked by:** 06
 
-**Status:** ready-for-agent
+**Status:** done (commit b34a002)
 
 - [ ] run-resume 中 agent 再次 escalated 时：不走 isDecidableEscalation 路径，直接 finishRepair（清理现场 + routed 终局通知）
 - [ ] 终局通知消息体标明"人工介入后仍无法修复，请人工接手"

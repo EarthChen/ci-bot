@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done (commit db437d6)
 
 - [ ] AgentResult escalated 类型新增 `source: "agent" | "runtime"` 字段
 - [ ] result-parser 产出 `source: "agent"`

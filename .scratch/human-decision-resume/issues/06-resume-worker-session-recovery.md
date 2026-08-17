@@ -4,7 +4,7 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** done (commit d1d88e3)
 
 - [ ] CIHEAL_WORKER_TASK schema 扩展：新增 mode: "repair" | "resume"，resume 时携带 decision_id/session_path/cwd/decision_value/remark
 - [ ] worker entry.ts 新增 resume 分支：SessionManager.open(session_path) 重建会话，构造决策 prompt 注入

@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 04
 
-**Status:** ready-for-agent
+**Status:** done (commit 6c76d0e)
 
 - [ ] lifecycle 模块暴露 startTtlSweep(intervalMs)：定时器调用 DecisionStore.sweepExpired()，对每个被清扫决策清理现场 + routed 通知
 - [ ] CIHEAL_DECISION_TTL_MS 环境变量可配（默认 24h）

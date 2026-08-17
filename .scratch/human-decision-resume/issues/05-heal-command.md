@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 04
 
-**Status:** ready-for-agent
+**Status:** done (commit 0afe87f)
 
 - [ ] heal-command 模块：解析 `/heal <id> test|prod|drop [remark]`，校验 id 存在且 status=awaiting_decision
 - [ ] test 决策：更新 store status=resumed，记录 decided_by/remark，scheduler enqueue resume task（key=projectId）

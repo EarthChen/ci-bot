@@ -298,7 +298,7 @@ export async function snapshotSceneChanges(repoCwd: string): Promise<string[]> {
 			.split("\n")
 			.filter((line) => line.length > 3)
 			.map((line) => line.slice(3).trim())
-			.filter((path) => !SPILL_RE.test(path));
+			.filter((path) => !isPatchNoise(path));
 	} catch {
 		return [];
 	}
@@ -492,9 +492,20 @@ export async function repairFixed(args: {
 	});
 }
 
-/** Spill files (CI log / MR diff) the bot writes into the worktree — must
- *  never appear in the extracted patch. */
-const SPILL_RE = /(^|\/)(ci-log.*\.txt|mr-diff\.patch)$/;
+/** Spill files (CI log / MR diff / diff index) the bot writes into the
+ *  worktree — must never appear in the extracted patch. */
+const SPILL_RE =
+	/(^|\/)(ci-log.*\.txt|mr-diff\.patch|mr-diff-index\.txt)$/;
+
+/** 构建工具状态（Maven 本地仓库）：agent 在 worktree 内跑 mvn 可能写出
+ *  仓库内 .m2（MR !281 e2e：.lastUpdated 混入 patch 触发 G3 误杀）。
+ *  构建态永远不是修复产物。 */
+const BUILD_NOISE_RE = /(^|\/)\.m2\//;
+
+/** patch 提取排除的非修复噪声（bot spill 文件 + 构建工具状态）。 */
+export function isPatchNoise(path: string): boolean {
+	return SPILL_RE.test(path) || BUILD_NOISE_RE.test(path);
+}
 
 /** Whitelist-validate a patch (G0 diff gate): every path must be in the MR
  *  diff file set (or, with no diff context, a non-production test/doc path).
@@ -641,7 +652,7 @@ function stripSpillDiff(diff: string): string {
 		.filter((hunk) => {
 			const m = hunk.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/m);
 			const path = m ? m[2] : "";
-			return !SPILL_RE.test(path);
+			return !isPatchNoise(path);
 		})
 		.join("\n");
 }
@@ -682,8 +693,8 @@ export async function extractPatch(
 	const { promisify } = await import("node:util");
 	const exec = promisify(execFile);
 	// Stage agent's edits so untracked new files appear in the diff (baseSha
-	// has no record of them). Spill files live outside repoCwd so they never
-	// pollute the patch.
+	// has no record of them). Bot spill files (ci-log/mr-diff/diff-index) and
+	// build-tool state (.m2) may live inside repoCwd — isPatchNoise drops them.
 	await exec("git", ["add", "-A"], { cwd });
 	const { stdout: rawDiff } = await exec(
 		"git",
@@ -699,7 +710,7 @@ export async function extractPatch(
 		.split("\n")
 		.map((s) => s.trim())
 		.filter(Boolean)
-		.filter((p) => !SPILL_RE.test(p));
+		.filter((p) => !isPatchNoise(p));
 	const diff = stripSpillDiff(rawDiff);
 	return { diff, paths, summary };
 }

@@ -238,7 +238,7 @@ export class RealAgentRunner implements AgentRunner {
 			return {
 				kind: "escalated",
 				diagnosis: { failureClass: 4, summary: "agent 未输出合法结构化 JSON" },
-				reason: `unparseable result: ${text.slice(0, 200)}`,
+				reason: `unparseable result: ${summarizeUnparseable(text)}`,
 				source: "runtime",
 			};
 		}
@@ -263,6 +263,17 @@ export class RealAgentRunner implements AgentRunner {
 			source: "runtime",
 		};
 	}
+}
+
+/** unparseable 结果的摘要上限：终局上报需要完整诊断上下文
+ * （旧 200 字符曾截断 MR !281 的根因描述）；钉钉 markdown 限额远大于此。 */
+export const UNPARSEABLE_SUMMARY_CHARS = 1500;
+
+/** 截断 unparseable agent 输出为 reason 摘要（超长带省略号标记）。 */
+export function summarizeUnparseable(text: string): string {
+	return text.length > UNPARSEABLE_SUMMARY_CHARS
+		? `${text.slice(0, UNPARSEABLE_SUMMARY_CHARS)}…`
+		: text;
 }
 
 /** The default session factory: real `createAgentSession`.

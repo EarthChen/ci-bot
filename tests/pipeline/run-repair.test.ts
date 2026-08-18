@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -313,6 +313,35 @@ describe("extractPatch", () => {
 		expect(patch.diff).not.toContain("ci-log.txt");
 		expect(patch.diff.length).toBeGreaterThan(1024 * 1024);
 		expect(patch.summary).toBe("fix summary");
+	});
+
+	it("排除 mr-diff-index.txt 与 .m2 构建态（MR !281 e2e G3 误杀回归）", async () => {
+		const git = async (...args: string[]) =>
+			(await execFileP("git", args, { cwd: repo })).stdout.trim();
+		await execFileP("git", ["init", "--quiet", "-b", "master", repo]);
+		await git("config", "user.email", "t@ci-bot");
+		await git("config", "user.name", "ci-bot test");
+		writeFileSync(join(repo, "seed.txt"), "baseline\n");
+		await git("add", "-A");
+		await git("commit", "--quiet", "-m", "baseline");
+		const baseSha = await git("rev-parse", "HEAD");
+
+		// agent 的真实修复
+		writeFileSync(join(repo, "seed.txt"), "fixed\n");
+		// bot 写入 worktree 的 spill 文件（ci-repair-definition 写 mr-diff-index.txt）
+		writeFileSync(join(repo, "mr-diff-index.txt"), "index\n");
+		writeFileSync(join(repo, "ci-log-100033613.txt"), "log\n");
+		// agent 在 worktree 内跑 mvn 产生的 Maven 本地仓库状态（MR !281 实测）
+		const m2 = join(repo, ".m2", "repository", "com", "x");
+		mkdirSync(m2, { recursive: true });
+		writeFileSync(join(m2, "foo.pom.lastUpdated"), "noise\n");
+
+		const patch = await extractPatch(repo, "fix summary", baseSha);
+		expect(patch.paths).toEqual(["seed.txt"]);
+		expect(patch.diff).toContain("seed.txt");
+		expect(patch.diff).not.toContain("mr-diff-index.txt");
+		expect(patch.diff).not.toContain(".m2");
+		expect(patch.diff).not.toContain("ci-log");
 	});
 });
 

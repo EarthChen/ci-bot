@@ -28,6 +28,10 @@ export interface PipelineEvent {
 	readonly mrSourceBranch?: string;
 	/** MR iid (only present for merge-request-triggered pipelines). */
 	readonly mrIid?: number;
+	/** Stages of the FAILED jobs, from the webhook's builds array (deduped,
+	 *  pipeline order). Undefined when the payload carries no builds array —
+	 *  consumers must degrade as if nothing is known about the failure stage. */
+	readonly failedStages?: readonly string[];
 }
 
 /** G1 failure root-cause class (v1 only auto-fixes 1/2/3; 4/5 escalate). */

@@ -84,9 +84,14 @@ export interface SchedulerDeps {
 	/** Routed escalation notifier (main process, T04). When present, every
 	 *  escalated outcome triggers a routed group notification. */
 	readonly escalationNotifier?: EscalationNotifier;
+	/** Stage-name exclusion list (from CIHEAL_SKIP_STAGES). When every failed
+	 *  stage of an event is in this list, enqueue returns "skipped" and no
+	 *  repair runs (deterministic failures like format checks stay out of the
+	 *  agent). Degrades to repair when failedStages is unknown/empty. */
+	readonly skipStages?: readonly string[];
 }
 
-export type EnqueueStatus = "queued" | "duplicate";
+export type EnqueueStatus = "queued" | "duplicate" | "skipped";
 
 interface QueueItem {
 	readonly event: PipelineEvent;
@@ -95,6 +100,17 @@ interface QueueItem {
 /** Fresh per-event work dir (the runtime owns the work-root layout). */
 export function workerWorkDir(root: string, event: PipelineEvent): string {
 	return join(root, `${event.projectId}-${event.pipelineId}-${randomUUID()}`);
+}
+
+/** Parse CIHEAL_SKIP_STAGES (comma-separated stage names) into an exclusion
+ *  list. Undefined when unset/blank/separators-only — no exclusion applies. */
+export function parseSkipStages(raw: string | undefined): string[] | undefined {
+	if (!raw) return undefined;
+	const stages = raw
+		.split(",")
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0);
+	return stages.length > 0 ? stages : undefined;
 }
 
 export class Scheduler {
@@ -129,10 +145,28 @@ export class Scheduler {
 			logger.info({ key }, "scheduler dedup drop");
 			return "duplicate";
 		}
+		if (this.stageExcluded(event)) {
+			logger.info(
+				{ key, failedStages: event.failedStages },
+				"scheduler stage-exclusion skip",
+			);
+			return "skipped";
+		}
 		this.inflight.add(key);
 		this.queue.push({ event });
 		void this.pump();
 		return "queued";
+	}
+
+	/** True when every failed stage is in the exclusion list. Degrades to
+	 *  false (repair as usual) when nothing is known about the failure stages
+	 *  or no exclusion is configured. */
+	private stageExcluded(event: PipelineEvent): boolean {
+		const skip = this.deps.skipStages;
+		if (!skip || skip.length === 0) return false;
+		const failed = event.failedStages;
+		if (!failed || failed.length === 0) return false;
+		return failed.every((stage) => skip.includes(stage));
 	}
 
 	/** Pump items while under the (effective) concurrency cap and not key-blocked. */
@@ -287,7 +321,18 @@ export class Scheduler {
 				"scheduler misconfiguration: workerManager.runResume is required for resume",
 			);
 		}
-		const event = JSON.parse(record.event_json) as PipelineEvent;
+		let event: PipelineEvent;
+		try {
+			event = JSON.parse(record.event_json) as PipelineEvent;
+		} catch (err) {
+			// Fail loud with context: a corrupt event_json propagates to the
+			// /heal compensating path — never resume against a half-parsed event.
+			throw new Error(
+				`resume decision ${record.decision_id} has corrupt event_json: ${
+					(err as Error).message
+				}`,
+			);
+		}
 		const task: ResumeTask = {
 			mode: "resume",
 			event,

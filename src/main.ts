@@ -8,7 +8,7 @@ import { join } from "node:path";
 import Fastify from "fastify";
 import { DWClient } from "dingtalk-stream";
 import { loadEnvFile, loadConfig } from "./config/index.js";
-import { Scheduler } from "./agent-runtime/scheduler.js";
+import { Scheduler, parseSkipStages } from "./agent-runtime/scheduler.js";
 import { CI_REPAIR_SCHEDULING_POLICY } from "./agent/ci-repair-definition.js";
 import { SubprocessWorkerManager } from "./worker/manager.js";
 import { mountWebhook } from "./webhook/receiver.js";
@@ -187,6 +187,9 @@ async function main(): Promise<void> {
 		workerCrashThreshold: Number(process.env.BOT_WORKER_CRASH_THRESHOLD ?? "3"),
 		decisionStore,
 		escalationNotifier,
+		// Stage exclusion: pipelines whose failed stages are ALL in this list
+		// (e.g. deterministic format checks) skip repair entirely.
+		skipStages: parseSkipStages(process.env.CIHEAL_SKIP_STAGES),
 	});
 
 	await mountWebhook(app, {
@@ -198,7 +201,7 @@ async function main(): Promise<void> {
 			rateLimitWindowMs: 60_000,
 		},
 		pipelineNotifier,
-		onPipelineAccepted: (event) => decisionLifecycle.onNewPipeline(event),
+		onNewPipeline: (event) => decisionLifecycle.onNewPipeline(event),
 	});
 
 	await app.listen({ port: config.port, host: "0.0.0.0" });

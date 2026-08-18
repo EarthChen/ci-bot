@@ -39,6 +39,52 @@ describe("parsePipelinePayload", () => {
 			projectId: "12345",
 		});
 	});
+
+	it("extracts failed stages from the builds array", () => {
+		const payload = {
+			...(failedPipeline(12345) as Record<string, unknown>),
+			builds: [
+				{ id: 1, stage: "format", name: "idea-format", status: "failed" },
+				{ id: 2, stage: "test", name: "unit", status: "skipped" },
+			],
+		};
+		expect(parsePipelinePayload(payload)).toMatchObject({
+			failedStages: ["format"],
+		});
+	});
+
+	it("dedupes stages and keeps order across multiple failed jobs", () => {
+		const payload = {
+			...(failedPipeline(12345) as Record<string, unknown>),
+			builds: [
+				{ id: 1, stage: "format", name: "a", status: "failed" },
+				{ id: 2, stage: "test", name: "b", status: "failed" },
+				{ id: 3, stage: "format", name: "c", status: "failed" },
+			],
+		};
+		expect(parsePipelinePayload(payload)).toMatchObject({
+			failedStages: ["format", "test"],
+		});
+	});
+
+	it("ignores malformed build entries (non-string stage)", () => {
+		const payload = {
+			...(failedPipeline(12345) as Record<string, unknown>),
+			builds: [
+				{ id: 1, stage: 42, name: "a", status: "failed" },
+				{ id: 2, stage: "format", name: "b", status: "failed" },
+			],
+		};
+		expect(parsePipelinePayload(payload)).toMatchObject({
+			failedStages: ["format"],
+		});
+	});
+
+	it("leaves failedStages undefined when the payload has no builds array", () => {
+		const event = parsePipelinePayload(failedPipeline(12345));
+		expect(event).not.toBeNull();
+		expect(event?.failedStages).toBeUndefined();
+	});
 });
 
 describe("webhook pipeline-failure notification fan-out", () => {
@@ -50,11 +96,11 @@ describe("webhook pipeline-failure notification fan-out", () => {
 	};
 
 	async function injectWebhook(opts: {
-		enqueue: "queued" | "duplicate";
+		enqueue: "queued" | "duplicate" | "skipped";
 		notifier?: PipelineFailureNotifier;
 		/** Query string appended to /webhook (defaults to the repair opt-in). */
 		query?: string;
-		onPipelineAccepted?: (event: PipelineEvent) => Promise<void>;
+		onNewPipeline?: (event: PipelineEvent) => Promise<void>;
 	}) {
 		const app = Fastify();
 		const scheduler = {
@@ -64,9 +110,7 @@ describe("webhook pipeline-failure notification fan-out", () => {
 			scheduler,
 			config: webhookConfig,
 			...(opts.notifier ? { pipelineNotifier: opts.notifier } : {}),
-			...(opts.onPipelineAccepted
-				? { onPipelineAccepted: opts.onPipelineAccepted }
-				: {}),
+			...(opts.onNewPipeline ? { onNewPipeline: opts.onNewPipeline } : {}),
 		});
 		const payload = failedPipeline(12345) as Record<string, unknown>;
 		const res = await app.inject({
@@ -151,47 +195,78 @@ describe("webhook pipeline-failure notification fan-out", () => {
 		expect(scheduler.enqueue).toHaveBeenCalledOnce();
 	});
 
-	it("fires onPipelineAccepted with the parsed event when enqueued", async () => {
-		const onPipelineAccepted = vi.fn().mockResolvedValue(undefined);
-		const { res } = await injectWebhook({ enqueue: "queued", onPipelineAccepted });
+	it("fires onNewPipeline with the parsed event when enqueued", async () => {
+		const onNewPipeline = vi.fn().mockResolvedValue(undefined);
+		const { res } = await injectWebhook({ enqueue: "queued", onNewPipeline });
 
 		expect(res.json()).toEqual({ status: "queued" });
-		expect(onPipelineAccepted).toHaveBeenCalledOnce();
-		expect(onPipelineAccepted).toHaveBeenCalledWith(
+		expect(onNewPipeline).toHaveBeenCalledOnce();
+		expect(onNewPipeline).toHaveBeenCalledWith(
 			expect.objectContaining({ projectId: "12345", pipelineId: 101 }),
 		);
 	});
 
-	it("does not fire onPipelineAccepted on duplicate events", async () => {
-		const onPipelineAccepted = vi.fn().mockResolvedValue(undefined);
+	it("does not fire onNewPipeline on duplicate events", async () => {
+		const onNewPipeline = vi.fn().mockResolvedValue(undefined);
 		const { res } = await injectWebhook({
 			enqueue: "duplicate",
-			onPipelineAccepted,
+			onNewPipeline,
 		});
 
 		expect(res.json()).toEqual({ status: "duplicate" });
-		expect(onPipelineAccepted).not.toHaveBeenCalled();
+		expect(onNewPipeline).not.toHaveBeenCalled();
 	});
 
-	it("does not fire onPipelineAccepted on the notify-only path", async () => {
-		const onPipelineAccepted = vi.fn().mockResolvedValue(undefined);
+	it("does not fire onNewPipeline on the notify-only path", async () => {
+		const onNewPipeline = vi.fn().mockResolvedValue(undefined);
 		const { res } = await injectWebhook({
 			enqueue: "queued",
 			query: "",
-			onPipelineAccepted,
+			onNewPipeline,
 		});
 
 		expect(res.json()).toEqual({ status: "notify-only" });
-		expect(onPipelineAccepted).not.toHaveBeenCalled();
+		expect(onNewPipeline).not.toHaveBeenCalled();
 	});
 
-	it("still responds queued when onPipelineAccepted throws", async () => {
-		const onPipelineAccepted = vi
+	it("still responds queued when onNewPipeline throws", async () => {
+		const onNewPipeline = vi
 			.fn()
 			.mockRejectedValue(new Error("invalidation blew up"));
-		const { res } = await injectWebhook({ enqueue: "queued", onPipelineAccepted });
+		const { res } = await injectWebhook({ enqueue: "queued", onNewPipeline });
 
 		expect(res.statusCode).toBe(202);
 		expect(res.json()).toEqual({ status: "queued" });
+	});
+
+	it("stage-skipped pipeline: fires onNewPipeline + broadcast, responds skipped", async () => {
+		const onNewPipeline = vi.fn().mockResolvedValue(undefined);
+		const notify = vi.fn().mockResolvedValue(undefined);
+		const { res, payload } = await injectWebhook({
+			enqueue: "skipped",
+			notifier: { notify },
+			onNewPipeline,
+		});
+
+		expect(res.statusCode).toBe(202);
+		expect(res.json()).toEqual({ status: "skipped" });
+		// (ii): a new pipeline arrived → stale decisions must be invalidated
+		expect(onNewPipeline).toHaveBeenCalledOnce();
+		expect(onNewPipeline).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "12345", pipelineId: 101 }),
+		);
+		// Q5(a): the immediate failure broadcast survives the repair skip
+		expect(notify).toHaveBeenCalledOnce();
+		expect(notify).toHaveBeenCalledWith(payload);
+	});
+
+	it("still responds skipped when onNewPipeline throws", async () => {
+		const onNewPipeline = vi
+			.fn()
+			.mockRejectedValue(new Error("invalidation blew up"));
+		const { res } = await injectWebhook({ enqueue: "skipped", onNewPipeline });
+
+		expect(res.statusCode).toBe(202);
+		expect(res.json()).toEqual({ status: "skipped" });
 	});
 });

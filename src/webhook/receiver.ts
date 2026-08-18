@@ -60,6 +60,10 @@ export function parsePipelinePayload(body: unknown): PipelineEvent | null {
 	if (typeof mr.source_branch !== "string") return null;
 	const mrSourceBranch = mr.source_branch;
 	const mrIid = typeof mr.iid === "number" ? mr.iid : undefined;
+	// Failed-job stages from the builds array (present in pipeline hooks).
+	// Undefined (not []) when builds is absent — exclusion must degrade to
+	// "nothing known" and keep the legacy repair path.
+	const failedStages = extractFailedStages(obj.builds);
 	return {
 		projectId,
 		pipelineId: attrs.id,
@@ -70,7 +74,22 @@ export function parsePipelinePayload(body: unknown): PipelineEvent | null {
 		),
 		...(mrSourceBranch ? { mrSourceBranch } : {}),
 		...(mrIid ? { mrIid } : {}),
+		...(failedStages ? { failedStages } : {}),
 	};
+}
+
+/** Stages of failed builds, deduped in payload order; undefined when the
+ *  builds field is missing or not an array (degrade contract). */
+function extractFailedStages(builds: unknown): readonly string[] | undefined {
+	if (!Array.isArray(builds)) return undefined;
+	const stages: string[] = [];
+	for (const build of builds) {
+		if (typeof build !== "object" || build === null) continue;
+		const b = build as Record<string, unknown>;
+		if (b.status !== "failed" || typeof b.stage !== "string") continue;
+		if (!stages.includes(b.stage)) stages.push(b.stage);
+	}
+	return stages;
 }
 
 function extractProjectId(project: Record<string, unknown>): string | null {
@@ -91,10 +110,12 @@ export interface MountWebhookDeps {
 	readonly config: WebhookConfig;
 	/** Immediate CI-failure group notification (optional; ported from code-review-bot). */
 	readonly pipelineNotifier?: PipelineFailureNotifier;
-	/** Fired after a NEW pipeline event is accepted (enqueued) — e.g. decision
-	 *  invalidation (T07). Errors are caught and logged: the enqueue already
-	 *  happened, so the webhook response must never be affected. */
-	readonly onPipelineAccepted?: (event: PipelineEvent) => Promise<void>;
+	/** Fired when a NEW pipeline event arrives for the project — either
+	 *  enqueued for repair or stage-skipped (CIHEAL_SKIP_STAGES). Drives
+	 *  decision invalidation (T07): any new pipeline stales awaiting
+	 *  decisions. Errors are caught and logged — the webhook response must
+	 *  never be affected. */
+	readonly onNewPipeline?: (event: PipelineEvent) => Promise<void>;
 }
 
 /** Rate-limit state (in-memory; ticket 07 may move to SQLite-backed). */
@@ -150,29 +171,31 @@ export async function mountWebhook(
 			return reply.code(202).send({ status: "notify-only" });
 		}
 
-		// 6. Enqueue (idempotent by pipeline id).
+		// 6. Enqueue (idempotent by pipeline id; may return "skipped" when
+		//    every failed stage is in the CIHEAL_SKIP_STAGES exclusion list).
 		const status = deps.scheduler.enqueue(event);
 		if (status === "duplicate") {
 			return reply.code(202).send({ status: "duplicate" });
 		}
-		// 6b. Lifecycle hook (T07): a NEW accepted pipeline invalidates the
-		//     project's stale awaiting decisions. Failures are caught — the
-		//     enqueue already happened; the response must not be affected.
-		if (deps.onPipelineAccepted) {
+		// 6b. Lifecycle hook (T07): a NEW pipeline — enqueued OR stage-skipped —
+		//     invalidates the project's stale awaiting decisions. Failures are
+		//     caught; the response must not be affected.
+		if (deps.onNewPipeline) {
 			try {
-				await deps.onPipelineAccepted(event);
+				await deps.onNewPipeline(event);
 			} catch (err) {
 				logger.warn(
 					{ err, pipelineId: event.pipelineId },
-					"onPipelineAccepted hook failed",
+					"onNewPipeline hook failed",
 				);
 			}
 		}
 		// 7. Immediate group notification (ported from code-review-bot's
-		//    PipelineHandler). Decoupled from enqueue: a notification failure
-		//    must never affect the already-queued repair.
+		//    PipelineHandler). Decoupled from repair: notification failures
+		//    never affect the flow; stage-skipped pipelines keep their
+		//    broadcast (failure visibility is independent of repair scope).
 		await notifyQuietly(deps, req.body, event.pipelineId);
-		return reply.code(202).send({ status: "queued" });
+		return reply.code(202).send({ status });
 	});
 }
 

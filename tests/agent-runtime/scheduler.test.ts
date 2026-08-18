@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
 	Scheduler,
+	parseSkipStages,
 	type ScheduledWorker,
 	type SchedulingPolicy,
 } from "../../src/agent-runtime/scheduler.js";
@@ -243,7 +244,13 @@ describe("Scheduler — 决策注册（decidable escalated）", () => {
 describe("Scheduler — routed escalation 通知（T04）", () => {
 	function notifySpy() {
 		return {
-			notifyEscalated: vi.fn(async () => {}),
+			notifyEscalated: vi.fn(
+				async (
+					_event: PipelineEvent,
+					_outcome: RepairOutcome,
+					_decision?: { decisionId: string; expiresAt: string },
+				) => {},
+			),
 			notifyResumeTerminal: vi.fn(async () => {}),
 		};
 	}
@@ -429,10 +436,12 @@ describe("Scheduler — enqueueResume（T05）", () => {
 	});
 
 	it("resume 信封符合契约：mode/event/cwd/decision 来自保留记录", async () => {
-		const runResume = vi.fn(async () => ({
-			kind: "escalated" as const,
-			summary: "terminal",
-		}));
+		const runResume = vi.fn(
+			async (_task: import("../../src/agent-runtime/scheduler.js").ResumeTask) => {
+				void _task; // arity required for mock.calls[0][0] assertions
+				return { kind: "escalated" as const, summary: "terminal" };
+			},
+		);
 		const scheduler = resumeScheduler({
 			run: async () => ({ kind: "escalated" as const, summary: "x" }),
 			runResume,
@@ -578,7 +587,10 @@ describe("Scheduler — resume 二次转交终局通知（T09）", () => {
 		const record = seedResumedDecision();
 		const notifier = {
 			notifyEscalated: vi.fn(async () => {}),
-			notifyResumeTerminal: vi.fn(async () => {}),
+			notifyResumeTerminal: vi.fn(async (_event: PipelineEvent, _outcome: RepairOutcome) => {
+				void _event; // arity required for mock.calls[0][N] assertions
+				void _outcome;
+			}),
 		};
 		const scheduler = resumeScheduler(
 			{ kind: "escalated", summary: "second escalation" },
@@ -649,5 +661,94 @@ describe("Scheduler — resume 二次转交终局通知（T09）", () => {
 		await scheduler.idle();
 		expect(notifier.notifyResumeTerminal).toHaveBeenCalledTimes(1);
 		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0 });
+	});
+});
+
+describe("Scheduler — stage exclusion（CIHEAL_SKIP_STAGES）", () => {
+	function skipScheduler(skipStages?: readonly string[]) {
+		const { workerManager, runs } = fakeWorker();
+		const scheduler = new Scheduler({
+			workerManager,
+			workRoot: mkdtempSync(join(tmpdir(), "sched-")),
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+			...(skipStages ? { skipStages } : {}),
+		});
+		return { scheduler, runs };
+	}
+
+	function stagedEvent(stages: readonly string[] | undefined): PipelineEvent {
+		return {
+			...makeEvent("projA", 11),
+			...(stages ? { failedStages: stages } : {}),
+		};
+	}
+
+	it("skips repair when ALL failed stages are in skipStages (no worker run)", async () => {
+		const { scheduler, runs } = skipScheduler(["format"]);
+		expect(scheduler.enqueue(stagedEvent(["format"]))).toBe("skipped");
+		await scheduler.idle();
+		expect(runs()).toHaveLength(0);
+		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0 });
+	});
+
+	it("queues repair when ANY failed stage is not excluded", async () => {
+		const { scheduler, runs } = skipScheduler(["format"]);
+		expect(scheduler.enqueue(stagedEvent(["format", "test"]))).toBe("queued");
+		await scheduler.idle();
+		expect(runs()).toHaveLength(1);
+	});
+
+	it("degrades to queue when failedStages is undefined (no builds in payload)", async () => {
+		const { scheduler, runs } = skipScheduler(["format"]);
+		expect(scheduler.enqueue(stagedEvent(undefined))).toBe("queued");
+		await scheduler.idle();
+		expect(runs()).toHaveLength(1);
+	});
+
+	it("degrades to queue when failedStages is empty", async () => {
+		const { scheduler } = skipScheduler(["format"]);
+		expect(scheduler.enqueue(stagedEvent([]))).toBe("queued");
+		await scheduler.idle();
+	});
+
+	it("queues everything when skipStages is not configured", async () => {
+		const { scheduler, runs } = skipScheduler(undefined);
+		expect(scheduler.enqueue(stagedEvent(["format"]))).toBe("queued");
+		await scheduler.idle();
+		expect(runs()).toHaveLength(1);
+	});
+
+	it("skipped events are not dedup-tracked (repeat delivery skips again)", async () => {
+		const { scheduler } = skipScheduler(["format"]);
+		expect(scheduler.enqueue(stagedEvent(["format"]))).toBe("skipped");
+		expect(scheduler.enqueue(stagedEvent(["format"]))).toBe("skipped");
+	});
+
+	it("dedup takes precedence over exclusion for in-flight pipelines", async () => {
+		const { workerManager } = fakeWorker();
+		const scheduler = new Scheduler({
+			workerManager,
+			workRoot: mkdtempSync(join(tmpdir(), "sched-")),
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+			skipStages: ["format"],
+		});
+		const event = stagedEvent(["format", "test"]);
+		expect(scheduler.enqueue(event)).toBe("queued");
+		expect(scheduler.enqueue(event)).toBe("duplicate");
+		await scheduler.idle();
+	});
+});
+
+describe("parseSkipStages（CIHEAL_SKIP_STAGES env 解析）", () => {
+	it("parses comma-separated stage names, trimming and dropping empties", () => {
+		expect(parseSkipStages("format, lint ,, ")).toEqual(["format", "lint"]);
+	});
+
+	it("returns undefined for unset/blank/separators-only (no exclusion)", () => {
+		expect(parseSkipStages(undefined)).toBeUndefined();
+		expect(parseSkipStages("")).toBeUndefined();
+		expect(parseSkipStages("  ,  ")).toBeUndefined();
 	});
 });

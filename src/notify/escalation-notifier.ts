@@ -20,6 +20,7 @@ import { projectPathFromUrl } from "./project-router.js";
 import type { GroupMessageSender } from "./pipeline-notification.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
 import { logger } from "../util/log.js";
+import { quoteSection, taskInfoSection } from "./task-info.js";
 
 /** Decision info attached to a decidable escalation notification. */
 export interface EscalationDecision {
@@ -46,61 +47,95 @@ export interface EscalationNotifier {
 export interface EscalationNotifierDeps {
 	readonly router: ProjectRouter;
 	readonly sender: GroupMessageSender;
+	/** webhook 即时播报原文（主进程内存）；终局通知引用块，缺省则不引用。 */
+	readonly originalBroadcast?: (pipelineId: number) => string | undefined;
 }
 
 function shortSha(sha: string): string {
 	return sha.slice(0, 8);
 }
 
-/** Plain handoff message — content identical to the old worker notification. */
+/** 结构化转交消息：任务 → 原始播报引用 → 结论 → 任务信息。 */
 function buildHandoffMessage(
 	event: PipelineEvent,
 	outcome: EscalatedOutcome,
+	originalBroadcast?: string,
 ): DingTalkMessage {
 	return {
 		title: "CI 自愈转交人工",
 		text: [
-			`项目 ${event.projectId}`,
-			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
-			`原因：${outcome.summary}`,
-			...(outcome.mrUrl ? [`MR（部分修复）：${outcome.mrUrl}`] : []),
+			"### 🚨 CI 自愈转交人工",
+			"",
+			"**任务**",
+			`- 项目：${event.projectId}`,
+			`- 分支：${event.ref} @ ${shortSha(event.sha)}`,
+			...(outcome.mrUrl ? [`- MR（部分修复）：${outcome.mrUrl}`] : []),
+			"",
+			...quoteSection(originalBroadcast),
+			"**结论**",
+			`- 转交原因：${outcome.summary}`,
+			...(outcome.diagnosisSummary &&
+			outcome.diagnosisSummary !== outcome.summary
+				? [`- 诊断：${outcome.diagnosisSummary}`]
+				: []),
+			"",
+			...taskInfoSection(outcome.agentStats),
 		].join("\n"),
 	};
 }
 
-/** Decidable message: diagnosis + decision id + /heal template + expiry. */
+/** 结构化待决策消息：任务 → 原始播报引用 → 结论 → 任务信息 → 决策命令。 */
 function buildDecisionMessage(
 	event: PipelineEvent,
 	outcome: EscalatedOutcome,
 	decision: EscalationDecision,
+	originalBroadcast?: string,
 ): DingTalkMessage {
 	return {
 		title: "CI 自愈待人工决策",
 		text: [
-			`项目 ${event.projectId}`,
-			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
-			`诊断：${outcome.diagnosisSummary ?? outcome.summary}`,
-			...(outcome.mrUrl ? [`MR（部分修复）：${outcome.mrUrl}`] : []),
-			`决策 id：${decision.decisionId}`,
-			`回复命令决策（复制即用）：`,
-			`/heal ${decision.decisionId} test|prod|drop [备注]`,
-			`过期时间：${decision.expiresAt}`,
+			"### ⏳ CI 自愈待人工决策",
+			"",
+			"**任务**",
+			`- 项目：${event.projectId}`,
+			`- 分支：${event.ref} @ ${shortSha(event.sha)}`,
+			...(outcome.mrUrl ? [`- MR（部分修复）：${outcome.mrUrl}`] : []),
+			"",
+			...quoteSection(originalBroadcast),
+			"**结论**",
+			`- 诊断：${outcome.diagnosisSummary ?? outcome.summary}`,
+			"",
+			...taskInfoSection(outcome.agentStats),
+			"",
+			"**需要人工决策**",
+			`- 决策 id：${decision.decisionId}`,
+			"- 回复命令决策（复制即用）：",
+			`- \`/heal ${decision.decisionId} test|prod|drop [备注]\``,
+			`- 过期时间：${decision.expiresAt}`,
 		].join("\n"),
 	};
 }
 
-/** Terminal message after a human-decided resume escalates again (T09). */
+/** 结构化二次转交（终局）消息（T09）。 */
 function buildResumeTerminalMessage(
 	event: PipelineEvent,
-	reason: string,
+	outcome: EscalatedOutcome,
 ): DingTalkMessage {
 	return {
 		title: "CI 自愈二次转交（终局）",
 		text: [
-			`项目 ${event.projectId}`,
-			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
-			`原因：${reason}`,
-			`说明：人工介入后仍无法修复，请人工接手`,
+			"### 🔴 CI 自愈二次转交（终局）",
+			"",
+			"**任务**",
+			`- 项目：${event.projectId}`,
+			`- 分支：${event.ref} @ ${shortSha(event.sha)}`,
+			...(outcome.mrUrl ? [`- MR（部分修复）：${outcome.mrUrl}`] : []),
+			"",
+			"**结论**",
+			`- 原因：${outcome.summary}`,
+			"- 说明：人工介入后仍无法修复，请人工接手",
+			"",
+			...taskInfoSection(outcome.agentStats),
 		].join("\n"),
 	};
 }
@@ -125,10 +160,11 @@ export function createEscalationNotifier(
 			}
 			// Degraded path: decidable but no registered decision (registration
 			// failed or store absent) → plain handoff message, never crash.
+			const original = deps.originalBroadcast?.(event.pipelineId);
 			const message =
 				outcome.decidable && decision
-					? buildDecisionMessage(event, outcome, decision)
-					: buildHandoffMessage(event, outcome);
+					? buildDecisionMessage(event, outcome, decision, original)
+					: buildHandoffMessage(event, outcome, original);
 			await deps.sender.sendTo(conversationId, message);
 		},
 		async notifyResumeTerminal(event, outcome) {
@@ -142,7 +178,7 @@ export function createEscalationNotifier(
 			}
 			await deps.sender.sendTo(
 				conversationId,
-				buildResumeTerminalMessage(event, outcome.summary),
+				buildResumeTerminalMessage(event, outcome),
 			);
 		},
 	};

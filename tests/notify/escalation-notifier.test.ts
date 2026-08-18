@@ -38,8 +38,8 @@ describe("createEscalationNotifier — routed escalation 通知", () => {
 		const { conversationId, message } = sender.sentGroups[0];
 		expect(conversationId).toBe("cid-A");
 		expect(message.title).toBe("CI 自愈待人工决策");
-		expect(message.text).toContain("项目 proj-A");
-		expect(message.text).toContain("分支 main @ abcdef12");
+		expect(message.text).toContain("项目：proj-A");
+		expect(message.text).toContain("分支：main @ abcdef12");
 		expect(message.text).toContain("spec unreadable");
 		expect(message.text).toContain("D-42-ab12");
 		expect(message.text).toContain("/heal D-42-ab12 test|prod|drop");
@@ -76,7 +76,7 @@ describe("createEscalationNotifier — routed escalation 通知", () => {
 		);
 	});
 
-	it("非 decidable → 与原 worker 通知内容一致（仅投递路径变化）", async () => {
+	it("非 decidable → 结构化转交消息（标题 + 任务 + 结论）", async () => {
 		const { notifier, sender } = makeNotifier();
 		await notifier.notifyEscalated(event, {
 			kind: "escalated",
@@ -89,9 +89,15 @@ describe("createEscalationNotifier — routed escalation 通知", () => {
 		expect(message.title).toBe("CI 自愈转交人工");
 		expect(message.text).toBe(
 			[
-				"项目 proj-A",
-				"分支 main @ abcdef12",
-				"原因：budget exceeded: total token 200001 exceeded 200000",
+				"### 🚨 CI 自愈转交人工",
+				"",
+				"**任务**",
+				"- 项目：proj-A",
+				"- 分支：main @ abcdef12",
+				"",
+				"**结论**",
+				"- 转交原因：budget exceeded: total token 200001 exceeded 200000",
+				"",
 			].join("\n"),
 		);
 	});
@@ -197,3 +203,63 @@ describe("notifyResumeTerminal — 二次转交终局通知（T09）", () => {
 	});
 });
 
+
+describe("escalation notifier — 结构化消息：任务信息 + 原始播报引用", () => {
+	it("outcome 带 agentStats → 消息含模型/轮数/token/session 复用/失败分类", async () => {
+		const sender = new InMemoryDingTalkNotifier();
+		const router = new ProjectRouter({ "proj-A": "cid-A" }, "");
+		const notifier = createEscalationNotifier({ router, sender });
+		await notifier.notifyEscalated(event, {
+			kind: "escalated",
+			summary: "G3/diff 白名单拦截",
+			agentStats: {
+				model: {
+					provider: "amar-coding-plan",
+					model: "qwen3.8-max",
+					thinkingLevel: "medium",
+				},
+				turns: 35,
+				tokens: 2274826,
+				cost: 2.274826,
+				durationMs: 391325,
+				reusedFromPipeline: 100033121,
+				failureClass: 5,
+			},
+		});
+		const text = sender.sentGroups[0].message.text;
+		expect(text).toContain("**任务信息**");
+		expect(text).toContain(
+			"模型：amar-coding-plan/qwen3.8-max（思考深度：medium）",
+		);
+		expect(text).toContain("轮数：35");
+		expect(text).toContain("Tokens：2,274,826");
+		expect(text).toContain("Session：复用（源自 pipeline 100033121）");
+		expect(text).toContain("失败分类：class 5");
+	});
+
+	it("originalBroadcast 提供 → 消息含原始失败播报引用块", async () => {
+		const sender = new InMemoryDingTalkNotifier();
+		const router = new ProjectRouter({ "proj-A": "cid-A" }, "");
+		const notifier = createEscalationNotifier({
+			router,
+			sender,
+			originalBroadcast: (pipelineId) =>
+				pipelineId === 42
+					? "### ❌ CI Pipeline Failed\n- **项目**: proj-A"
+					: undefined,
+		});
+		await notifier.notifyEscalated(event, { kind: "escalated", summary: "x" });
+		const text = sender.sentGroups[0].message.text;
+		expect(text).toContain("**原始失败播报**");
+		expect(text).toContain("> ### ❌ CI Pipeline Failed");
+		expect(text).toContain("> - **项目**: proj-A");
+	});
+
+	it("无 agentStats、无 originalBroadcast → 不含任务信息/引用小节", async () => {
+		const { notifier, sender } = makeNotifier();
+		await notifier.notifyEscalated(event, { kind: "escalated", summary: "x" });
+		const text = sender.sentGroups[0].message.text;
+		expect(text).not.toContain("**任务信息**");
+		expect(text).not.toContain("**原始失败播报**");
+	});
+});

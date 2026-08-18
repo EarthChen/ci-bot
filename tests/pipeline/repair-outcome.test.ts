@@ -68,7 +68,18 @@ describe("finishRepair — 统一终态 handler", () => {
 				metrics: { turns: 2, tokens: 100, cost: 0.0001, durationMs: 50 },
 			},
 		});
-		expect(out).toEqual({ kind: "mr", mrUrl: "https://mr/1", summary: "NPE" });
+		expect(out).toEqual({
+			kind: "mr",
+			mrUrl: "https://mr/1",
+			summary: "NPE",
+			agentStats: {
+				turns: 2,
+				tokens: 100,
+				cost: 0.0001,
+				durationMs: 50,
+				failureClass: 1,
+			},
+		});
 		const trace = readTrace(cwd);
 		expect(trace.outcome).toBe("mr");
 		expect(trace.mrUrl).toBe("https://mr/1");
@@ -95,6 +106,13 @@ describe("finishRepair — 统一终态 handler", () => {
 		expect(out).toEqual({
 			kind: "escalated",
 			summary: "G3 violation: src/main",
+			agentStats: {
+				turns: 1,
+				tokens: 10,
+				cost: 0,
+				durationMs: 5,
+				failureClass: 3,
+			},
 		});
 		const trace = readTrace(cwd);
 		expect(trace.outcome).toBe("escalated");
@@ -385,3 +403,55 @@ describe("finishRepair — ADR-0007 session 存档（跨 pipeline 复用）", ()
 	});
 });
 
+
+describe("finishRepair — 任务信息上报（模型/session 复用）", () => {
+	it("mr：outcome.agentStats 携带模型与复用来源，成功通知含任务信息小节", async () => {
+		const statsCwd = mkdtempSync(join(tmpdir(), "repair-stats-"));
+		const dt2 = new InMemoryDingTalkNotifier();
+		try {
+			const out = await finishRepair({
+				dingtalk: dt2,
+				cwd: statsCwd,
+				event,
+				removeWorktree: async () => {},
+				audit: { reusedFromPipeline: 100033121 },
+				result: {
+					kind: "mr",
+					summary: "fixed",
+					diagnosis: { failureClass: 2, summary: "fixed" },
+					mrUrl: "https://mr/9",
+					metrics: { turns: 3, tokens: 5000, cost: 0.005, durationMs: 61000 },
+					model: {
+						provider: "amar-coding-plan",
+						model: "qwen3.8-max",
+						thinkingLevel: "medium",
+					},
+				},
+			});
+			expect(out.agentStats).toEqual({
+				model: {
+					provider: "amar-coding-plan",
+					model: "qwen3.8-max",
+					thinkingLevel: "medium",
+				},
+				turns: 3,
+				tokens: 5000,
+				cost: 0.005,
+				durationMs: 61000,
+				reusedFromPipeline: 100033121,
+				failureClass: 2,
+			});
+			const text = dt2.sent[0].text;
+			expect(text).toContain("### ✅ CI 自愈修复成功");
+			expect(text).toContain("**成果**");
+			expect(text).toContain("- MR：https://mr/9");
+			expect(text).toContain("**任务信息**");
+			expect(text).toContain(
+				"模型：amar-coding-plan/qwen3.8-max（思考深度：medium）",
+			);
+			expect(text).toContain("Session：复用（源自 pipeline 100033121）");
+		} finally {
+			rmSync(statsCwd, { recursive: true, force: true });
+		}
+	});
+});

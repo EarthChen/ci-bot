@@ -10,7 +10,7 @@
  * Test seam: `sessionFactory` DI (unchanged from ticket 02).
  */
 
-import type { AgentResult } from "../types.js";
+import type { AgentModelRef, AgentResult } from "../types.js";
 import type { AgentRunner, AgentRunInput, ResumeDecision } from "./runner.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import { logger } from "../util/log.js";
@@ -49,6 +49,8 @@ export class RealAgentRunner implements AgentRunner {
 	/** Open session held across a retry loop (reused via continue()). */
 	private activeSession: AgentSession | undefined;
 	private activeDispose: (() => void) | undefined;
+	/** 当前 session 选中的模型（continue 复用同一 session → 同一模型）。 */
+	private activeModelInfo: AgentModelRef | undefined;
 
 	constructor(opts: {
 		sessionFactory?: SessionFactory;
@@ -77,6 +79,7 @@ export class RealAgentRunner implements AgentRunner {
 		const opened = await runtime.runSession({ definition, input, cwd: input.cwd });
 		this.activeSession = opened.session;
 		this.activeDispose = opened.dispose;
+		this.activeModelInfo = opened.modelInfo;
 
 		let agentResult: AgentResult;
 		switch (opened.result.status) {
@@ -103,7 +106,11 @@ export class RealAgentRunner implements AgentRunner {
 				.catch((err) => logger.warn({ err }, "budget alert failed"));
 		}
 
-		return { ...agentResult, metrics: opened.result.metrics };
+		return {
+			...agentResult,
+			metrics: opened.result.metrics,
+			...(opened.modelInfo ? { model: opened.modelInfo } : {}),
+		};
 	}
 
 	async continue(
@@ -145,13 +152,18 @@ export class RealAgentRunner implements AgentRunner {
 				.catch((err) => logger.warn({ err }, "budget alert failed"));
 		}
 
-		return { ...agentResult, metrics: result.metrics };
+		return {
+			...agentResult,
+			metrics: result.metrics,
+			...(this.activeModelInfo ? { model: this.activeModelInfo } : {}),
+		};
 	}
 
 	close(): void {
 		this.activeDispose?.();
 		this.activeSession = undefined;
 		this.activeDispose = undefined;
+		this.activeModelInfo = undefined;
 	}
 
 	/**
@@ -183,6 +195,7 @@ export class RealAgentRunner implements AgentRunner {
 		});
 		this.activeSession = opened.session;
 		this.activeDispose = opened.dispose;
+		this.activeModelInfo = opened.modelInfo;
 
 		let agentResult: AgentResult;
 		switch (opened.result.status) {
@@ -208,7 +221,11 @@ export class RealAgentRunner implements AgentRunner {
 				.catch((err) => logger.warn({ err }, "budget alert failed"));
 		}
 
-		return { ...agentResult, metrics: opened.result.metrics };
+		return {
+			...agentResult,
+			metrics: opened.result.metrics,
+			...(opened.modelInfo ? { model: opened.modelInfo } : {}),
+		};
 	}
 
 	/** Parse the final assistant text JSON into an AgentResult. */
@@ -257,9 +274,10 @@ async function defaultSessionFactory(
 	resume?: { readonly sessionFile: string; readonly compactForReuse?: boolean },
 ): Promise<RuntimeSessionBundle> {
 	const definition = createCiRepairDefinition(input.cwd);
-	const session = await createDefaultSession(input, definition, resume?.sessionFile, resume?.compactForReuse);
+	const { session, modelInfo } = await createDefaultSession(input, definition, resume?.sessionFile, resume?.compactForReuse);
 	return {
 		session,
+		modelInfo,
 		// P1-3: 持久化完整 agent session messages 到审计目录（完整 jsonl，用于审计/排查）。
 		// 写到 CIHEAL_WORKER_LOG_DIR（审计目录，不在 worktree cwd，不被 cleanup 删除）。
 		// session.messages 在 dispose 时完整（含所有 user/assistant/tool_use/tool_result），
@@ -289,7 +307,7 @@ async function createDefaultSession(
 	resumeSessionFile?: string,
 	/** ADR-0007: 跨 pipeline 存档重开时先 compact（best-effort，失败降级不压缩）。 */
 	compactForReuse?: boolean,
-): Promise<AgentSession> {
+): Promise<{ session: AgentSession; modelInfo: AgentModelRef }> {
 	const {
 		createAgentSession,
 		DefaultResourceLoader,
@@ -377,7 +395,14 @@ async function createDefaultSession(
 		}
 	}
 
-	return session;
+	return {
+		session,
+		modelInfo: {
+			provider: candidate.provider,
+			model: candidate.model,
+			thinkingLevel: candidate.defaultThinkingLevel,
+		},
+	};
 }
 
 /** Resolve the trusted bot release root; never derive it from a target worktree. */

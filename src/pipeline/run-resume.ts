@@ -122,6 +122,7 @@ export async function runResumeRepair(
 				summary: result.reason,
 				diagnosis: result.diagnosis,
 				metrics: agentMetrics,
+				model: result.model,
 			},
 		});
 	}

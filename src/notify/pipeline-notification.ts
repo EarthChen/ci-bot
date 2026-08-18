@@ -10,6 +10,7 @@
 import type { DingTalkMessage } from "./dingtalk.js";
 import type { ProjectRouter } from "./project-router.js";
 import { projectPathFromUrl } from "./project-router.js";
+import type { AgentModelRef } from "../types.js";
 import { logger } from "../util/log.js";
 
 /** Rendered notification: title is the DingTalk preview line, text the body. */
@@ -142,6 +143,10 @@ export interface PipelineFailureNotifier {
 export interface PipelineFailureNotifierDeps {
 	readonly router: ProjectRouter;
 	readonly sender: GroupMessageSender;
+	/** 播报尾注「已开始修复」时的计划模型（候选链首位）。 */
+	readonly plannedModel?: AgentModelRef;
+	/** 记录已渲染的播报正文（主进程内存，供终局通知引用）。 */
+	readonly recordBroadcast?: (pipelineId: number, text: string) => void;
 }
 
 /**
@@ -178,9 +183,27 @@ export function createPipelineFailureNotifier(
 				);
 				return;
 			}
+			const withModel =
+				hint === "repair-started" && deps.plannedModel
+					? {
+							...notification,
+							text:
+								notification.text +
+								`\n- **修复模型**：${deps.plannedModel.provider}/${deps.plannedModel.model}（思考深度：${deps.plannedModel.thinkingLevel}）`,
+						}
+					: notification;
 			const message = hint
-				? { ...notification, text: notification.text + REPAIR_FOOTERS[hint] }
-				: notification;
+				? { ...withModel, text: withModel.text + REPAIR_FOOTERS[hint] }
+				: withModel;
+
+			// 终局通知的引用源：记录渲染后的播报正文（主进程内存，按 pipelineId）。
+			const attrsRecord = asRecord(
+				(rawPayload as Record<string, unknown>).object_attributes,
+			);
+			if (typeof attrsRecord.id === "number") {
+				deps.recordBroadcast?.(attrsRecord.id as number, message.text);
+			}
+
 			await deps.sender.sendTo(conversationId, message);
 		},
 	};

@@ -35,6 +35,12 @@ export interface RuntimeSessionRequest<Input> {
 export interface RuntimeSessionBundle {
 	readonly session: AgentSession;
 	readonly dispose: () => void;
+	/** 本次 session 选中的模型（CI runner 填充；结构化声明避免跨层类型依赖）。 */
+	readonly modelInfo?: {
+		readonly provider: string;
+		readonly model: string;
+		readonly thinkingLevel: string;
+	};
 }
 
 /** A started session kept open for follow-up prompts (retry across CI runs). */
@@ -42,6 +48,12 @@ export interface RuntimeOpenSession {
 	readonly result: RuntimeRunResult;
 	readonly session: AgentSession;
 	readonly dispose: () => void;
+	/** 本次 session 选中的模型（CI runner 填充；透传给调用方做终局上报）。 */
+	readonly modelInfo?: {
+		readonly provider: string;
+		readonly model: string;
+		readonly thinkingLevel: string;
+	};
 }
 
 export type RuntimeSessionFactory = 
@@ -193,7 +205,12 @@ export class SharedAgentRuntime {
 					finalText: extractLastAssistantText(bundle.session),
 					metrics: monitor.metrics(),
 				};
-			return { result, session: bundle.session, dispose: bundle.dispose };
+			return {
+				result,
+				session: bundle.session,
+				dispose: bundle.dispose,
+				...(bundle.modelInfo ? { modelInfo: bundle.modelInfo } : {}),
+			};
 		} catch (err) {
 			logger.error({ err }, "shared agent session execution failed");
 			const breachReason = monitor.breachReason();
@@ -208,7 +225,12 @@ export class SharedAgentRuntime {
 					failure: "session_execution_failed",
 					metrics: monitor.metrics(),
 				};
-			return { result, session: bundle.session, dispose: bundle.dispose };
+			return {
+				result,
+				session: bundle.session,
+				dispose: bundle.dispose,
+				...(bundle.modelInfo ? { modelInfo: bundle.modelInfo } : {}),
+			};
 		} finally {
 			monitor.unsubscribe();
 		}

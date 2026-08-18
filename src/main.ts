@@ -22,6 +22,8 @@ import {
 } from "./notify/pipeline-notification.js";
 import { SidecarGroupSender } from "./notify/sidecar-sender.js";
 import { createEscalationNotifier } from "./notify/escalation-notifier.js";
+import { loadModelCandidates } from "./agent/model-selection.js";
+import type { AgentModelRef } from "./types.js";
 import { WebhookRouteStore } from "./notify/route-store.js";
 import {
 	buildUsageText,
@@ -81,9 +83,42 @@ async function main(): Promise<void> {
 		routing.defaultConversationId || config.dingtalkConversationId,
 		() => routeStore.getMapping(),
 	);
+	// 终局通知的引用源：webhook 即时播报正文按 pipelineId 留存主进程内存。
+	const broadcastMemory = new Map<number, string>();
+
+	// 播报「修复模型」：候选链首位 = 计划模型（实际选择以运行时报备为准，
+	// 终局通知上报真实选中项）。
+	let plannedModel: AgentModelRef | undefined;
+	try {
+		const candidates = loadModelCandidates(
+			join(config.botRoot, "config", "model-candidates.json"),
+		);
+		const first = candidates[0];
+		if (first) {
+			plannedModel = {
+				provider: first.provider,
+				model: first.model,
+				thinkingLevel: first.defaultThinkingLevel,
+			};
+		}
+	} catch (err) {
+		logger.warn(
+			{ err },
+			"model candidates unreadable — broadcast will omit repair model",
+		);
+	}
+
 	const pipelineNotifier = createPipelineFailureNotifier({
 		router: projectRouter,
 		sender: groupSender,
+		...(plannedModel ? { plannedModel } : {}),
+		recordBroadcast: (pipelineId, text) => {
+			if (broadcastMemory.size >= 256) {
+				const oldest = broadcastMemory.keys().next().value;
+				if (oldest !== undefined) broadcastMemory.delete(oldest);
+			}
+			broadcastMemory.set(pipelineId, text);
+		},
 	});
 
 	// Routed escalation notification (T04): all escalated notifications are
@@ -92,6 +127,7 @@ async function main(): Promise<void> {
 	const escalationNotifier = createEscalationNotifier({
 		router: projectRouter,
 		sender: groupSender,
+		originalBroadcast: (pipelineId) => broadcastMemory.get(pipelineId),
 	});
 
 	// Decision lifecycle (T07): a newly accepted pipeline invalidates the

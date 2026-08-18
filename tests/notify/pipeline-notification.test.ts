@@ -205,3 +205,62 @@ describe("createPipelineFailureNotifier", () => {
 		expect(sender.sentGroups[0].message.text).not.toContain("不在自愈范围");
 	});
 });
+
+describe("createPipelineFailureNotifier — 修复模型与播报记录", () => {
+	const plannedModel = {
+		provider: "amar-coding-plan",
+		model: "qwen3.8-max",
+		thinkingLevel: "medium",
+	};
+
+	it("repair-started + plannedModel → 播报含修复模型行", async () => {
+		const sender = new InMemoryDingTalkNotifier();
+		const router = new ProjectRouter({}, "cid-default");
+		const notifier = createPipelineFailureNotifier({
+			router,
+			sender,
+			plannedModel,
+		});
+
+		await notifier.notify(fullPayload(), "repair-started");
+
+		expect(sender.sentGroups[0].message.text).toContain(
+			"- **修复模型**：amar-coding-plan/qwen3.8-max（思考深度：medium）",
+		);
+	});
+
+	it("无提示（notify-only）→ 不含修复模型行", async () => {
+		const sender = new InMemoryDingTalkNotifier();
+		const router = new ProjectRouter({}, "cid-default");
+		const notifier = createPipelineFailureNotifier({
+			router,
+			sender,
+			plannedModel,
+		});
+
+		await notifier.notify(fullPayload());
+
+		expect(sender.sentGroups[0].message.text).not.toContain("修复模型");
+	});
+
+	it("recordBroadcast 按 pipelineId 收到渲染正文（终局通知引用源）", async () => {
+		const sender = new InMemoryDingTalkNotifier();
+		const router = new ProjectRouter({}, "cid-default");
+		const recorded = new Map<number, string>();
+		const notifier = createPipelineFailureNotifier({
+			router,
+			sender,
+			plannedModel,
+			recordBroadcast: (pipelineId, text) => recorded.set(pipelineId, text),
+		});
+
+		await notifier.notify(fullPayload(), "repair-started");
+
+		const text = recorded.get(100033121);
+		expect(text).toBeDefined();
+		expect(text).toContain("### ❌ CI Pipeline Failed");
+		// 记录的是群里实际看到的完整正文（含模型行与修复尾注）。
+		expect(text).toContain("修复模型");
+		expect(text).toContain("已开始修复");
+	});
+});

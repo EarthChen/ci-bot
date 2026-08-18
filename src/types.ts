@@ -60,6 +60,8 @@ export type AgentResult =
 			/** Agent 提交的 MR URL（agent 自己 git push + glab mr create）。空 = 未建 MR。 */
 			readonly mrUrl?: string;
 			readonly metrics?: AgentMetrics;
+		/** 实际选中的模型（runner 填充，终局通知上报用）。 */
+		readonly model?: AgentModelRef;
 	  }
 	| {
 			readonly kind: "escalated";
@@ -74,6 +76,8 @@ export type AgentResult =
 			 *  mr create). Absent when no partial MR was opened. */
 			readonly mrUrl?: string;
 			readonly metrics?: AgentMetrics;
+		/** 实际选中的模型（runner 填充，终局通知上报用）。 */
+		readonly model?: AgentModelRef;
 	  };
 
 /** Per-session observability metrics (ticket 07). Filled by the runner. */
@@ -82,6 +86,27 @@ export interface AgentMetrics {
 	readonly turns: number;
 	/** Total tokens consumed across all turns. */
 	readonly tokens: number;
+}
+
+/** 实际选中的模型（selected candidate）。 */
+export interface AgentModelRef {
+	readonly provider: string;
+	readonly model: string;
+	readonly thinkingLevel: string;
+}
+
+/** 任务级可观测信息——随终局通知上报（模型/token/耗时/轮数/session 复用）。 */
+export interface AgentRunStats {
+	/** agent 未运行时缺省（class-5 早筛）。 */
+	readonly model?: AgentModelRef;
+	readonly turns: number;
+	readonly tokens: number;
+	readonly cost: number;
+	readonly durationMs: number;
+	/** ADR-0007：复用了该 pipeline 的存档 session。 */
+	readonly reusedFromPipeline?: number;
+	/** 诊断失败分类（class 1-5）。 */
+	readonly failureClass?: number;
 }
 
 /** A real git patch the bot extracts from the agent's working tree. */
@@ -96,7 +121,13 @@ export interface Patch {
 
 /** Final outcome the bot records for a single pipeline (drives MR + DingTalk). */
 export type RepairOutcome =
-	| { readonly kind: "mr"; readonly mrUrl: string; readonly summary: string }
+	| {
+			readonly kind: "mr";
+			readonly mrUrl: string;
+			readonly summary: string;
+			/** 任务元信息（模型/token/耗时/轮数/session 复用），终局通知上报用。 */
+			readonly agentStats?: AgentRunStats;
+	  }
 	| {
 			readonly kind: "escalated";
 			readonly summary: string;
@@ -109,9 +140,13 @@ export type RepairOutcome =
 			/** Partial-fix MR url (agent created it before escalating); carried
 			 *  for the routed notification and the resume context. */
 			readonly mrUrl?: string;
+			/** 任务元信息（模型/token/耗时/轮数/session 复用），终局通知上报用。 */
+			readonly agentStats?: AgentRunStats;
 	  }
 	| {
 			readonly kind: "failed";
 			readonly summary: string;
 			readonly error: string;
+			/** agent 已运行后失败时携带的任务元信息。 */
+			readonly agentStats?: AgentRunStats;
 	  };

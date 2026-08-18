@@ -11,7 +11,13 @@
  * cleanup was inconsistent across branches; finishRepair makes both uniform.
  */
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
-import type { PipelineEvent, RepairOutcome } from "../types.js";
+import type {
+	AgentModelRef,
+	AgentRunStats,
+	PipelineEvent,
+	RepairOutcome,
+} from "../types.js";
+import { taskInfoSection } from "../notify/task-info.js";
 import { logger } from "../util/log.js";
 import { writeFileSync, mkdirSync, appendFileSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
 import { join as joinPath, basename } from "node:path";
@@ -116,6 +122,8 @@ export interface RepairResult {
 	readonly decidable?: boolean;
 	/** Escalated-only：agent 转交前已改动的文件清单（入审计）。 */
 	readonly sceneChanges?: readonly string[];
+	/** 实际选中的模型（runner 填充；终局通知任务信息上报）。 */
+	readonly model?: AgentModelRef;
 }
 
 /** Serialize one audit trace to its metric JSONL line. */
@@ -235,14 +243,24 @@ function notifySuccess(
 	event: PipelineEvent,
 	mrUrl: string,
 	summary: string,
+	stats?: AgentRunStats,
 ): Promise<void> {
 	return dingtalk.send({
 		title: "CI 自愈修复成功",
 		text: [
-			`项目 ${event.projectId}`,
-			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
-			`诊断：${summary}`,
-			`MR：${mrUrl}`,
+			"### ✅ CI 自愈修复成功",
+			"",
+			"**任务**",
+			`- 项目：${event.projectId}`,
+			`- 分支：${event.ref} @ ${shortSha(event.sha)}`,
+			"",
+			"**结论**",
+			`- 诊断：${summary}`,
+			"",
+			"**成果**",
+			`- MR：${mrUrl}`,
+			"",
+			...taskInfoSection(stats),
 		].join("\n"),
 	});
 }
@@ -252,8 +270,12 @@ function notifyFailure(
 	event: PipelineEvent,
 	stage: string,
 	error: string,
+	stats?: AgentRunStats,
 ): Promise<void> {
-	const message = `项目 ${event.projectId} pipeline ${event.pipelineId} 在 ${stage} 阶段失败：${error}`;
+	const message = [
+		`项目 ${event.projectId} pipeline ${event.pipelineId} 在 ${stage} 阶段失败：${error}`,
+		...taskInfoSection(stats),
+	].join("\n");
 	return dingtalk
 		.send({ title: "CI 自愈 Bot 异常", text: message })
 		.catch((notifyErr) => {
@@ -281,6 +303,21 @@ export async function finishRepair(args: {
 }): Promise<RepairOutcome> {
 	const { dingtalk, cwd, event, result, removeWorktree, audit } = args;
 	const metrics = result.metrics ?? ZERO_METRICS;
+	// 任务元信息（模型/token/耗时/轮数/session 复用/失败分类）→ 终局通知。
+	// agent 未运行的路径（class-5 早筛等）无 metrics/model → 不上报。
+	const agentStats: AgentRunStats | undefined =
+		result.metrics || result.model
+			? {
+					...(result.model ? { model: result.model } : {}),
+					...metrics,
+					...(audit?.reusedFromPipeline != null
+						? { reusedFromPipeline: audit.reusedFromPipeline }
+						: {}),
+					...(result.diagnosis
+						? { failureClass: result.diagnosis.failureClass }
+						: {}),
+				}
+			: undefined;
 	const diff = result.diff ?? "";
 	const reasoning =
 		result.kind === "failed"
@@ -291,13 +328,13 @@ export async function finishRepair(args: {
 	// escalated notifications moved to the main-process routed notifier (T04);
 	// the worker only reports the outcome (mr success / failed still notify here).
 	if (result.kind === "mr") {
-		await notifySuccess(dingtalk, event, result.mrUrl ?? "", summary);
+		await notifySuccess(dingtalk, event, result.mrUrl ?? "", summary, agentStats);
 	} else if (result.kind === "failed") {
 		logger.error(
 			{ event, stage: result.summary, error: result.error },
 			"repair failed",
 		);
-		await notifyFailure(dingtalk, event, result.summary, result.error ?? "");
+		await notifyFailure(dingtalk, event, result.summary, result.error ?? "", agentStats);
 	}
 
 
@@ -336,7 +373,12 @@ export async function finishRepair(args: {
 	}
 
 	if (result.kind === "mr") {
-		return { kind: "mr", mrUrl: result.mrUrl ?? "", summary };
+		return {
+			kind: "mr",
+			mrUrl: result.mrUrl ?? "",
+			summary,
+			...(agentStats ? { agentStats } : {}),
+		};
 	}
 	if (result.kind === "escalated") {
 		const mrUrl = result.mrUrl ? { mrUrl: result.mrUrl } : {};
@@ -347,13 +389,20 @@ export async function finishRepair(args: {
 				decidable: true,
 				diagnosisSummary: result.diagnosis?.summary,
 				...mrUrl,
+				...(agentStats ? { agentStats } : {}),
 			};
 		}
-		return { kind: "escalated", summary: result.summary, ...mrUrl };
+		return {
+			kind: "escalated",
+			summary: result.summary,
+			...mrUrl,
+			...(agentStats ? { agentStats } : {}),
+		};
 	}
 	return {
 		kind: "failed",
 		summary: `${result.summary} failed`,
 		error: result.error ?? "",
+		...(agentStats ? { agentStats } : {}),
 	};
 }

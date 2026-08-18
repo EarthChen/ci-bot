@@ -247,6 +247,7 @@ export async function runRepair(
 				summary: result.reason,
 				diagnosis: result.diagnosis,
 				metrics: agentMetrics,
+				model: result.model,
 				...(decidable ? { decidable: true } : {}),
 				...(result.mrUrl ? { mrUrl: result.mrUrl } : {}),
 				...(sceneChanges.length ? { sceneChanges } : {}),
@@ -336,6 +337,7 @@ export async function repairFixed(args: {
 				diagnosis: result.diagnosis,
 				diff: patch.diff,
 				metrics: args.agentMetrics,
+				model: result.model,
 			},
 		});
 	}
@@ -353,6 +355,7 @@ export async function repairFixed(args: {
 				diagnosis: result.diagnosis,
 				diff: patch.diff,
 				metrics: args.agentMetrics,
+				model: result.model,
 			},
 		});
 	}
@@ -372,6 +375,7 @@ export async function repairFixed(args: {
 				diagnosis: result.diagnosis,
 				diff: patch.diff,
 				metrics: args.agentMetrics,
+				model: result.model,
 			},
 		});
 	}
@@ -419,6 +423,7 @@ export async function repairFixed(args: {
 						diff: currentPatch.diff,
 						mrUrl: cont.mrUrl ?? result.mrUrl,
 						metrics: args.agentMetrics,
+						model: result.model,
 					},
 				});
 			}
@@ -441,6 +446,7 @@ export async function repairFixed(args: {
 						diff: p2.diff,
 						mrUrl: cont.mrUrl ?? result.mrUrl,
 						metrics: args.agentMetrics,
+						model: result.model,
 					},
 				});
 			}
@@ -464,6 +470,7 @@ export async function repairFixed(args: {
 				diff: currentPatch.diff,
 				mrUrl: currentResult.mrUrl ?? result.mrUrl,
 				metrics: args.agentMetrics,
+				model: result.model,
 			},
 		});
 	}
@@ -480,6 +487,7 @@ export async function repairFixed(args: {
 		diff: currentPatch.diff,
 		mrUrl: currentResult.mrUrl ?? result.mrUrl,
 		metrics: args.agentMetrics,
+		model: result.model,
 		},
 	});
 }

@@ -50,6 +50,14 @@ const exec = promisify(execFile);
  */
 const HEADS_REFSPEC = "+refs/heads/*:refs/heads/*";
 
+/**
+ * Negative refspec: never map the bot's own repair branches back into the
+ * shared bare. The agent pushes `ci-self-heal/*` to origin; re-importing
+ * them collides with the fresh worktree branch of a redelivery (MR !281
+ * pipeline 100033426 incident). Requires git >= 2.29.
+ */
+const EXCLUDE_REPAIR_REFSPEC = "^refs/heads/ci-self-heal/*";
+
 /** A bare-clone cache keyed by project id (shared across pipelines). */
 interface BareClone {
 	/** Absolute path to the bare repo. */
@@ -125,6 +133,44 @@ async function pruneBareCache(): Promise<void> {
 }
 
 /**
+ * Configure the bare clone's fetch refspec idempotently: map all branch
+ * heads, excluding the bot's own ci-self-heal/* repair branches. Heals
+ * clones created before the refspec existed (`git clone --bare` writes no
+ * fetch refspec at all).
+ */
+async function ensureFetchRefspec(barePath: string): Promise<void> {
+	await exec(
+		"git",
+		["--git-dir", barePath, "config", "--unset-all", "remote.origin.fetch"],
+		{ env: gitEnv() },
+	).catch(() => {});
+	await exec(
+		"git",
+		[
+			"--git-dir",
+			barePath,
+			"config",
+			"--add",
+			"remote.origin.fetch",
+			HEADS_REFSPEC,
+		],
+		{ env: gitEnv() },
+	);
+	await exec(
+		"git",
+		[
+			"--git-dir",
+			barePath,
+			"config",
+			"--add",
+			"remote.origin.fetch",
+			EXCLUDE_REPAIR_REFSPEC,
+		],
+		{ env: gitEnv() },
+	);
+}
+
+/**
  * Ensure the shared bare clone for a project exists and is up-to-date.
  * Returns the bare repo path. Concurrent calls for the same project share a
  * single fetch (deduped via fetchPromise).
@@ -172,17 +218,7 @@ async function ensureBareClone(
 				// reference" (MR !281 pipeline 100033426). Ensure the heads
 				// refspec on every pass: heals pre-fix clones, idempotent
 				// otherwise.
-				await exec(
-					"git",
-					[
-						"--git-dir",
-						barePath,
-						"config",
-						"remote.origin.fetch",
-						HEADS_REFSPEC,
-					],
-					{ env: gitEnv() },
-				);
+				await ensureFetchRefspec(barePath);
 				logger.info({ projectId, barePath }, "bare clone: fetch");
 				// No --prune: with the heads refspec it would delete local
 				// ci-self-heal/* branches that live worktrees still use.
@@ -243,6 +279,15 @@ async function realWorktree(
 	const barePath = await ensureBareClone(event.projectId, event.projectUrl);
 	await ensureShaPresent(barePath, event);
 	const branch = `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`;
+	// Self-heal residue from a crashed/uncleaned prior run at the same sha:
+	// stale worktree metadata shields the ci-self-heal branch from deletion,
+	// and `worktree add -b` dies on "a branch named ... already exists".
+	await exec("git", ["--git-dir", barePath, "worktree", "prune"], {
+		env: gitEnv(),
+	}).catch(() => {});
+	await exec("git", ["--git-dir", barePath, "branch", "-D", branch], {
+		env: gitEnv(),
+	}).catch(() => {});
 	logger.info(
 		{ projectId: event.projectId, barePath, repoPath, branch, ref: event.ref },
 		"worktree: add",

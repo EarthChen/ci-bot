@@ -245,10 +245,11 @@ export async function cleanupScene(
 					resolve();
 				});
 			});
-		// 1. remove worktree（cwd 仍存在时原子删目录+注册+解除分支引用）。
-		//    -f 丢弃未提交改动。必须在 rm(cwd) 之前：cwd 已删时 remove 行为
-		//    不稳定（实测自动 cleanup 下残留 prunable 注册）。git 无 forget 子命令。
-		await runGit(["--git-dir", barePath, "worktree", "remove", "-f", cwd]);
+		// 1. remove worktree（repo 仍存在时原子删目录+注册+解除分支引用）。
+		//    注意路径是 <cwd>/repo（worktree 实际位置），传 cwd 会因
+		//    "not a working tree" 失败。-f 丢弃未提交改动。必须在 rm(cwd)
+		//    之前：目录已删时 remove 行为不稳定（实测残留 prunable 注册）。
+		await runGit(["--git-dir", barePath, "worktree", "remove", "-f", join(cwd, "repo")]);
 		// 2. 兜底删目录（remove 已删则幂等）
 		await rm(cwd, { recursive: true, force: true }).catch(() => {});
 		// 3. prune 清理可能残留的注册

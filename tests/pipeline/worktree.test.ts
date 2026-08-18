@@ -167,4 +167,30 @@ describe("createWorktree (real git, local file:// remote)", () => {
 			createWorktree(join(root, "w2"), event("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "dev", remote.path)),
 		).rejects.toThrow(/deadbeef/);
 	});
+
+	it("self-heals leftover branch + stale worktree metadata from an uncleaned prior run", async () => {
+		// Production incident (MR !281 redelivery): a crashed run's cleanup
+		// aborted halfway, leaving the ci-self-heal branch + stale worktree
+		// metadata behind; the next worktree add at the same sha died with
+		// "a branch named ... already exists".
+		const remote = await initRemote();
+		const sha = await remote.commit("dev", "first");
+		await createWorktree(join(root, "w1"), event(sha, "dev", remote.path));
+		// Simulate the unclean end: worktree dir gone, metadata + branch left.
+		rmSync(join(root, "w1"), { recursive: true, force: true });
+		const repoPath = await createWorktree(join(root, "w2"), event(sha, "dev", remote.path));
+		expect(await git(repoPath, "rev-parse", "HEAD")).toBe(sha);
+	});
+
+	it("agent 推到远端的 ci-self-heal/* 分支不会被 fetch 重新导入", async () => {
+		const remote = await initRemote();
+		const sha1 = await remote.commit("dev", "first");
+		await createWorktree(join(root, "w1"), event(sha1, "dev", remote.path));
+		// agent 把修复分支 push 到 origin 后，后续事件的 fetch 不得把它映射回
+		// 共享 bare——否则与新建 worktree 的同名分支冲突（MR !281 重投事故）。
+		const sha2 = await remote.commit("dev", "second");
+		await git(remote.path, "update-ref", `refs/heads/ci-self-heal/dev-${sha2.slice(0, 8)}`, sha1);
+		const repoPath = await createWorktree(join(root, "w2"), event(sha2, "dev", remote.path));
+		expect(await git(repoPath, "rev-parse", "HEAD")).toBe(sha2);
+	});
 });

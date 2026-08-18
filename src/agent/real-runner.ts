@@ -32,7 +32,7 @@ export type { BudgetConfig };
 export type SessionFactory = (
 	input: AgentRunInput,
 	/** T06: set on resume — re-open this retained session file instead of a fresh session. */
-	resume?: { readonly sessionFile: string },
+	resume?: { readonly sessionFile: string; readonly compactForReuse?: boolean },
 ) => Promise<RuntimeSessionBundle>;
 
 /**
@@ -63,7 +63,13 @@ export class RealAgentRunner implements AgentRunner {
 	async run(input: AgentRunInput): Promise<AgentResult> {
 		const ciFactory = this.sessionFactory;
 		const runtime = new SharedAgentRuntime({
-			sessionFactory: async () => ciFactory(input),
+			sessionFactory: async () =>
+				ciFactory(
+					input,
+					input.reuseSessionFile
+						? { sessionFile: input.reuseSessionFile, compactForReuse: true }
+						: undefined,
+				),
 			budget: this.budget,
 		});
 
@@ -248,10 +254,10 @@ export class RealAgentRunner implements AgentRunner {
  */
 async function defaultSessionFactory(
 	input: AgentRunInput,
-	resume?: { readonly sessionFile: string },
+	resume?: { readonly sessionFile: string; readonly compactForReuse?: boolean },
 ): Promise<RuntimeSessionBundle> {
 	const definition = createCiRepairDefinition(input.cwd);
-	const session = await createDefaultSession(input, definition, resume?.sessionFile);
+	const session = await createDefaultSession(input, definition, resume?.sessionFile, resume?.compactForReuse);
 	return {
 		session,
 		// P1-3: 持久化完整 agent session messages 到审计目录（完整 jsonl，用于审计/排查）。
@@ -281,6 +287,8 @@ async function createDefaultSession(
 	definition: import("../agent-runtime/runtime.js").AgentDefinition<AgentRunInput>,
 	/** T06: re-open a retained session file instead of creating a fresh one. */
 	resumeSessionFile?: string,
+	/** ADR-0007: 跨 pipeline 存档重开时先 compact（best-effort，失败降级不压缩）。 */
+	compactForReuse?: boolean,
 ): Promise<AgentSession> {
 	const {
 		createAgentSession,
@@ -332,6 +340,11 @@ async function createDefaultSession(
 	});
 	await resourceLoader.reload();
 
+	// T06 / ADR-0007：复用 = 重开存档/保留 session，否则新建。
+	const sessionManager = resumeSessionFile
+		? SessionManager.open(resumeSessionFile)
+		: SessionManager.create(input.cwd);
+
 	const { session } = await createAgentSession({
 		cwd: input.cwd,
 		agentDir,
@@ -343,11 +356,26 @@ async function createDefaultSession(
 		// T06: sessions are PERSISTED (create, not inMemory) so a retained scene
 		// carries its jsonl under <agentDir>/sessions/ for a later /heal resume.
 		// Resume re-opens the exact retained session file.
-		sessionManager: resumeSessionFile
-			? SessionManager.open(resumeSessionFile)
-			: SessionManager.create(input.cwd),
+		sessionManager,
 		tools: ["read", "grep", "find", "ls", "bash"],
 	});
+
+	// ADR-0007：跨 pipeline 复用在继续前先 compact（AgentSession.compact 即
+	// /compact 的编程接口，一次摘要调用把旧上下文压成 summary + keepRecent）。
+	// best-effort：失败降级为不压缩继续，绝不阻断修复。
+	if (resumeSessionFile && compactForReuse) {
+		try {
+			const compacted = await session.compact(
+				"为跨 pipeline 复用总结本次 CI 修复会话：保留仓库结构/构建命令/根因与修复结论，并注明哪些结论仅适用于旧 commit",
+			);
+			logger.info(
+				{ tokensBefore: compacted.tokensBefore, pipelineId: input.pipelineId },
+				"session compacted for cross-pipeline reuse",
+			);
+		} catch (err) {
+			logger.warn({ err }, "reuse compaction failed — continuing uncompacted");
+		}
+	}
 
 	return session;
 }

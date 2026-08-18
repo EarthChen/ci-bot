@@ -31,6 +31,10 @@ export interface AgentRunInput {
 	readonly sourceBranch: string;
 	/** MR target branch (the pipeline's ref). */
 	readonly targetBranch: string;
+	/** ADR-0007: 同 MR 上次修复的存档 session 副本——open + compact + continue。 */
+	readonly reuseSessionFile?: string;
+	/** 存档元数据（旧 pipeline/sha）——prompt「新 commit」声明用。 */
+	readonly reuseMeta?: { readonly pipelineId: number; readonly sha: string };
 }
 
 /** Human decision slice handed to a resume run (T06). */

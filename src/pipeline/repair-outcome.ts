@@ -17,6 +17,8 @@ import { writeFileSync, mkdirSync, appendFileSync, existsSync, readdirSync, stat
 import { join as joinPath, basename } from "node:path";
 import { resolveAuditDir as resolveAuditDirPath } from "../config/paths.js";
 import { resolveRetentionPolicy } from "../config/retention.js";
+import { findSessionFile } from "../agent/real-runner.js";
+import { saveMrSession } from "./mr-session-store.js";
 
 /**
  * G5 audit record — persisted per repair so a bad fix can be traced back
@@ -63,6 +65,8 @@ export interface AuditTrace {
 	/** Run-6 缺口修复：escalated 终局前 agent 已改动的文件清单（非可决策
 	 *  转交清理现场后，diff 为空，此清单是本地唯一改动记录）。 */
 	readonly sceneChanges?: readonly string[];
+	/** ADR-0007：本次修复复用了该 pipeline 的 session（跨 pipeline 复用可追溯）。 */
+	readonly reusedFromPipeline?: number;
 }
 
 /** Metrics slice embedded in an audit trace. */
@@ -273,7 +277,7 @@ export async function finishRepair(args: {
 	/** Injected worktree cleanup seam (best-effort). */
 	removeWorktree: (cwd: string) => Promise<void>;
 	/** T06: resume-run audit context (decision chain) threaded into the trace. */
-	audit?: { readonly decisionId?: string; readonly chainDepth?: number };
+	audit?: { readonly decisionId?: string; readonly chainDepth?: number; readonly reusedFromPipeline?: number };
 }): Promise<RepairOutcome> {
 	const { dingtalk, cwd, event, result, removeWorktree, audit } = args;
 	const metrics = result.metrics ?? ZERO_METRICS;
@@ -296,6 +300,19 @@ export async function finishRepair(args: {
 		await notifyFailure(dingtalk, event, result.summary, result.error ?? "");
 	}
 
+
+	// ADR-0007：带 MR 成果的终局存档 session（跨 pipeline 复用）。session
+	// 住在 <cwd>/.pi-agent/sessions/（worker 约定），接下来的现场清理会销毁它。
+	// best-effort：stub 模式/早败路径无 session，绝不阻断终局处理。
+	if (result.kind === "mr" || (result.kind === "escalated" && result.mrUrl)) {
+		let sessionFile: string | null = null;
+		try {
+			sessionFile = findSessionFile(joinPath(cwd, ".pi-agent"));
+		} catch {
+			sessionFile = null;
+		}
+		if (sessionFile) saveMrSession(event, sessionFile, result.kind);
+	}
 	writeAuditTrace(cwd, {
 		event: auditEvent(event),
 		outcome: result.kind,

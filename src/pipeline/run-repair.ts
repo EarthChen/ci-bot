@@ -18,6 +18,9 @@ import type { PipelineEvent, RepairOutcome, Patch, AgentResult } from "../types.
 import { logger } from "../util/log.js";
 import type { Worktree } from "./worktree.js";
 import { finishRepair, repairCost } from "./repair-outcome.js";
+import { findMrSession } from "./mr-session-store.js";
+import { mkdirSync, copyFileSync } from "node:fs";
+import { join as joinPath } from "node:path";
 
 /** Normalize an unknown error to a message string. */
 function errMessage(e: unknown): string {
@@ -155,6 +158,33 @@ export async function runRepair(
 		: "";
 	const diffFiles = parseDiffFiles(mrDiff);
 
+	// ADR-0007：跨 pipeline session 复用——同 MR 有上次修复存档则拷入本 worker
+	//（store 保持只读，终局 latest-wins 重新存档）；runner open + compact + continue。
+	// 未命中/拷贝失败降级为全新 session。
+	let reuseSessionFile: string | undefined;
+	let reuseMeta: { pipelineId: number; sha: string } | undefined;
+	const stored = findMrSession(event);
+	if (stored) {
+		try {
+			const reuseDir = joinPath(deps.cwd, ".pi-agent", "sessions", "reuse");
+			mkdirSync(reuseDir, { recursive: true });
+			reuseSessionFile = joinPath(reuseDir, `reuse-${event.pipelineId}.jsonl`);
+			copyFileSync(stored.sessionPath, reuseSessionFile);
+			reuseMeta = { pipelineId: stored.meta.pipelineId, sha: stored.meta.sha };
+			logger.info(
+				{ fromPipeline: stored.meta.pipelineId, reuseSessionFile },
+				"reusing archived MR session (open + compact + continue)",
+			);
+		} catch (err) {
+			reuseSessionFile = undefined;
+			reuseMeta = undefined;
+			logger.warn(
+				{ err: errMessage(err) },
+				"reuse session copy failed — falling back to fresh session",
+			);
+		}
+	}
+
 	const agentInput: AgentRunInput = {
 		projectId: event.projectId,
 		pipelineId: event.pipelineId,
@@ -165,6 +195,7 @@ export async function runRepair(
 		cwd: repoCwd,
 		sourceBranch,
 		targetBranch,
+		...(reuseSessionFile ? { reuseSessionFile, reuseMeta } : {}),
 	};
 	let result;
 	try {
@@ -208,6 +239,9 @@ export async function runRepair(
 			cwd: deps.cwd,
 			event,
 			removeWorktree: worktree.remove,
+			...(reuseMeta
+				? { audit: { reusedFromPipeline: reuseMeta.pipelineId } }
+				: {}),
 			result: {
 				kind: "escalated",
 				summary: result.reason,
@@ -235,6 +269,9 @@ export async function runRepair(
 			diffFiles,
 			agentInput,
 			agentMetrics,
+			...(reuseMeta
+				? { audit: { reusedFromPipeline: reuseMeta.pipelineId } }
+				: {}),
 		});
 	} finally {
 		agent.close();
@@ -280,7 +317,7 @@ export async function repairFixed(args: {
 	agentInput: AgentRunInput;
 	agentMetrics: { turns: number; tokens: number; cost: number; durationMs: number };
 	/** T06: resume-run audit context (decision chain) threaded into every trace. */
-	audit?: { readonly decisionId?: string; readonly chainDepth?: number };
+	audit?: { readonly decisionId?: string; readonly chainDepth?: number; readonly reusedFromPipeline?: number };
 }): Promise<RepairOutcome> {
 	const { deps, event, repoCwd, result, diffFiles, agentInput, audit } = args;
 	const { glab, dingtalk, worktree } = deps;
@@ -380,6 +417,7 @@ export async function repairFixed(args: {
 						summary: cont.reason,
 						diagnosis: cont.diagnosis,
 						diff: currentPatch.diff,
+						mrUrl: cont.mrUrl ?? result.mrUrl,
 						metrics: args.agentMetrics,
 					},
 				});
@@ -401,6 +439,7 @@ export async function repairFixed(args: {
 								: `retry G3/diff 违规：${g3b}`,
 						diagnosis: cont.diagnosis,
 						diff: p2.diff,
+						mrUrl: cont.mrUrl ?? result.mrUrl,
 						metrics: args.agentMetrics,
 					},
 				});
@@ -439,6 +478,7 @@ export async function repairFixed(args: {
 		summary: `MR CI 仍红，重试 ${attempt} 次后转交人工`,
 		diagnosis: currentResult.diagnosis,
 		diff: currentPatch.diff,
+		mrUrl: currentResult.mrUrl ?? result.mrUrl,
 		metrics: args.agentMetrics,
 		},
 	});

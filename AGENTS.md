@@ -99,6 +99,7 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 - **绝不自动 merge**：所有 MR 强制人工 review
 - **人工决策边界**：`/heal` 决策（test/prod/drop）只消除 agent 诊断不确定性，不授予新权限；**一轮介入**——恢复后再次转交即终局，不产生新决策；决策仅群聊可发，decider 入审计
 - **现场保留**：可决策转交（agent 主动 escalated 且带 diagnosis）冻干现场（cwd + worktree + session + branch），注册 awaiting_decision；TTL 默认 24h（`CIHEAL_DECISION_TTL_MS`）到期清扫；新 pipeline 到达（含被排除的）作废同项目待决策并清现场；class 5 转交（bot 早筛或 agent 判定）/bot 故障类转交不保留现场
+- **跨 pipeline session 复用（ADR-0007）**：带 MR 成果的终局（mr / 部分修复转交）把 Pi session jsonl 存档到 `DATA_ROOT/mr-sessions/<proj>-<mr>.jsonl`（latest-wins，LRU 上限 32）；同 MR 后续 pipeline 命中则拷入新 worker → `SessionManager.open` + `AgentSession.compact()`（/compact 编程接口）+ continue，prompt 强制声明「MR 已更新到新 commit、不得沿用旧诊断」；存档/复用任何环节失败均降级为全新 session，不阻断修复；审计记 `reusedFromPipeline`
 - **stage 排除**：`CIHEAL_SKIP_STAGES`（逗号分隔）中的 stage 全部失败时跳过修复（不起 agent、不注册决策），即时播报保留并尾注「不在自愈范围」；builds 缺失时降级为原行为。修复入队成功的失败播报尾注「已开始修复」，消除失败卡与终局卡之间的静默窗口
 - **bot 自身 pipeline 忽略**：源分支为 `ci-self-heal/*` 的 pipeline（bot 修复 MR 触发）回流 webhook 时直接忽略——不播报、不入队、不触发 onNewPipeline（避免 bot 修自己的修复 MR 形成循环、避免作废原 MR 的待决策）；修复 MR 的 CI 监控由 worker 内部轮询驱动（ADR-0004），不受影响
 - **钉钉通知与 MR 解耦**：agent 永不持有钉钉工具；bot 代码在确定性 pipeline 节点调钉钉。转交通知一律走 ProjectRouter 到路由群（与失败播报同群）。`CIHEAL_DINGTALK_MODE=fake` 时改为记录不推送

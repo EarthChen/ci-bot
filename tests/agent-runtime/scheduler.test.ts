@@ -20,7 +20,7 @@ function makeEvent(projectId: string, pipelineId: number, mrIid?: number): Pipel
 		ref: "main",
 		sha: "abc1234567890",
 		projectUrl: "https://git.example.com/g/p",
-		...(mrIid !== undefined ? { mrIid } : {}),
+		...(mrIid === undefined ? {} : { mrIid }),
 	};
 }
 

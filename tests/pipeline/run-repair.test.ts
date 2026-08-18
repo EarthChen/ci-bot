@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import type { AgentRunner, AgentRunInput } from "../../src/agent/runner.js";
 import type { GitLabClient } from "../../src/gitlab/glab-client.js";
 import type { AgentResult, PipelineEvent } from "../../src/types.js";
+import { saveMrSession } from "../../src/pipeline/mr-session-store.js";
 
 const event: PipelineEvent = {
 	projectId: "42",
@@ -470,5 +471,69 @@ describe("snapshotSceneChanges", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("runRepair — ADR-0007 跨 pipeline session 复用", () => {
+	let cwd: string;
+	let dataRoot: string;
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "run-repair-reuse-"));
+		dataRoot = mkdtempSync(join(tmpdir(), "run-repair-reuse-data-"));
+		process.env.CIHEAL_DATA_ROOT = dataRoot;
+	});
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(dataRoot, { recursive: true, force: true });
+		delete process.env.CIHEAL_DATA_ROOT;
+	});
+
+	const mrEvent: PipelineEvent = { ...event, mrIid: 7 };
+
+	it("命中同 MR 存档 → agent input 注入 reuseSessionFile/reuseMeta", async () => {
+		const src = join(dataRoot, "prev-session.jsonl");
+		writeFileSync(src, '{"prev":true}\n');
+		saveMrSession(mrEvent, src, "mr");
+
+		const { worktree } = fakeWorktree();
+		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
+		const { agent, run } = spyAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 4, summary: "x" },
+			reason: "stop",
+			source: "runtime",
+		});
+		await runRepair(
+			{ agent, glab, dingtalk: new InMemoryDingTalkNotifier(), cwd, worktree },
+			mrEvent,
+		);
+		expect(run).toHaveBeenCalledTimes(1);
+		const input = run.mock.calls[0][0];
+		expect(input.reuseSessionFile).toBeTruthy();
+		expect(readFileSync(input.reuseSessionFile!, "utf8")).toContain('"prev":true');
+		expect(input.reuseMeta).toEqual({ pipelineId: 1001, sha: "abc1234567890" });
+		// 审计可追溯：本次修复复用了哪个 pipeline 的 session
+		const trace = JSON.parse(
+			readFileSync(join(cwd, "audit-trace.json"), "utf8"),
+		) as Record<string, unknown>;
+		expect(trace.reusedFromPipeline).toBe(1001);
+	});
+
+	it("无存档 → input 不带复用字段", async () => {
+		const { worktree } = fakeWorktree();
+		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
+		const { agent, run } = spyAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 4, summary: "x" },
+			reason: "stop",
+			source: "runtime",
+		});
+		await runRepair(
+			{ agent, glab, dingtalk: new InMemoryDingTalkNotifier(), cwd, worktree },
+			mrEvent,
+		);
+		const input = run.mock.calls[0][0];
+		expect(input.reuseSessionFile).toBeUndefined();
+		expect(input.reuseMeta).toBeUndefined();
 	});
 });

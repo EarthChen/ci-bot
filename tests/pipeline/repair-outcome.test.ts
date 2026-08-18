@@ -5,9 +5,11 @@ import {
 	existsSync,
 	readFileSync,
 	mkdirSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
+import { findMrSession } from "../../src/pipeline/mr-session-store.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import { finishRepair } from "../../src/pipeline/repair-outcome.js";
 import { removeWorktree as realRemoveWorktree } from "../../src/pipeline/worktree.js";
@@ -281,6 +283,105 @@ describe("persistDurable — durable audit trace persistence", () => {
 				turns: 0,
 			} as AuditTrace);
 		}).not.toThrow();
+	});
+});
+
+describe("finishRepair — ADR-0007 session 存档（跨 pipeline 复用）", () => {
+	let cwd: string;
+	let dataRoot: string;
+	let dt: InMemoryDingTalkNotifier;
+	const removeWorktree = async (_c: string): Promise<void> => {};
+
+	const mrEvent: PipelineEvent = {
+		projectId: "42",
+		pipelineId: 1001,
+		ref: "main",
+		sha: "abc1234567890",
+		projectUrl: "https://git.example.com/g/p",
+		mrIid: 7,
+	};
+
+	function seedSession(dir: string): void {
+		const sessionDir = join(dir, ".pi-agent", "sessions", "enc-cwd");
+		mkdirSync(sessionDir, { recursive: true });
+		writeFileSync(join(sessionDir, "session.jsonl"), '{"v":1}\n');
+	}
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "repair-outcome-save-"));
+		dataRoot = mkdtempSync(join(tmpdir(), "repair-outcome-data-"));
+		process.env.CIHEAL_DATA_ROOT = dataRoot;
+		dt = new InMemoryDingTalkNotifier();
+	});
+
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(dataRoot, { recursive: true, force: true });
+		delete process.env.CIHEAL_DATA_ROOT;
+	});
+
+	it("mr 终局 → session 存档到 mr-sessions（跨 pipeline 复用前提）", async () => {
+		seedSession(cwd);
+		await finishRepair({
+			dingtalk: dt,
+			cwd,
+			event: mrEvent,
+			removeWorktree,
+			result: { kind: "mr", summary: "s", mrUrl: "https://mr/1" },
+		});
+		const found = findMrSession(mrEvent);
+		expect(found).not.toBeNull();
+		expect(found!.meta.outcome).toBe("mr");
+		expect(found!.meta.pipelineId).toBe(1001);
+	});
+
+	it("escalated 带部分修复 MR → 同样存档", async () => {
+		seedSession(cwd);
+		await finishRepair({
+			dingtalk: dt,
+			cwd,
+			event: mrEvent,
+			removeWorktree,
+			result: { kind: "escalated", summary: "handoff", mrUrl: "https://mr/2" },
+		});
+		expect(findMrSession(mrEvent)!.meta.outcome).toBe("escalated");
+	});
+
+	it("failed → 不存档（无 MR 成果）", async () => {
+		seedSession(cwd);
+		await finishRepair({
+			dingtalk: dt,
+			cwd,
+			event: mrEvent,
+			removeWorktree,
+			result: { kind: "failed", summary: "worktree", error: "x" },
+		});
+		expect(findMrSession(mrEvent)).toBeNull();
+	});
+
+	it("无 mrIid（push pipeline）→ 不存档", async () => {
+		seedSession(cwd);
+		const noMr = { ...mrEvent };
+		delete (noMr as { mrIid?: number }).mrIid;
+		await finishRepair({
+			dingtalk: dt,
+			cwd,
+			event: noMr,
+			removeWorktree,
+			result: { kind: "mr", summary: "s", mrUrl: "https://mr/3" },
+		});
+		expect(findMrSession(noMr)).toBeNull();
+	});
+
+	it("session 缺失（stub 模式）→ 不崩溃不存档", async () => {
+		await finishRepair({
+			dingtalk: dt,
+			cwd,
+			event: mrEvent,
+			removeWorktree,
+			result: { kind: "mr", summary: "s", mrUrl: "https://mr/4" },
+		});
+		expect(findMrSession(mrEvent)).toBeNull();
 	});
 });
 

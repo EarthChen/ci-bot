@@ -57,3 +57,8 @@ export function resolveRouteDbPath(): string {
 export function resolveDecisionDbPath(): string {
 	return join(resolveDataRoot(), "decisions.db");
 }
+
+/** Per-MR session archives for cross-pipeline session reuse (ADR-0007). */
+export function resolveMrSessionsDir(): string {
+	return join(resolveDataRoot(), "mr-sessions");
+}

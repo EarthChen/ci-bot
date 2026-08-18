@@ -41,6 +41,16 @@ function buildCiPrompt(input: AgentRunInput, cwd: string): string {
 	return [
 		`/skill:ci-self-heal-playbook`,
 		``,
+		...(input.reuseMeta
+			? [
+					`# Session 复用（先读这段再动手）`,
+					`本 session 延续该 MR 上一次修复会话，历史已压缩为摘要。`,
+					`- 上次修复：pipeline ${input.reuseMeta.pipelineId} @ commit ${input.reuseMeta.sha.slice(0, 8)}`,
+					`- 本次：pipeline ${input.pipelineId} @ commit ${input.sha.slice(0, 8)}——**MR 已更新到新 commit，代码已变化**。`,
+					`- 摘要中的结论仅适用于旧 commit。本次失败可能是新 commit 引入的新问题，也可能是上次修复的遗留：先基于新 CI 日志做意图判定，**不得直接沿用旧诊断**。`,
+					``,
+			  ]
+			: []),
 		`# 任务`,
 		`分支 ${input.ref} @ ${input.sha.slice(0, 8)} 的 pipeline 单测失败。`,
 		``,

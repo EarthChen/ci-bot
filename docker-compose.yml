@@ -22,6 +22,10 @@ services:
     container_name: ci-self-heal-bot
     restart: unless-stopped
 
+    # 以宿主用户运行：避免 root 写脏 bind-mount 的 ./data 与 ~/.m2 属主。
+    # 取值写入 .env：HOST_UID=$(id -u)、HOST_GID=$(id -g)；确需 root 设 0。
+    user: "${HOST_UID:?HOST_UID 必填（id -u）}:${HOST_GID:?HOST_GID 必填（id -g）}"
+
     # 宿主端口用 HOST_PORT（可被 .env / shell 覆盖）；容器内固定监听 8080
     ports:
       - "${HOST_PORT:-8080}:8080"

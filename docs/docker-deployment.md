@@ -13,7 +13,8 @@
 | `CIHEAL_BOT_ROOT` | `/app` | bot 资源（`.pi/`、`config/`、`src/agents/`）已烘入镜像，只读 |
 | `CIHEAL_PI_BASE_DIR` | `/run/secrets/ci-self-heal-pi` | 部署时挂载 `./secrets/pi`（只读），放 `auth.json` / `models.json` |
 | `CIHEAL_DATA_ROOT` | `/var/lib/ci-self-heal` | bind mount 到宿主 `${CIHEAL_HOST_DATA_DIR:-./data}`：work/bare/audit/logs + 两个 SQLite 直接落宿主文件系统 |
-| Maven 本地仓库 | `/root/.m2` | 默认挂宿主 `~/.m2` 复用缓存（v1 共享可写设计，见 §6 风险说明）；`CIHEAL_HOST_M2_DIR` 可切隔离目录 |
+| 运行身份 | `HOST_UID:HOST_GID`（compose `user:`） | 容器以宿主用户运行，写 bind mount 的文件直接属宿主用户；必填（见 §6），设 0 回到 root |
+| Maven 本地仓库 | `/root/.m2` | 默认挂宿主 `~/.m2` 复用缓存（v1 共享可写设计）；`CIHEAL_HOST_M2_DIR` 可切隔离目录 |
 | 监听端口 | 容器内固定 `8080` | 宿主端口由 `HOST_PORT` 控制（默认 8080） |
 
 compose 的 `environment` 会把上述三个 `CIHEAL_*` 路径与 `PORT=8080` 固化，**覆盖 `.env` 中可能残留的主机路径**——`.env` 里这三项填什么都不影响容器运行。
@@ -38,6 +39,8 @@ compose 的 `environment` 会把上述三个 `CIHEAL_*` 路径与 `PORT=8080` �
 ```bash
 # 1) 凭据：复制模板填真实值（绝不入库，.gitignore 已排除）
 cp .env.example .env && chmod 600 .env
+#    运行身份（必填，compose 所有子命令都会插值）：容器以宿主用户运行
+printf '\nHOST_UID=%s\nHOST_GID=%s\n' "$(id -u)" "$(id -g)" >> .env
 
 # 2) Pi 认证：secrets/pi/ 放 auth.json（provider 凭据），自定义网关再加 models.json
 #    模板见 secrets/pi/auth.json.example / models.json.example
@@ -68,6 +71,7 @@ HOST_PORT=18080 docker compose up -d
 docker build -t ci-self-heal-bot .
 
 docker run -d --name ci-self-heal-bot \
+  --user "$(id -u):$(id -g)" \
   --env-file .env \
   -e CIHEAL_BOT_ROOT=/app \
   -e CIHEAL_PI_BASE_DIR=/run/secrets/ci-self-heal-pi \
@@ -124,7 +128,7 @@ docker compose up -d --build               # 重建镜像并滚动重启
 tar czf backup/ci-self-heal-data-$(date +%F).tar.gz -C data .
 ```
 
-**属主与权限（Linux 宿主必读）**：容器以 root 运行，`./data` 与 `~/.m2` 内由容器新写的文件属主为 root（macOS Docker Desktop 有属主映射，无此问题）。宿主侧清理/编辑这些文件需 `sudo`；若要把 `~/.m2` 还给宿主用户自用：`sudo chown -R $(id -u):$(id -g) ~/.m2`。不能接受共享 `~/.m2` 时，`.env` 设 `CIHEAL_HOST_M2_DIR=/绝对路径`（如 `<部署目录>/data/.m2`）切隔离仓库。
+**属主与权限**：容器以 `HOST_UID:HOST_GID`（compose `user:`）运行，`./data` 与 `~/.m2` 内新写的文件属主直接就是宿主用户，无 root 污染、宿主侧清理/备份无需 sudo。`HOST_UID`/`HOST_GID` **必填**——compose 的 up/down/ps/logs 都会插值 `user:`，缺失即报错；写入 `.env`：`HOST_UID=$(id -u)`、`HOST_GID=$(id -g)`。确需 root 设为 0（回到旧行为：Linux 上文件属主为 root）。macOS Docker Desktop 有属主映射，root 运行也显示为宿主属主，但仍建议对齐 UID 以保持与 Linux 一致。非 root 运行需可写 HOME（glab 写 `$HOME/.config`），entrypoint 已自动把 HOME 指到 `<CIHEAL_DATA_ROOT>/.home`。不能接受共享 `~/.m2` 时，`.env` 设 `CIHEAL_HOST_M2_DIR=/绝对路径` 切隔离仓库。
 
 ## 7. 故障排查
 
@@ -137,6 +141,7 @@ tar czf backup/ci-self-heal-data-$(date +%F).tar.gz -C data .
 | 端口映射不通但容器健康 | `.env` 的 `PORT` 非 8080 时旧版 compose 映射断裂 | compose 已固化容器内 `PORT=8080`，宿主侧用 `HOST_PORT` |
 | worker 报模型凭据缺失 | `secrets/pi/auth.json` 未挂载或无对应 provider 凭据 | 对照 `config/model-candidates.json` 补齐凭据，参考 `docs/pi-agent-configuration.md` |
 | glab 安装 404 | 官方 `install.sh` 脚本路径已失效 | Dockerfile 已改为固定版本 `.deb` 直下；升级 glab 改 `GLAB_VERSION` build-arg |
-| 宿主 `mvn` 报 permission denied（Linux） | 容器 root 写入 `~/.m2` 的文件属主为 root | `sudo chown -R $(id -u):$(id -g) ~/.m2`；或 `CIHEAL_HOST_M2_DIR` 切隔离目录 |
+| compose 命令报 `HOST_UID 必填` | `user:` 字段必填但未设 HOST_UID/HOST_GID | `.env` 写入 `HOST_UID=$(id -u)`、`HOST_GID=$(id -g)` |
+| 宿主 `mvn` 报 permission denied（Linux） | 历史以 root 运行写脏了 `~/.m2` 属主 | UID 对齐后不再产生；历史残留 `sudo chown -R $(id -u):$(id -g) ~/.m2` |
 
 **版本升级注意**：升级 `NODE_VERSION` 前先在容器内验证 `node -e "require('better-sqlite3')"` 不段错误；升级 `GLAB_VERSION` 前对照 `src/gitlab/glab-client.ts` 注释中的语法约束（`-R OWNER/REPO`、不接受纯数字 id）。

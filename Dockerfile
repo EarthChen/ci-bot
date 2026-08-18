@@ -4,8 +4,9 @@
 # 构建：
 #   docker build -t ci-self-heal-bot .
 #
-# 运行（需要 .env + secrets 目录）：
+# 运行（需要 .env + secrets 目录；--user 以宿主身份运行，避免写脏 ./data 与 ~/.m2 属主）：
 #   docker run -d --env-file .env -p 8080:8080 \
+#     --user "$(id -u):$(id -g)" \
 #     -v ./secrets/pi:/run/secrets/ci-self-heal-pi:ro \
 #     -v ./data:/var/lib/ci-self-heal \
 #     -v ~/.m2:/root/.m2 \
@@ -86,6 +87,7 @@ COPY --from=build /app/package.json ./
 COPY .pi/ .pi/
 COPY config/ config/
 COPY src/agents/ src/agents/
+COPY --chmod=755 docker-entrypoint.sh /app/docker-entrypoint.sh
 
 # 预建数据目录（CIHEAL_DATA_ROOT=/var/lib/ci-self-heal）
 # CIHEAL_PI_BASE_DIR 由 operator 通过 volume/secret 挂载，此处仅创建占位
@@ -100,5 +102,5 @@ ENV PORT=8080
 
 EXPOSE 8080
 
-# 生产入口：不使用 pnpm start（避免 prestart 重复构建）
-CMD ["node", "--enable-source-maps", "dist/main.js"]
+# 生产入口：不使用 pnpm start（避免 prestart 重复构建）；entrypoint 保证非 root 时 HOME 可写
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

@@ -201,6 +201,8 @@ export async function runRepair(
 		// close → dispose 存档 agent-session.jsonl 到审计目录（MR !281 run 6
 		// 缺口：escalated 不 close 导致现场清理后 session 遥测全失）
 		agent.close();
+		// 现场改动快照（入审计）：非可决策转交会清理现场，不能丢失改动记录
+		const sceneChanges = await snapshotSceneChanges(repoCwd);
 		return finishRepair({
 			dingtalk,
 			cwd: deps.cwd,
@@ -213,6 +215,7 @@ export async function runRepair(
 				metrics: agentMetrics,
 				...(decidable ? { decidable: true } : {}),
 				...(result.mrUrl ? { mrUrl: result.mrUrl } : {}),
+				...(sceneChanges.length ? { sceneChanges } : {}),
 			},
 		});
 	}
@@ -237,6 +240,30 @@ export async function runRepair(
 		agent.close();
 	}
 	return outcome;
+}
+
+/**
+ * Best-effort 快照：agent 在 worktree 里改动的文件清单（git status --porcelain，
+ * 排除 spill 文件）。escalated 终局入审计用；任何错误返回空数组，绝不阻断
+ * 转交流程。
+ */
+export async function snapshotSceneChanges(repoCwd: string): Promise<string[]> {
+	try {
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const exec = promisify(execFile);
+		const { stdout } = await exec("git", ["status", "--porcelain"], {
+			cwd: repoCwd,
+			maxBuffer: EXEC_MAX_BUFFER,
+		});
+		return stdout
+			.split("\n")
+			.filter((line) => line.length > 3)
+			.map((line) => line.slice(3).trim())
+			.filter((path) => !SPILL_RE.test(path));
+	} catch {
+		return [];
+	}
 }
 
 /**

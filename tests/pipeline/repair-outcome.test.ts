@@ -211,6 +211,21 @@ describe("metricLine — JSONL metric serialization", () => {
 		expect(parsed.durationMs).toBe(1200);
 		expect(parsed.createdAt).toBe("2026-08-06T09:00:00.000Z");
 	});
+
+	it("包含 turns（run 6 缺口：escalated 行丢 turns 影响聚合）", () => {
+		const line = metricLine({
+			event: { projectId: "31041", pipelineId: 538, ref: "main", sha: "bec0fab3" },
+			outcome: "escalated",
+			diff: "",
+			reasoning: "partial fix",
+			createdAt: "2026-08-18T07:54:41.000Z",
+			turns: 52,
+			tokens: 6147266,
+			cost: 6.147266,
+			durationMs: 1998918,
+		});
+		expect(JSON.parse(line).turns).toBe(52);
+	});
 });
 
 describe("resolveAuditDir — durable audit directory resolution", () => {

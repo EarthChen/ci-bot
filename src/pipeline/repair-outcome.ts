@@ -60,6 +60,9 @@ export interface AuditTrace {
 	readonly decisionId?: string;
 	/** T06: intervention chain depth (1 = first resume round). */
 	readonly chainDepth?: number;
+	/** Run-6 缺口修复：escalated 终局前 agent 已改动的文件清单（非可决策
+	 *  转交清理现场后，diff 为空，此清单是本地唯一改动记录）。 */
+	readonly sceneChanges?: readonly string[];
 }
 
 /** Metrics slice embedded in an audit trace. */
@@ -107,6 +110,8 @@ export interface RepairResult {
 	/** Escalated-only: agent-initiated escalation with diagnosis — retain the
 	 *  scene (skip worktree cleanup) and flag the outcome as decidable. */
 	readonly decidable?: boolean;
+	/** Escalated-only：agent 转交前已改动的文件清单（入审计）。 */
+	readonly sceneChanges?: readonly string[];
 }
 
 /** Serialize one audit trace to its metric JSONL line. */
@@ -115,6 +120,7 @@ export function metricLine(trace: AuditTrace): string {
 		projectId: trace.event.projectId,
 		pipelineId: trace.event.pipelineId,
 		outcome: trace.outcome,
+		turns: trace.turns,
 		tokens: trace.tokens,
 		cost: trace.cost,
 		durationMs: trace.durationMs,
@@ -297,6 +303,9 @@ export async function finishRepair(args: {
 		diff,
 		reasoning,
 		mrUrl: result.mrUrl,
+		...(result.sceneChanges?.length
+			? { sceneChanges: result.sceneChanges }
+			: {}),
 		createdAt: new Date().toISOString(),
 		...metrics,
 		...(audit ?? {}),

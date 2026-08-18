@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRepair, extractPatch, parseDiffFiles, buildDiffIndex } from "../../src/pipeline/run-repair.js";
+import { runRepair, extractPatch, parseDiffFiles, buildDiffIndex, snapshotSceneChanges } from "../../src/pipeline/run-repair.js";
 import type { Worktree } from "../../src/pipeline/worktree.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import type { AgentRunner, AgentRunInput } from "../../src/agent/runner.js";
@@ -432,5 +432,43 @@ describe("buildDiffIndex", () => {
 	it("空 diff / 无 diff 标记 → 空字符串（调用方不写索引文件）", () => {
 		expect(buildDiffIndex("")).toBe("");
 		expect(buildDiffIndex("random text\nno diff markers")).toBe("");
+	});
+});
+
+describe("snapshotSceneChanges", () => {
+	const execFileP = promisify(execFile);
+
+	it("列出 agent 改动的文件（含新增），排除 spill 文件", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ciheal-scene-"));
+		try {
+			const git = (...args: string[]) => execFileP("git", args, { cwd: dir });
+			await git("init", "-q");
+			await git("config", "user.email", "t@ci-bot");
+			await git("config", "user.name", "ci-bot test");
+			writeFileSync(join(dir, "App.java"), "class App {}\n");
+			await git("add", "-A");
+			await git("commit", "-q", "-m", "baseline");
+			// agent 改动：1 个修改 + 1 个新增 + 1 个 spill（不入清单）
+			writeFileSync(join(dir, "App.java"), "class App { int x; }\n");
+			writeFileSync(join(dir, "NewTest.java"), "class NewTest {}\n");
+			writeFileSync(join(dir, "ci-log.txt"), "spill\n");
+
+			const files = await snapshotSceneChanges(dir);
+
+			expect(files).toContain("App.java");
+			expect(files).toContain("NewTest.java");
+			expect(files).not.toContain("ci-log.txt");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("非 git 目录 → 空数组（best-effort，不阻断转交流程）", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ciheal-nogit-"));
+		try {
+			expect(await snapshotSceneChanges(dir)).toEqual([]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+
+# Build output (rebuilt in Docker)
+dist/
+*.tsbuildinfo
+
+# Environment secrets (NEVER in image)
+.env
+.env.*
+!.env.example
+
+# Operator secrets (mounted at runtime via compose; NEVER in build context)
+secrets/
+
+# Git
+.git/
+.gitmodules
+
+# CI
+.github/
+
+# Tests
+tests/
+fixtures/
+
+# Docs & specs (not needed at runtime)
+docs/
+.scratch/
+research/
+wayfinder/
+CLAUDE.md
+AGENTS.md
+CONTEXT.md
+README.md
+
+# Scripts (build-fixture, gen-webhook, metrics)
+scripts/
+
+# Deploy examples (not needed in image)
+deploy/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Runtime state
+*.log
+logs/
+data/
+*.db
+*.db-journal
+
+# Worker working dirs
+.work/
+.worker-data/
+
+# Subagent artifacts
+.pi-subagents/
+
+# Audit traces
+.audit/
+.logs/

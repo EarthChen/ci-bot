@@ -1,0 +1,58 @@
+# CI Self-Heal Bot — Docker Compose 生产部署
+#
+# 前置条件：
+#   1. 复制 .env.example 为 .env 并填入真实凭据（chmod 600）
+#   2. 创建 secrets/pi/ 目录，放入 auth.json 和/或 models.json
+#   3. 确认 config/ 下 group-routing.json / command-help.json 已配置
+#   4. 创建数据目录（work/日志/SQLite 持久化到宿主）：mkdir -p data
+#      （不建也行，Docker 会自动建但属主为 root；Linux 上建议自建）
+#
+# 启动：
+#   docker compose up -d
+#
+# 查看日志：
+#   docker compose logs -f
+
+services:
+  ci-self-heal-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ci-self-heal-bot:latest
+    container_name: ci-self-heal-bot
+    restart: unless-stopped
+
+    # 宿主端口用 HOST_PORT（可被 .env / shell 覆盖）；容器内固定监听 8080
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+
+    env_file:
+      - .env
+
+    environment:
+      # 固化 Docker 内路径与端口（覆盖 .env 中可能的主机值）
+      - CIHEAL_BOT_ROOT=/app
+      - CIHEAL_PI_BASE_DIR=/run/secrets/ci-self-heal-pi
+      - CIHEAL_DATA_ROOT=/var/lib/ci-self-heal
+      - NODE_ENV=production
+      - PORT=8080
+
+    volumes:
+      # Pi 认证 / 模型配置（只读）
+      - ./secrets/pi:/run/secrets/ci-self-heal-pi:ro
+      # 可写数据（work/bare/audit/logs + SQLite）：直接持久化到宿主文件系统，
+      # 默认 compose 目录下 ./data，可用 CIHEAL_HOST_DATA_DIR 覆盖
+      - ${CIHEAL_HOST_DATA_DIR:-./data}:/var/lib/ci-self-heal
+      # Maven 本地仓库：复用宿主 ~/.m2（v1 设计决策，见 src/pipeline/worktree.ts sandbox
+      # 记录：concurrency=1 下共享可写 .m2，跨 pipeline/宿主构建复用缓存是有意收益）。
+      # 需隔离时改 CIHEAL_HOST_M2_DIR（.env 中必须用绝对路径，~ 不会被展开）。
+      # 注意：容器以 root 运行，Linux 宿主上它新写的 artifact 属主为 root，见部署手册 §6
+      - ${CIHEAL_HOST_M2_DIR:-~/.m2}:/root/.m2
+
+    # 健康检查：webhook 端点无独立 /health，用 TCP 端口探活
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('http');http.get('http://localhost:8080/',r=>{process.exit(0)}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

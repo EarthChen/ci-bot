@@ -74,6 +74,22 @@ interface BareClone {
 
 const bareClones = new Map<string, BareClone>();
 
+/** 项目级异步锁：同项目多 MR 并发修复时，共享 bare 上的 git 操作
+ *  （初始 clone / refspec 配置 / fetch / worktree add）不得竞态。
+ *  Promise-chain mutex：只锁秒级 git 操作，agent 运行（分钟级）完全并行；
+ *  持锁者失败不死锁队列。 */
+const projectLocks = new Map<string, Promise<void>>();
+
+export async function withProjectLock<T>(
+	projectId: string,
+	fn: () => Promise<T>,
+): Promise<T> {
+	const prev = projectLocks.get(projectId) ?? Promise.resolve();
+	const result = prev.catch(() => {}).then(fn);
+	projectLocks.set(projectId, result.then(() => undefined, () => undefined));
+	return result;
+}
+
 /**
  * Resolve the shared bare-clone cache root, derived from CIHEAL_DATA_ROOT.
  * Kept as a function (not a const) so it reads env lazily — the module is
@@ -260,7 +276,8 @@ export async function createWorktree(
 ): Promise<string> {
 	const mode = process.env.CIHEAL_WORKTREE_MODE ?? "real";
 	if (mode === "fake") return fakeWorktree(workDir, event);
-	return realWorktree(workDir, event);
+	// 项目锁：并发 MR 的 bare clone/worktree 管道串行，agent 运行不受影响
+	return withProjectLock(event.projectId, () => realWorktree(workDir, event));
 }
 
 /** 判断 barePath 是否已是合法的 bare git 仓库（用于复用，避免重复 clone）。 */

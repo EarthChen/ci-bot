@@ -126,9 +126,11 @@ export function buildDecisionPrompt(decision: {
 	].join("\n");
 }
 
-/** CI Repair scheduling policy: serialize per projectId, request up to 4 parallel repos. */
+/** CI Repair scheduling policy: 串行键为 project+MR（同 MR 的重复 pipeline
+ *  与 resume 串行），同项目不同 MR 可并行（多服务并发），跨项目天然并行；
+ *  上限 4 个 key，受 BOT_CONCURRENCY 全局封顶。 */
 export const CI_REPAIR_SCHEDULING_POLICY: SchedulingPolicy = {
-	serialKey: (event) => event.projectId,
+	serialKey: (event) => `${event.projectId}:${event.mrIid ?? event.ref}`,
 	maxParallel: 4,
 };
 

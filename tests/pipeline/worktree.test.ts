@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
-import { createWorktree } from "../../src/pipeline/worktree.js";
+import { createWorktree, withProjectLock } from "../../src/pipeline/worktree.js";
 import type { PipelineEvent } from "../../src/types.js";
 
 const exec = promisify(execFile);
@@ -192,5 +192,43 @@ describe("createWorktree (real git, local file:// remote)", () => {
 		await git(remote.path, "update-ref", `refs/heads/ci-self-heal/dev-${sha2.slice(0, 8)}`, sha1);
 		const repoPath = await createWorktree(join(root, "w2"), event(sha2, "dev", remote.path));
 		expect(await git(repoPath, "rev-parse", "HEAD")).toBe(sha2);
+	});
+});
+
+describe("withProjectLock — 同项目 bare clone 操作串行化（多 MR 并发防竞态）", () => {
+	it("同 key 并发调用不重叠", async () => {
+		let live = 0;
+		let maxLive = 0;
+		const task = () =>
+			withProjectLock("p1", async () => {
+				live++;
+				maxLive = Math.max(maxLive, live);
+				await new Promise((r) => setTimeout(r, 10));
+				live--;
+			});
+		await Promise.all([task(), task(), task()]);
+		expect(maxLive).toBe(1);
+	});
+
+	it("不同 key 可重叠", async () => {
+		let live = 0;
+		let maxLive = 0;
+		const task = (key: string) =>
+			withProjectLock(key, async () => {
+				live++;
+				maxLive = Math.max(maxLive, live);
+				await new Promise((r) => setTimeout(r, 10));
+				live--;
+			});
+		await Promise.all([task("p1"), task("p2")]);
+		expect(maxLive).toBe(2);
+	});
+
+	it("前一个失败不死锁后续调用", async () => {
+		const first = withProjectLock("p1", async () => {
+			throw new Error("git exploded");
+		});
+		await expect(first).rejects.toThrow("git exploded");
+		await expect(withProjectLock("p1", async () => 42)).resolves.toBe(42);
 	});
 });

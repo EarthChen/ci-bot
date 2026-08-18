@@ -43,7 +43,7 @@ src/
     retention.ts           # audit/scene 保留策略
   webhook/receiver.ts      # POST /webhook：IP allowlist → 限流 → X-Gitlab-Token 验签 → 路径穿越校验 → builds[] 解析 failedStages → 修复开关（query `repair=1|true`，缺参=纯播报）→ stage 排除/去重入队 → onNewPipeline hook（决策作废）→ 即时播报
   agent-runtime/
-    scheduler.ts           # 调度：per-key 串行 + 跨 key 并行，pipeline-id 幂等去重 + 崩溃自警；可决策转交注册决策；enqueueResume（决策恢复）；skipStages 排除；routed 转交/终局通知
+    scheduler.ts           # 调度：串行键=project+MR（同项目多 MR 可并发）+ 全局 BOT_CONCURRENCY 封顶，pipeline-id 幂等去重 + 崩溃自警；可决策转交注册决策；enqueueResume（决策恢复）；skipStages 排除；routed 转交/终局通知
     runtime.ts             # SharedAgentRuntime：Pi session 创建、模型策略、资源加载、token 预算监控、执行循环
   worker/
     manager.ts             # SubprocessWorkerManager：per-event spawn 子进程，cwd/env 隔离；decidable escalated 保留现场；cleanupScene/runResume

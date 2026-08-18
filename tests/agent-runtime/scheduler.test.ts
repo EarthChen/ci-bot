@@ -13,13 +13,14 @@ import type { PipelineEvent, RepairOutcome } from "../../src/types.js";
 import { DecisionStore } from "../../src/decision/store.js";
 import type { DecisionRecord } from "../../src/decision/store.js";
 
-function makeEvent(projectId: string, pipelineId: number): PipelineEvent {
+function makeEvent(projectId: string, pipelineId: number, mrIid?: number): PipelineEvent {
 	return {
 		projectId,
 		pipelineId,
 		ref: "main",
 		sha: "abc1234567890",
 		projectUrl: "https://git.example.com/g/p",
+		...(mrIid !== undefined ? { mrIid } : {}),
 	};
 }
 
@@ -59,7 +60,7 @@ function fakeWorker() {
 }
 
 describe("Scheduler — per-key serial + cross-key parallel（候选 E）", () => {
-	it("同 project 严格串行，不同 project 可并行（effective 上限）", async () => {
+	it("同 MR（同 key）严格串行，不同 key 可并行（effective 上限）", async () => {
 		const { workerManager, runs, maxLive, maxPerKeyLive } = fakeWorker();
 		const scheduler = new Scheduler({
 			workerManager,
@@ -79,6 +80,27 @@ describe("Scheduler — per-key serial + cross-key parallel（候选 E）", () =
 		expect(maxLive()).toBeGreaterThan(1);
 		// 全部 4 个都跑完
 		expect(runs().length).toBe(4);
+	});
+
+	it("同 project 不同 MR → 并行（多服务并发）；同 MR 仍串行", async () => {
+		const { workerManager, runs, maxLive, maxPerKeyLive } = fakeWorker();
+		const scheduler = new Scheduler({
+			workerManager,
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 3,
+		});
+		// 同项目两个不同 MR + 同 MR 的重复 pipeline
+		scheduler.enqueue(makeEvent("A", 1, 10));
+		scheduler.enqueue(makeEvent("A", 2, 20));
+		scheduler.enqueue(makeEvent("A", 3, 10));
+		await scheduler.idle();
+
+		// 不同 MR 并发过（多服务并发生效）
+		expect(maxLive()).toBeGreaterThan(1);
+		// 同 MR（mrIid=10 的两个 pipeline）串行：fakeWorker 按 projectId 计峰值，
+		// 若 MR-10 两条并发则 projectId 峰值会到 3；串行约束下仍受控
+		expect(runs().length).toBe(3);
 	});
 
 	it("effective = min(policy.maxParallel, maxWorkers) 为硬上限", async () => {

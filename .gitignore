@@ -35,3 +35,10 @@ data/
 # durable audit traces + bot log (runtime artifacts, not source)
 .audit/
 .logs/
+
+# Docker secrets (operator-managed, NEVER commit)
+# 逐层展开才能重新包含嵌套的 *.example（父目录被排除时 ! 规则无效）
+secrets/*
+!secrets/pi
+secrets/pi/*
+!secrets/pi/*.example

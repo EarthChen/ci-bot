@@ -52,6 +52,8 @@ pnpm build
 pnpm start
 ```
 
+容器化部署（Docker Compose，镜像自带 JDK 8 + Maven + glab 完整修复运行时）见 `docs/docker-deployment.md`。
+
 真实链路端到端演练（预检 → 选 pipeline → webhook 投递 → 监控 → 结果解读）见 `docs/real-run-playbook.md`。
 
 ## 配置
@@ -108,6 +110,7 @@ e2e 测试用真实子进程 + stub session（无真实 LLM），通过 sidecar 
 - agent skill：`src/agents/ci-repair/resources/skills/ci-self-heal-playbook/`
 - Pi 运行时配置指南：`docs/pi-agent-configuration.md`
 - 真实链路演练：`docs/real-run-playbook.md`
+- Docker 部署手册：`docs/docker-deployment.md`
 
 ## 许可证
 

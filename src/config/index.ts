@@ -24,7 +24,7 @@ export interface BotConfig {
 	readonly dingtalkClientSecret: string;
 	/** DingTalk default group conversation ID for notifications. */
 	readonly dingtalkConversationId: string;
-	/** Global worker concurrency cap. Ticket 01 hardcodes effective N=1. */
+	/** Global worker concurrency cap. Effective = min(policy.maxParallel, this). */
 	readonly concurrency: number;
 	/** Comma-separated GitLab egress IP/CIDR allowlist. Empty = skip. */
 	readonly ipAllowlist: readonly string[];

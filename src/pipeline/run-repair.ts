@@ -471,6 +471,82 @@ export function parseDiffFiles(diff: string): string[] {
 	return [...new Set(files)];
 }
 
+/**
+ * Build a compact per-file index of an MR diff (path + added/removed line
+ * counts). Written next to mr-diff.patch so the agent orients on the change
+ * set from a ~1KB index instead of scanning a multi-MB patch (MR !281 perf).
+ * Supports both `diff --git` headers and the plain unified `---/+++` pairs
+ * glab emits. Returns "" when no files are found — callers then skip the
+ * index file.
+ */
+export function buildDiffIndex(diff: string): string {
+	interface Entry {
+		path: string;
+		adds: number;
+		dels: number;
+		added: boolean;
+		deleted: boolean;
+	}
+	const entries: Entry[] = [];
+	let cur: Entry | null = null;
+	let minusDevNull = false;
+	let minusPath: string | null = null;
+	for (const line of diff.split("\n")) {
+		const gitHeader = line.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/);
+		if (gitHeader) {
+			cur = { path: gitHeader[2], adds: 0, dels: 0, added: false, deleted: false };
+			entries.push(cur);
+			minusDevNull = false;
+			minusPath = null;
+			continue;
+		}
+		const minus = line.match(/^--- (.+?)\s*$/);
+		if (minus) {
+			minusDevNull = minus[1] === "/dev/null";
+			minusPath = minusDevNull ? null : minus[1];
+			continue;
+		}
+		const plus = line.match(/^\+\+\+ (.+?)\s*$/);
+		if (plus) {
+			if (plus[1] === "/dev/null") {
+				// Pure deletion — the file named by the preceding --- line.
+				if (minusPath != null) {
+					cur = { path: minusPath, adds: 0, dels: 0, added: false, deleted: true };
+					entries.push(cur);
+				} else {
+					cur = null;
+				}
+			} else {
+				let path = plus[1];
+				// Strip a/ b/ prefixes when symmetric, or b/ on a new file.
+				if (
+					minusPath != null &&
+					path.startsWith("b/") &&
+					minusPath.startsWith("a/") &&
+					minusPath.slice(2) === path.slice(2)
+				) {
+					path = path.slice(2);
+				} else if (minusDevNull && path.startsWith("b/")) {
+					path = path.slice(2);
+				}
+				cur = { path, adds: 0, dels: 0, added: minusDevNull, deleted: false };
+				entries.push(cur);
+			}
+			continue;
+		}
+		if (!cur) continue;
+		if (line.startsWith("+")) cur.adds++;
+		else if (line.startsWith("-")) cur.dels++;
+	}
+	if (entries.length === 0) return "";
+	const lines = [`MR diff 文件索引（${entries.length} 个文件）：`];
+	for (const e of entries) {
+		const tag = e.added ? "（新增）" : e.deleted ? "（删除）" : "";
+		lines.push(`${e.path}  +${e.adds} -${e.dels}${tag}`);
+	}
+	return lines.join("\n");
+}
+
 /** Build/CI config files are never editable, even inside the MR diff. */
 function isForbiddenConfig(p: string): boolean {
 	return /(^|\/)(pom\.xml|build\.gradle|build\.gradle\.kts|settings\.gradle|settings\.gradle\.kts|Dockerfile|\.gitlab-ci\.yml)$/.test(

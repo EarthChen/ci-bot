@@ -34,6 +34,8 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 
 从 CI 日志定失败 stage，并用**路径闸**决定修还是转交。这一步先于诊断：stage 不在范围或报错文件在 `src/main`，直接转交，不烧预算。
 
+**读 MR diff 的姿势**：先读 bot 提供的文件索引（`mr-diff-index.txt`，逐文件 +/- 行数）掌握改动面，再只对相关文件从 `mr-diff.patch` 精确截取（grep/sed 定位）；**勿通读全量 diff**——大 MR 的 diff 可达数万行，通读烧光上下文。
+
 - **test**（Surefire/Gradle test 红）→ 进入诊断 G1（class 1/2/3 可修）；可改测试/文档与 **MR diff 内**的 `src/main`（有限放宽，见铁律 1）；diff 外 `src/main` 一律转交。
 - **static-analysis**（SpotBugs/PMD 报告）→ 违规文件在 **MR diff 文件集内** 即可修（含 `src/main`）：改对应文件使其满足规则；超出 diff → 转交。
 - **checkstyle**（风格检查红）→ 同上：diff 内的文件（含 `src/main`）可修；超出 diff → 转交。

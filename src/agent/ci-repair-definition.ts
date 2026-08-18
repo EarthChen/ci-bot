@@ -15,6 +15,7 @@ import type { AgentRunInput } from "./runner.js";
 import { join as joinPath } from "node:path";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { buildDiffIndex } from "../pipeline/run-repair.js";
 
 /**
  * Resolve the CI Repair agent's resource directory (bundled with the bot release).
@@ -30,8 +31,12 @@ function resolveCiRepairResources(): string {
 function buildCiPrompt(input: AgentRunInput, cwd: string): string {
 	const ciLogPath = joinPath(cwd, "ci-log.txt");
 	const mrDiffPath = joinPath(cwd, "mr-diff.patch");
+	const diffIndexPath = joinPath(cwd, "mr-diff-index.txt");
 	writeText(ciLogPath, input.ciLog);
 	if (input.mrDiff) writeText(mrDiffPath, input.mrDiff);
+	// Perf（MR !281）：给 agent 一份 ~1KB 的文件索引，避免它通读数 MB 的全量 diff。
+	const diffIndex = input.mrDiff ? buildDiffIndex(input.mrDiff) : "";
+	if (diffIndex) writeText(diffIndexPath, diffIndex);
 
 	return [
 		`/skill:ci-self-heal-playbook`,
@@ -42,6 +47,11 @@ function buildCiPrompt(input: AgentRunInput, cwd: string): string {
 		`# 输入文件（用 read 工具读取，不要靠 prompt 里的内容）`,
 		`- CI 日志：${ciLogPath}`,
 		input.mrDiff ? `- MR diff：${mrDiffPath}` : `- MR diff：无`,
+		...(diffIndex
+			? [
+					`- MR diff 文件索引：${diffIndexPath}（先读它掌握改动面，再按路径从 MR diff 精确截取；勿通读全量 diff）`,
+			  ]
+			: []),
 		``,
 		`# MR 提交（你自己完成，勿依赖 bot）`,
 		`- 源分支（push 到此）：${input.sourceBranch}`,

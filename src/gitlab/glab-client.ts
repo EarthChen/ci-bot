@@ -106,14 +106,21 @@ export class GlabGitLabClient implements GitLabClient {
 		// Headless CI-log fetch via the REST API. `glab ci trace` is a TUI-only,
 		// interactive command (prompts for a job, emits terminal escapes) and is
 		// unusable from a non-interactive worker. So we list the pipeline's jobs
-		// then fetch each job's trace and concatenate them.
+		// then fetch the FAILED jobs' traces and concatenate them.
+		//
+		// Failed-only on purpose (MR !281 perf): successful/skipped job traces
+		// bloat the agent's context (they pushed error markers past any scan
+		// window) without diagnostic value. Fallback to all jobs when none is
+		// marked failed, so a log is never silently empty.
 		const jobsJson = await this.runGlab([
 			"api",
 			`/projects/${projectId}/pipelines/${pipelineId}/jobs`,
 		]);
 		const jobs = parseJobs(jobsJson);
+		const failed = jobs.filter((j) => j.status === "failed");
+		const targets = failed.length > 0 ? failed : jobs;
 		const parts: string[] = [];
-		for (const job of jobs) {
+		for (const job of targets) {
 			if (job.id == null) continue;
 			const trace = await this.runGlab([
 				"api",

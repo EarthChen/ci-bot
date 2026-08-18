@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRepair, extractPatch, parseDiffFiles } from "../../src/pipeline/run-repair.js";
+import { runRepair, extractPatch, parseDiffFiles, buildDiffIndex } from "../../src/pipeline/run-repair.js";
 import type { Worktree } from "../../src/pipeline/worktree.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import type { AgentRunner, AgentRunInput } from "../../src/agent/runner.js";
@@ -358,5 +358,57 @@ describe("runRepair — 部分修复 MR", () => {
 			expect(out.mrUrl).toBe("https://git.example.com/g/p/-/merge_requests/77");
 		}
 		expect(remove).not.toHaveBeenCalled();
+	});
+});
+
+describe("buildDiffIndex", () => {
+	it("glab 统一格式：逐文件增删行数（MR !281 实测形状）", () => {
+		const diff = [
+			"--- src/main/java/A.java",
+			"+++ src/main/java/A.java",
+			"@@ -1,2 +1,3 @@",
+			"+added line",
+			"-removed line",
+			"+added another",
+			" context",
+			"--- src/test/java/B.java",
+			"+++ src/test/java/B.java",
+			"@@ -0,0 +1,2 @@",
+			"+new test line 1",
+			"+new test line 2",
+		].join("\n");
+		expect(buildDiffIndex(diff)).toBe(
+			[
+				"MR diff 文件索引（2 个文件）：",
+				"src/main/java/A.java  +2 -1",
+				"src/test/java/B.java  +2 -0",
+			].join("\n"),
+		);
+	});
+
+	it("diff --git 格式同样支持", () => {
+		const diff = ["diff --git a/x.java b/x.java", "@@ -1 +1 @@", "+a"].join("\n");
+		expect(buildDiffIndex(diff)).toContain("x.java  +1 -0");
+	});
+
+	it("新增/删除文件标注（dev/null 侧）", () => {
+		const diff = [
+			"--- /dev/null",
+			"+++ src/main/java/New.java",
+			"@@ -0,0 +1 @@",
+			"+x",
+			"--- src/main/java/Old.java",
+			"+++ /dev/null",
+			"@@ -1 +0,0 @@",
+			"-y",
+		].join("\n");
+		const idx = buildDiffIndex(diff);
+		expect(idx).toContain("src/main/java/New.java  +1 -0（新增）");
+		expect(idx).toContain("src/main/java/Old.java  +0 -1（删除）");
+	});
+
+	it("空 diff / 无 diff 标记 → 空字符串（调用方不写索引文件）", () => {
+		expect(buildDiffIndex("")).toBe("");
+		expect(buildDiffIndex("random text\nno diff markers")).toBe("");
 	});
 });

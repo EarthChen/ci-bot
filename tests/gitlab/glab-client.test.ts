@@ -136,3 +136,50 @@ describe("GlabGitLabClient.createMr", () => {
 		expect(createCall).toContain("--squash-before-merge=true");
 	});
 });
+
+describe("GlabGitLabClient.fetchCiLog", () => {
+	const jobsReply = (jobs: ReadonlyArray<Record<string, unknown>>) =>
+		JSON.stringify(jobs);
+
+	it("只拉取失败 job 的 trace——成功/跳过 job 不进 agent 上下文（MR !281 提速）", async () => {
+		const { calls, run } = recordingRunner([
+			{
+				match: /pipelines\/42\/jobs$/,
+				reply: jobsReply([
+					{ id: 1, name: "spotless-format", status: "success", stage: "format" },
+					{ id: 2, name: "build-and-test", status: "failed", stage: "build" },
+					{ id: 3, name: "quality", status: "skipped", stage: "check" },
+				]),
+			},
+			{ match: /jobs\/2\/trace$/, reply: "FAILED TEST TRACE" },
+		]);
+		const client = new GlabGitLabClient(run);
+
+		const log = await client.fetchCiLog("31041", 42);
+
+		expect(log).toContain("FAILED TEST TRACE");
+		expect(log).toContain("# Job 2 build-and-test [failed]");
+		// 只发了一次 trace 请求：成功/跳过 job 的 trace 根本不拉
+		expect(calls.filter((c) => c.join(" ").includes("/trace"))).toHaveLength(1);
+	});
+
+	it("无失败 job 时降级为全量拼接（避免空日志丢失上下文）", async () => {
+		const { run } = recordingRunner([
+			{
+				match: /pipelines\/42\/jobs$/,
+				reply: jobsReply([
+					{ id: 1, name: "a", status: "success", stage: "s" },
+					{ id: 2, name: "b", status: "success", stage: "s" },
+				]),
+			},
+			{ match: /jobs\/1\/trace$/, reply: "TRACE-A" },
+			{ match: /jobs\/2\/trace$/, reply: "TRACE-B" },
+		]);
+		const client = new GlabGitLabClient(run);
+
+		const log = await client.fetchCiLog("31041", 42);
+
+		expect(log).toContain("TRACE-A");
+		expect(log).toContain("TRACE-B");
+	});
+});

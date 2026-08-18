@@ -35,7 +35,7 @@ const candidates: readonly ModelCandidate[] = [
 	{
 		provider: "amar-coding-plan",
 		model: "qwen3.8-max",
-		defaultThinkingLevel: "high",
+		defaultThinkingLevel: "medium",
 		compaction: {
 			enabled: true,
 			reserveTokens: 32768,

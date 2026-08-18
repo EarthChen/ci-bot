@@ -72,7 +72,7 @@
 输出 `escalated`，reason 写明：
 
 - class 4：`class 4 flaky：<具体信号，如时间相关断言/网络依赖>，转交人工复现`。
-- class 5：`class 5 非单测失败：<编译错/依赖错，失败 stage=build>，转交人工`。
+- class 5：`class 5 非单测失败：<依赖错，失败 stage=build>，转交人工`（bot 早筛形状，仅依赖错；编译错由 agent 判定后用你自己的 reason）。
 
 ## 轻量测试结构重构（class 1/2 允许）
 

@@ -21,7 +21,7 @@
 
 ## 2. 选定目标 pipeline（失败类型判定）
 
-bot v1 只修**单测失败**；编译/依赖错会被 class-5 早筛直接升级转交（不起 agent，省预算）。
+bot v1 只修**单测失败**；依赖错会被 class-5 早筛直接升级转交（不起 agent，省预算）。编译错放行给 agent 判 class 2/5：仅测试编译挂 = class 2 可修（改测试适配新签名），src/main 编译挂 = class 5 转交。
 
 ```bash
 # .env 已有 GITLAB_URL / GITLAB_TOKEN；MR 的 head pipeline
@@ -36,7 +36,7 @@ curl -sf -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
   "$GITLAB_URL/api/v4/projects/<projectId>/jobs/<jobId>/trace"
 ```
 
-判定：trace 中**无** `COMPILATION ERROR` / `cannot find symbol` / `Could not resolve dependencies` 等标记，且有 `Tests run: ... Failures: n` / `Failed tests:` → 单测失败，可跑。
+判定：`Could not resolve dependencies` / `Could not find artifact` 等依赖错 → class-5 早筛直接转交；`COMPILATION ERROR` / `cannot find symbol` → 编译错，放行 agent 判 class 2/5（仅 src/test 编译挂 = class 2，进修复）；无以上标记且有 `Tests run: ... Failures: n` / `Failed tests:` → 单测失败，进修复。后两类都会起 agent，可跑。
 
 ## 3. 启动服务
 

@@ -37,7 +37,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 - **test**（Surefire/Gradle test 红）→ 进入诊断 G1（class 1/2/3 可修）；**只改测试/文档**，不得碰 `src/main`（G3 不变）。
 - **static-analysis**（SpotBugs/PMD 报告）→ 违规文件在 **MR diff 文件集内** 即可修（含 `src/main`）：改对应文件使其满足规则；超出 diff → 转交。
 - **checkstyle**（风格检查红）→ 同上：diff 内的文件（含 `src/main`）可修；超出 diff → 转交。
-- **build**（编译/`cannot resolve`/依赖）→ **转交**（class 5，bot 已早筛，仍复核）。
+- **build**（编译/依赖）→ 依赖错 bot 已早筛转交；编译错由你分类：生产代码（src/main）编译挂 = class 5 转交；仅测试编译挂（生产编译过）= class 2 可修。
 
 **路径闸（按 diff 白名单）**：可修文件必须落在 **MR diff 文件集**（本次 pipeline 的 MR 改动文件）内。test 失败只允许 `src/test|it`/`docs`；static-analysis/checkstyle 失败允许 diff 内的任意文件（含 `src/main`）。任何 patch 文件不在 diff 内 → 转交（bot 白名单校验兜底）。
 
@@ -69,7 +69,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 - class 2：MR diff 改了 `src/main/`，测试没跟上（签名/行为变）。
 - class 3：CI 显示某路径未覆盖，或 spec 要求的行为无测试。
 - class 4：本地通过、CI 失败；时间/网络/并发相关。
-- class 5：`BUILD FAILURE` 编译错；`cannot resolve` 依赖错；非 test phase。
+- class 5：生产代码（`src/main`）编译失败；`cannot resolve` 依赖错；非 test phase。仅测试编译挂归 class 2。
 
 详表（含混淆优先级）见 [diagnosis-detail](references/diagnosis-detail.md)。
 

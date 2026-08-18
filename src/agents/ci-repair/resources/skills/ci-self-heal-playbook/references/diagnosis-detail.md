@@ -79,7 +79,7 @@
 - 失败 stage 不是 `test`（是 `build`/`compile`/`package`）。
 - `Could not find artifact`。
 
-**处理**：bot 代码已用关键词早筛 class 5，但 agent 仍需复核——若误判为 class 5 实为 class 2（测试编译挂因被测签名变），应归 class 2。判断：生产代码编译挂 = class 5；仅测试编译挂且生产编译通过 = class 2。
+**处理**：bot 代码只早筛依赖错；编译错一律交你判定。判断：生产代码编译挂 = class 5；仅测试编译挂且生产编译通过 = class 2（典型：被测签名变更，改测试适配）。
 
 ## 混淆与优先级
 

@@ -36,7 +36,7 @@
 | --- | --- | --- |
 | test | `src/test/`、`src/it/`（含 resources）、`docs/`、`.md` | 一律**转交**（含任何 `src/main`） |
 | static-analysis / checkstyle | diff 内**任意文件**（含 `src/main`） | 一律**转交** |
-| build | 不进入（class 5 转交） | — |
+| build | 编译错进入，由 agent 分类（class 2 按 test 行规则修测试 / class 5 转交）；依赖错 bot 早筛转交，不进入 | — |
 
 要点：
 

@@ -121,4 +121,14 @@ describe("isDecidableEscalation", () => {
 		} as unknown as AgentResult;
 		expect(isDecidableEscalation(result)).toBe(false);
 	});
+
+	it("false for class-5 diagnosis（无决策价值，不冻干现场）", () => {
+		const result: AgentResult = {
+			kind: "escalated",
+			diagnosis: { failureClass: 5 as const, summary: "src/main compile error" },
+			reason: "class 5 handoff",
+			source: "agent",
+		};
+		expect(isDecidableEscalation(result)).toBe(false);
+	});
 });

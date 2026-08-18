@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runRepair } from "../../src/pipeline/run-repair.js";
 import type { Worktree } from "../../src/pipeline/worktree.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
-import type { AgentRunner } from "../../src/agent/runner.js";
+import type { AgentRunner, AgentRunInput } from "../../src/agent/runner.js";
 import type { GitLabClient } from "../../src/gitlab/glab-client.js";
 import type { AgentResult, PipelineEvent } from "../../src/types.js";
 
@@ -31,6 +31,17 @@ function stubAgent(result: AgentResult): AgentRunner {
 	return { run: async () => result };
 }
 
+/** Spy runner: records run() calls; satisfies the full AgentRunner interface. */
+function spyAgent(result: AgentResult): { agent: AgentRunner; run: ReturnType<typeof vi.fn> } {
+	const run = vi.fn(async (_input: AgentRunInput): Promise<AgentResult> => result);
+	const agent: AgentRunner = {
+		run,
+		continue: async () => result,
+		close: () => {},
+	};
+	return { agent, run };
+}
+
 function stubGlab(opts: {
 	fetchCiLog?: (projectId: string, pipelineId: number) => Promise<string>;
 } = {}): GitLabClient {
@@ -38,6 +49,7 @@ function stubGlab(opts: {
 		fetchCiLog:
 			opts.fetchCiLog ?? (async () => "some unit test failure output"),
 		fetchMrDiff: async () => "",
+		fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: null }),
 		createMr: async () => ({ url: "https://mr/x" }),
 	};
 }
@@ -68,11 +80,13 @@ describe("runRepair — 编排 + worktree seam", () => {
 		expect(remove).toHaveBeenCalledWith(cwd);
 	});
 
-	it("class5 命中 → escalated，不起 agent / 不建 worktree", async () => {
+	it("class5 依赖错命中 → escalated，不起 agent / 不建 worktree", async () => {
 		const { worktree, remove } = fakeWorktree();
 		const dt = new InMemoryDingTalkNotifier();
 		const glab = stubGlab({
-			fetchCiLog: async () => "BUILD FAILURE Compilation failure in X",
+			fetchCiLog: async () =>
+				"[ERROR] Could not resolve dependencies for project de.example:demo:jar:1.0\n" +
+				"[ERROR] Could not find artifact com.example:missing:pom:9.9",
 		});
 		const agent = stubAgent({ kind: "fixed", diagnosis: { failureClass: 1, summary: "x" }, summary: "y" });
 		const out = await runRepair(
@@ -82,6 +96,75 @@ describe("runRepair — 编排 + worktree seam", () => {
 		expect(out.kind).toBe("escalated");
 		expect(worktree.create).not.toHaveBeenCalled();
 		expect(remove).toHaveBeenCalledWith(cwd);
+	});
+
+	it("测试编译错（被测系统签名变更）→ 早筛放行，交给 agent 判 class 2/5", async () => {
+		const { worktree } = fakeWorktree();
+		const dt = new InMemoryDingTalkNotifier();
+		// 真实形状（MR !281 pipeline 100033426）：编译错误全部指向 src/test。
+		const glab = stubGlab({
+			fetchCiLog: async () =>
+				[
+					"[INFO] BUILD FAILURE",
+					"[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.7.0:testCompile (default-testCompile) on project svc: Compilation failure: Compilation failure: ",
+					"[ERROR] /builds/g/p/svc/src/test/java/com/example/FooTest.java:[86,84] cannot find symbol",
+					"[ERROR]   symbol:   variable ROOM_GIFT_RANK",
+				].join("\n"),
+		});
+		const { agent, run } = spyAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 5, summary: "x" },
+			reason: "handoff",
+			source: "runtime",
+		});
+		const out = await runRepair(
+			{ agent, glab, dingtalk: dt, cwd, worktree },
+			event,
+		);
+		expect(run).toHaveBeenCalledTimes(1);
+		expect(worktree.create).toHaveBeenCalled();
+		expect(out.kind).toBe("escalated");
+	});
+
+	it("src/main 编译错同样放行给 agent——分类是 agent 的职责，早筛只拦依赖错", async () => {
+		const { worktree } = fakeWorktree();
+		const dt = new InMemoryDingTalkNotifier();
+		const glab = stubGlab({
+			fetchCiLog: async () =>
+				"[ERROR] /src/main/java/com/example/Calculator.java:[10,20] cannot find symbol\nBUILD FAILURE",
+		});
+		const { agent, run } = spyAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 5, summary: "x" },
+			reason: "handoff",
+			source: "runtime",
+		});
+		await runRepair({ agent, glab, dingtalk: dt, cwd, worktree }, event);
+		expect(run).toHaveBeenCalledTimes(1);
+		expect(worktree.create).toHaveBeenCalled();
+	});
+
+	it("依赖错出现在 8KB 之后仍被早筛拦截（全文扫描，无窗口截断）", async () => {
+		const { worktree } = fakeWorktree();
+		const dt = new InMemoryDingTalkNotifier();
+		const pad = "x".repeat(16 * 1024);
+		const glab = stubGlab({
+			fetchCiLog: async () =>
+				`${pad}\n[ERROR] Could not resolve dependencies for project de.example:demo:jar:1.0`,
+		});
+		const { agent, run } = spyAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 1, summary: "x" },
+			reason: "handoff",
+			source: "runtime",
+		});
+		const out = await runRepair(
+			{ agent, glab, dingtalk: dt, cwd, worktree },
+			event,
+		);
+		expect(out.kind).toBe("escalated");
+		expect(run).not.toHaveBeenCalled();
+		expect(worktree.create).not.toHaveBeenCalled();
 	});
 
 	it("worktree.create 抛错 → failed，清理仍执行", async () => {
@@ -111,6 +194,10 @@ describe("runRepair — 编排 + worktree seam", () => {
 			run: async () => {
 				throw new Error("agent boom");
 			},
+			continue: async () => {
+				throw new Error("not used in this test");
+			},
+			close: () => {},
 		};
 		const out = await runRepair(
 			{ agent, glab, dingtalk: dt, cwd, worktree },

@@ -50,7 +50,7 @@ src/
     entry.ts               # 子进程入口：env-switch DI + runRepair / runResumeWorker（mode 分叉）
     main.ts                # 子进程 bootstrap
   pipeline/
-    run-repair.ts          # G2 编排：fetch CI log → class-5 早筛 → agent run → extractPatch → G3 校验 → MR 监控重试 → 钉钉；导出 isDecidableEscalation
+    run-repair.ts          # G2 编排：fetch CI log → class-5 早筛（仅依赖错）→ agent run → extractPatch → G3 校验 → MR 监控重试 → 钉钉；导出 isDecidableEscalation
     run-resume.ts          # 恢复编排：SessionManager.open 重建保留 session → 决策注入 → 复用 stage-3+ pipeline
     repair-outcome.ts      # 终局处理：通知 → audit trace（含 decisionId/chainDepth）→ worktree 清理
     worktree.ts            # 共享 bare clone + per-pipeline git worktree（agent 真实工作区）
@@ -98,11 +98,11 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 - **G3 diff 白名单（ADR-0004）**：单测失败只改测试/文档，严禁碰 `src/main`；static-analysis/Checkstyle 失败可修 **MR diff 内**文件（含 src/main），禁压制式修复（`@SuppressWarnings`/删规则），改动绑定报告的 file:line:rule；diff 外一律转交。`validatePatchPaths` 在 createMR 前兜底校验
 - **绝不自动 merge**：所有 MR 强制人工 review
 - **人工决策边界**：`/heal` 决策（test/prod/drop）只消除 agent 诊断不确定性，不授予新权限；**一轮介入**——恢复后再次转交即终局，不产生新决策；决策仅群聊可发，decider 入审计
-- **现场保留**：可决策转交（agent 主动 escalated 且带 diagnosis）冻干现场（cwd + worktree + session + branch），注册 awaiting_decision；TTL 默认 24h（`CIHEAL_DECISION_TTL_MS`）到期清扫；新 pipeline 到达（含被排除的）作废同项目待决策并清现场；class 5 早筛/bot 故障类转交不保留现场
+- **现场保留**：可决策转交（agent 主动 escalated 且带 diagnosis）冻干现场（cwd + worktree + session + branch），注册 awaiting_decision；TTL 默认 24h（`CIHEAL_DECISION_TTL_MS`）到期清扫；新 pipeline 到达（含被排除的）作废同项目待决策并清现场；class 5 转交（bot 早筛或 agent 判定）/bot 故障类转交不保留现场
 - **stage 排除**：`CIHEAL_SKIP_STAGES`（逗号分隔）中的 stage 全部失败时跳过修复（不起 agent、不注册决策），即时播报保留；builds 缺失时降级为原行为
 - **钉钉通知与 MR 解耦**：agent 永不持有钉钉工具；bot 代码在确定性 pipeline 节点调钉钉。转交通知一律走 ProjectRouter 到路由群（与失败播报同群）。`CIHEAL_DINGTALK_MODE=fake` 时改为记录不推送
 - **预算软上限**：SharedAgentRuntime 在 `turn_end` 累计 token，超 `BOT_BUDGET_TOKENS`（总 200k）或 `BOT_BUDGET_PER_TURN_TOKENS`（单 turn 50k）→ `session.abort()` + 钉钉告警。软上限风险：abort 在 turn 结束后触发，单 turn 可能已超支。resume 预算独立计
-- **class 5 早筛**：bot 在 spawn agent 前用关键词粗筛编译/依赖错，省预算（与 stage 排除互补：一个按内容、一个按 stage 名）
+- **class 5 早筛**：bot 在 spawn agent 前用关键词筛**依赖错**直接转交，省预算；编译错放行 agent 判 class 2/5（仅测试编译挂 = class 2 可修）——分类是 agent 的职责（与 stage 排除互补：一个按内容、一个按 stage 名）
 - **class 3 读 spec**：补缺失测试时断言 spec 规定的正确行为，而非当前代码行为（避免固化 bug）
 - **secret 管理**：`GITLAB_WEBHOOK_SECRET` / `GITLAB_TOKEN` / `DINGTALK_CLIENT_ID` / `DINGTALK_CLIENT_SECRET` 走 `.env`（chmod 600 + gitignore），绝不硬编码；`CIHEAL_PI_BASE_DIR` 下的 `auth.json` 不入库不打包
 - **模型候选链**：bot 按 `config/model-candidates.json` 顺序选同族首个可用 provider/model；运行中失败直接转人工（不跨族降级、不切换 provider）

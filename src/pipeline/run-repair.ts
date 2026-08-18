@@ -3,7 +3,7 @@
  *
  * Sequence:
  *   1. fetch CI log (glab)
- *   1a. class-5 early filter (keyword screen) — skip agent, save budget
+ *   1a. class-5 early filter (dependency-resolution screen) — skip agent, save budget
  *   2. create worktree + run agent session (diagnosis → fix → doc sync)
  *   3. on "fixed": extract real git patch → G3 validate → re-run tests → create MR
  *   4. notify DingTalk (success) — bot code, deterministic, agent never holds it
@@ -63,12 +63,18 @@ export interface WorkerDeps {
  * escalations may enter the awaiting-decision state (scene retention +
  * /heal). Runner-generated escalations (budget exceeded / session error /
  * unparseable output) stay pure handoffs.
+ *
+ * Class-5 diagnoses are excluded regardless of source: compile/dependency
+ * failures leave no decision to make (/heal only resolves diagnosis
+ * uncertainty), so no scene is retained — same shape as the bot's own
+ * early-filter escalations.
  */
 export function isDecidableEscalation(result: AgentResult): boolean {
 	return (
 		result.kind === "escalated" &&
 		result.source === "agent" &&
-		Boolean(result.diagnosis)
+		Boolean(result.diagnosis) &&
+		result.diagnosis.failureClass !== 5
 	);
 }
 
@@ -98,10 +104,10 @@ export async function runRepair(
 		});
 	}
 
-	// 1a. Class-5 early filter: scan CI log for compile/dependency errors
-	//     BEFORE spawning the agent. This is pure bot code (deterministic),
-	//     saving budget on failures the agent can't fix anyway (src/main
-	//     compile errors, dependency resolution failures are out of scope).
+	// 1a. Class-5 early filter: scan CI log for dependency-resolution errors
+	//     BEFORE spawning the agent. Pure bot code (deterministic), saving
+	//     budget on failures whose outcome is a foregone conclusion. Compile
+	//     errors pass through — class 2 vs 5 attribution is the agent's call.
 	const class5Reason = detectClass5(ciLog);
 	if (class5Reason) {
 		const reason = `class 5 非单测失败：${class5Reason}，转交人工（不起 agent）`;
@@ -799,21 +805,27 @@ function log(stage: string, event: PipelineEvent): void {
 const TEST_PATH_RE = /(?:^|\/)(?:test|it)\//;
 
 /**
- * Class-5 early filter: scan CI log for compile/dependency errors BEFORE
- * spawning the agent. These failures are out of scope (src/main compile
- * errors, dependency resolution) — the agent can't fix them (G3 forbids
- * src/main), and running a session wastes budget.
+ * Class-5 early filter: scan CI log for dependency-resolution errors BEFORE
+ * spawning the agent. Pure bot code, a deterministic keyword screen over
+ * failures whose outcome is a foregone conclusion (escalation) — saves
+ * budget and avoids pending /heal decisions with nothing to decide.
  *
- * Pure bot code, deterministic keyword screen. Returns a human-readable
- * reason when a class-5 signal is found, or null if the log looks like a
- * real unit-test failure (agent should handle it).
+ * Compile errors are intentionally NOT screened here: attributing a compile
+ * error to src/main (class 5) vs src/test-only (class 2, fixable by editing
+ * tests) is the agent's classification call (diagnosis-detail.md owns the
+ * class 2/5 boundary). A keyword screen cannot do path attribution reliably
+ * across build tools, and a misjudgment would intercept repairable failures
+ * (e.g. MR !281 pipeline 100033426: a signature change in the system under
+ * test broke test compilation).
+ *
+ * Scans the whole log — dependency errors can sit late in concatenated
+ * multi-job logs; a window cutoff misses them. Returns a human-readable
+ * reason when a signal is found, or null when the agent should handle it.
  */
 function detectClass5(ciLog: string): string | null {
-	// Normalize: case-insensitive, first 8 KB is enough for signal detection
-	// (CI logs can be huge; we don't need to scan megabytes for keywords).
-	const sample = ciLog.slice(0, 8192).toLowerCase();
+	const lower = ciLog.toLowerCase();
 	for (const signal of CLASS5_SIGNALS) {
-		if (sample.includes(signal.keyword)) {
+		if (lower.includes(signal.keyword)) {
 			return signal.reason;
 		}
 	}
@@ -821,29 +833,15 @@ function detectClass5(ciLog: string): string | null {
 }
 
 /**
- * Class-5 signal table. Keywords are case-insensitive (sample is lowercased).
- * Each entry maps a CI-log signal to a human-readable reason for escalation.
+ * Class-5 signal table — dependency-resolution failures only (see
+ * detectClass5 for why compile errors go to the agent). Keywords are
+ * case-insensitive (the log is lowercased before matching).
  */
 const CLASS5_SIGNALS: ReadonlyArray<{ keyword: string; reason: string }> = [
-	// Maven compile failures (note: "BUILD FAILURE" alone is ambiguous —
-	// Maven test failures also print it. We match the compile-specific lines.)
 	{
-		keyword: "compilation failure",
-		reason: "Maven 编译失败（Compilation Failure）",
+		keyword: "could not resolve",
+		reason: "依赖解析失败（Could not resolve）",
 	},
-	{ keyword: "cannot find symbol", reason: "编译错（cannot find symbol）" },
-	{
-		keyword: "error: ; generated by the javac compiler",
-		reason: "javac 编译错",
-	},
-	// Gradle compile failures
-	{ keyword: "compilation failed", reason: "Gradle 编译失败" },
-	{
-		keyword: "execution failed for task ':compilejava'",
-		reason: "Gradle compileJava 失败",
-	},
-	// Dependency resolution failures
-	{ keyword: "could not resolve", reason: "依赖解析失败（Could not resolve）" },
 	{ keyword: "cannot resolve dependencies", reason: "依赖解析失败" },
 	{
 		keyword: "could not find artifact",

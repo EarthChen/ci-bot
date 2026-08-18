@@ -32,11 +32,11 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, rm, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { logger } from "../util/log.js";
-import { resolveBareRoot } from "../config/paths.js";
+import { resolveBareRoot, resolveDataRoot } from "../config/paths.js";
 import { resolveRetentionPolicy } from "../config/retention.js";
 import type { PipelineEvent } from "../types.js";
 
@@ -450,22 +450,49 @@ export async function removeWorktree(workDir: string): Promise<void> {
 	// pruned on next bare-clone operation). Best-effort.
 	await rm(repoPath, { recursive: true, force: true }).catch(() => {});
 }
+/**
+ * GIT_ASKPASS helper: answers GitLab's basic-auth prompts with the standard
+ * `oauth2` user and the PAT from the process env. The token never lands in
+ * the script file nor in the remote URL, so it cannot leak into `.git/config`.
+ * 
+ * Why askpass instead of Bearer extraHeader: the target GitLab instance
+ * rejects `Authorization: Bearer <PAT>` (the host dev env smuggled around it
+ * via the macOS keychain, so it never surfaced), while the docker image has
+ * no keychain at all — clone/fetch died on "could not read Username".
+ */
+const ASKPASS_SCRIPT = [
+	"#!/bin/sh",
+	'case "$1" in',
+	'  *[Uu]sername*) echo "oauth2" ;;',
+	'  *[Pp]assword*) echo "$GITLAB_TOKEN" ;;',
+	"  *) exit 1 ;;",
+	"esac",
+	"",
+].join("\n");
+
+/** Ensure the askpass helper exists under the data root; returns its path. */
+function ensureAskPassScript(): string {
+	const script = join(resolveDataRoot(), ".home", "git-askpass.sh");
+	mkdirSync(dirname(script), { recursive: true });
+	writeFileSync(script, ASKPASS_SCRIPT, { encoding: "utf8", mode: 0o700 });
+	return script;
+}
 
 /** Build the git env with the GitLab token for auth (private repos).
- * Injects the token via http.extraHeader (Authorization: Bearer) so the bare
- * clone + fetch authenticate without embedding the token in the remote URL
- * (which would leak into `.git/config`). Ticket 06 hardens with restricted user. */
-function gitEnv(): Record<string, string> {
+ * Provides `oauth2:<token>` basic auth via GIT_ASKPASS (GitLab's accepted
+ * git-over-http scheme); Bearer extraHeader is rejected by this instance and
+ * was previously papered over by the host keychain.
+ * Ticket 06 hardens with restricted user. */
+export function gitEnv(): Record<string, string> {
 	const token = process.env.GITLAB_TOKEN ?? "";
 	const url = process.env.GITLAB_URL ?? "";
 	return {
 		...process.env,
 		GITLAB_HOST: url,
 		GIT_TERMINAL_PROMPT: "0",
-		// Bearer auth via extraHeader — GitLab accepts personal/acess tokens here.
-		...(token
-			? { GIT_HTTP_EXTRA_HEADER: `Authorization: Bearer ${token}` }
-			: {}),
+		// oauth2:<token> basic auth via askpass — works in docker (no keychain)
+		// and on the host alike. Token stays in env, never in the script file.
+		...(token ? { GIT_ASKPASS: ensureAskPassScript() } : {}),
 	};
 }
 

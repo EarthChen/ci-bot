@@ -47,10 +47,10 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 
 - 禁压制式修复：不得用 `@SuppressWarnings` / Checkstyle suppression / 删规则让 gate 绿，必须真修。
 - 改动绑定违规的 `file:line:rule`：只在被报告处附近改，不在同文件顺手重构无关代码。
-- 修复需改 diff 外文件 → 转交（别半修）。
+- 修复需改 diff 外文件 → diff 外项转交；diff 内项照常修并在转交前开部分修复 MR（见「部分修复也要开 MR」节），不得丢弃已通过自测的成果。
 - 单测失败改 diff 内 `src/main` 时同样禁压制式修复，且**严禁靠改写失败测试断言凑绿**——那是 G3 防的「非法让测试通过」陷阱；测试语义改动必须在 MR 描述逐条申报。
 
-**注意**：一个 static-analysis/checkstyle stage 的违规常跨多个文件。只要其中**任一需修文件不在 diff 内**，该 stage 绿不了 → 整体**转交**（不要只修 diff 内部分就开 MR）。
+**注意**：一个 static-analysis/checkstyle stage 的违规常跨多个文件。只要其中**任一需修文件不在 diff 内**，该 stage 绿不了 → 转交，但**必须先把 diff 内的违规全部修完并开部分修复 MR**（见「部分修复也要开 MR」节），MR 描述写明剩余项与人工处理建议；严禁只转交而丢弃已通过自测的修复成果（MR !288 实测：20/21 项经部分 MR 保留）。
 
 完成判据：stage 已定 + 报错文件路径已列出 + 已分流（修 / 转交）。
 信号详表见 [scope-gate-detail](references/scope-gate-detail.md)。

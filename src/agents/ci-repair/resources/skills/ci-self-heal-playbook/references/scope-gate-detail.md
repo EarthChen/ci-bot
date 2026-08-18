@@ -50,7 +50,7 @@
 
 - **禁压制式修复**：不得用 `@SuppressWarnings` / Checkstyle suppression / 删规则让 gate 绿，必须真修。压制只是把噪声转给人审。
 - **改动绑定违规 `file:line:rule`**：只在被报告处附近改，不在同文件顺手重构无关代码。
-- **跨文件**：收集该 stage 所有违规文件，逐个过路径闸。**任一需修文件不在 diff 内** → 整体转交（别只修 diff 内部分就开 MR）。`escalated.reason` 写明 `G0: <file> 的 <rule> 不在 diff 内，需人工`。
+- **跨文件**：收集该 stage 所有违规文件，逐个过路径闸。**任一需修文件不在 diff 内** → 转交 diff 外项，但 diff 内违规照常修并开部分修复 MR（见 SKILL.md「部分修复也要开 MR」节）。`escalated.reason` 写明 `G0: <file> 的 <rule> 不在 diff 内，需人工`。
 - diff 内文件（含 `src/main`）按对应规则真修（修正命名、补注解、调格式、修类型），套用 class 1 playbook。
 
 ## 四、转交输出示例

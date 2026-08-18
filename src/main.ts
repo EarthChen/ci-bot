@@ -14,13 +14,13 @@ import { SubprocessWorkerManager } from "./worker/manager.js";
 import { mountWebhook } from "./webhook/receiver.js";
 import { StreamDingTalkNotifier } from "./notify/stream-dingtalk.js";
 import {
-	InMemoryDingTalkNotifier,
 	type DingTalkMessage,
 } from "./notify/dingtalk.js";
 import {
 	createPipelineFailureNotifier,
 	type GroupMessageSender,
 } from "./notify/pipeline-notification.js";
+import { SidecarGroupSender } from "./notify/sidecar-sender.js";
 import { createEscalationNotifier } from "./notify/escalation-notifier.js";
 import { WebhookRouteStore } from "./notify/route-store.js";
 import {
@@ -34,7 +34,7 @@ import { createDecisionLifecycle } from "./decision/lifecycle.js";
 import { loadGroupRouting, ProjectRouter } from "./notify/project-router.js";
 import { DingTalkStreamBot } from "./notify/stream-bot.js";
 import { logger } from "./util/log.js";
-import { resolveDecisionDbPath, resolveRouteDbPath, resolveWorkRoot } from "./config/paths.js";
+import { resolveDecisionDbPath, resolveLogDir, resolveRouteDbPath, resolveWorkRoot } from "./config/paths.js";
 import { DecisionStore } from "./decision/store.js";
 
 async function main(): Promise<void> {
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
 	// Fake DingTalk mode records instead of pushing (no real traffic in dev).
 	const groupSender: GroupMessageSender =
 		process.env.CIHEAL_DINGTALK_MODE === "fake"
-			? new InMemoryDingTalkNotifier()
+			? new SidecarGroupSender(join(resolveLogDir(), "dingtalk-fake.jsonl"))
 			: notifier;
 
 	// Dynamic route store (SQLite under DATA_ROOT): the /route command writes,

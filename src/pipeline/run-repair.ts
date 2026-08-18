@@ -170,6 +170,8 @@ export async function runRepair(
 	try {
 		result = await agent.run(agentInput);
 	} catch (err) {
+		// close → dispose 存档 session（best-effort）；异常路径不得泄漏 session
+		agent.close();
 		return finishRepair({
 			dingtalk,
 			cwd: deps.cwd,
@@ -196,6 +198,9 @@ export async function runRepair(
 		// diagnosis is decidable — finishRepair then skips the worktree cleanup
 		// and flags the outcome so the main process registers a decision.
 		const decidable = isDecidableEscalation(result);
+		// close → dispose 存档 agent-session.jsonl 到审计目录（MR !281 run 6
+		// 缺口：escalated 不 close 导致现场清理后 session 遥测全失）
+		agent.close();
 		return finishRepair({
 			dingtalk,
 			cwd: deps.cwd,

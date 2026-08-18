@@ -37,6 +37,22 @@ function stubAgent(result: AgentResult): AgentRunner {
 	};
 }
 
+/** stubAgent 变体：close 是 spy（验证终局关闭 → session 存档）。 */
+function stubAgentSpyClose(result: AgentResult): {
+	agent: AgentRunner;
+	close: ReturnType<typeof vi.fn>;
+} {
+	const close = vi.fn();
+	return {
+		agent: {
+			run: async () => result,
+			continue: async () => result,
+			close,
+		},
+		close,
+	};
+}
+
 /** Spy runner: records run() calls; satisfies the full AgentRunner interface. */
 function spyAgent(result: AgentResult): { agent: AgentRunner; run: ReturnType<typeof vi.fn> } {
 	const run = vi.fn(async (_input: AgentRunInput): Promise<AgentResult> => result);
@@ -196,6 +212,7 @@ describe("runRepair — 编排 + worktree seam", () => {
 		const { worktree, remove } = fakeWorktree();
 		const dt = new InMemoryDingTalkNotifier();
 		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
+		const close = vi.fn();
 		const agent: AgentRunner = {
 			run: async () => {
 				throw new Error("agent boom");
@@ -203,7 +220,7 @@ describe("runRepair — 编排 + worktree seam", () => {
 			continue: async () => {
 				throw new Error("not used in this test");
 			},
-			close: () => {},
+			close,
 		};
 		const out = await runRepair(
 			{ agent, glab, dingtalk: dt, cwd, worktree },
@@ -212,6 +229,8 @@ describe("runRepair — 编排 + worktree seam", () => {
 		expect(out.kind).toBe("failed");
 		if (out.kind === "failed") expect(out.summary).toContain("agent-run");
 		expect(remove).toHaveBeenCalledWith(cwd);
+		// session 存档依赖 close（dispose）；agent.run 抛错路径同样不得泄漏 session
+		expect(close).toHaveBeenCalledOnce();
 	});
 
 	it("agent 返回 runtime escalated（预算/异常）→ 非可决策，清理照常", async () => {
@@ -237,7 +256,7 @@ describe("runRepair — 编排 + worktree seam", () => {
 		const { worktree, remove } = fakeWorktree();
 		const dt = new InMemoryDingTalkNotifier();
 		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
-		const agent = stubAgent({
+		const { agent, close } = stubAgentSpyClose({
 			kind: "escalated",
 			diagnosis: { failureClass: 3, summary: "spec unreadable" },
 			reason: "need human decision",
@@ -253,6 +272,9 @@ describe("runRepair — 编排 + worktree seam", () => {
 			expect(out.diagnosisSummary).toBe("spec unreadable");
 		}
 		expect(remove).not.toHaveBeenCalled();
+		// escalated 终局必须 close：session 存档（agent-session.jsonl）依赖 dispose，
+		// run 6（MR !281 静态分析）因缺 close 丢失全部 session 遥测
+		expect(close).toHaveBeenCalledOnce();
 	});
 });
 

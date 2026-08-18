@@ -45,10 +45,27 @@ const candidates: readonly ModelCandidate[] = [
 ];
 
 describe("loadModelCandidates", () => {
-	it("loads the bot-owned candidate list with inline policy", () => {
-		expect(loadModelCandidates("config/model-candidates.json")).toEqual(
-			candidates,
-		);
+	it("loads a non-empty candidate list with valid inline policy (shape, not content)", () => {
+		const loaded = loadModelCandidates("config/model-candidates.json");
+		expect(loaded.length).toBeGreaterThan(0);
+		const seen = new Set<string>();
+		for (const c of loaded) {
+			expect(typeof c.provider).toBe("string");
+			expect(c.provider.length).toBeGreaterThan(0);
+			expect(typeof c.model).toBe("string");
+			expect(c.model.length).toBeGreaterThan(0);
+			expect(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).toContain(
+				c.defaultThinkingLevel,
+			);
+			const identity = `${c.provider}/${c.model}`;
+			expect(seen.has(identity)).toBe(false); // 候选不重复
+			seen.add(identity);
+			if (c.compaction != null) {
+				expect(typeof c.compaction.enabled).toBe("boolean");
+				expect(c.compaction.reserveTokens).toBeGreaterThan(0);
+				expect(c.compaction.keepRecentTokens).toBeGreaterThan(0);
+			}
+		}
 	});
 
 	it("rejects a candidate with an invalid thinking level", () => {

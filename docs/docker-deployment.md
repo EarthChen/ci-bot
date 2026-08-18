@@ -17,7 +17,17 @@
 | Maven 本地仓库 | `/root/.m2` | 默认挂宿主 `~/.m2` 复用缓存（v1 共享可写设计）；`CIHEAL_HOST_M2_DIR` 可切隔离目录 |
 | 监听端口 | 容器内固定 `8080` | 宿主端口由 `HOST_PORT` 控制（默认 8080） |
 
-compose 的 `environment` 会把上述三个 `CIHEAL_*` 路径与 `PORT=8080` 固化，**覆盖 `.env` 中可能残留的主机路径**——`.env` 里这三项填什么都不影响容器运行。
+compose 的 `environment` 优先级高于 `env_file: .env`，下表变量被固化为容器内值——**`.env` 里填什么都不生效**（静默覆盖：不改不报错，改了也不起作用）：
+
+| 被覆盖的变量 | Docker 固化为 | 想真正改，应该改 |
+| --- | --- | --- |
+| `CIHEAL_BOT_ROOT` | `/app` | 改不了（资源已烘入镜像） |
+| `CIHEAL_PI_BASE_DIR` | `/run/secrets/ci-self-heal-pi` | 换 `./secrets/pi` 挂载内容 |
+| `CIHEAL_DATA_ROOT` | `/var/lib/ci-self-heal` | 改宿主挂载点 `CIHEAL_HOST_DATA_DIR` |
+| `PORT` | `8080` | 改宿主映射端口 `HOST_PORT` |
+| `NODE_ENV` | `production` | — |
+
+其余 `.env` 变量仍生效：必填凭据（`GITLAB_WEBHOOK_SECRET`/`GITLAB_TOKEN`/`DINGTALK_CLIENT_ID`/`DINGTALK_CLIENT_SECRET`）与可选行为（`GITLAB_URL`/`BOT_CONCURRENCY`/`GITLAB_IP_ALLOWLIST`/`CIHEAL_SKIP_STAGES` 等）。`HOST_UID`/`HOST_GID`/`HOST_PORT`/`CIHEAL_HOST_DATA_DIR`/`CIHEAL_HOST_M2_DIR` 是 compose 插值专用变量，bot 本体不读取。
 
 ## 2. 前置条件
 

@@ -2,21 +2,21 @@
 
 ## Project
 
-CI 单测自愈 bot：headless 长驻 TS 服务，监听 GitLab pipeline 失败 webhook → 共享 Pi Agent Runtime 驱动 agent 诊断单测失败根因 → 只修测试/文档（绝不碰生产代码 `src/main`）→ 开 MR 供人工 review → 钉钉推送结果。v1 仅处理单测失败。
+CI 单测自愈 bot：headless 长驻 TS 服务，监听 GitLab pipeline 失败 webhook → 共享 Pi Agent Runtime 驱动 agent 诊断失败根因 → 修复测试/文档（单测失败绝不碰 `src/main`；static-analysis/Checkstyle 可修 MR diff 内文件，ADR-0004）→ 开 MR 供人工 review → 钉钉推送结果。可决策的转交（agent 诊断不确定）会冻干现场，人工在群内 `/heal` 决策后 bot 跨进程恢复原 session 继续修复；确定性失败 stage（如 format）经 `CIHEAL_SKIP_STAGES` 排除，不进修复。
 
-> [推断] "CI 单测自愈" 是当前唯一 vertical agent；架构已抽离出共享 Agent Runtime（`src/agent-runtime`），后续 vertical agent 复用同一运行时。
+> [推断] "CI 自愈" 是当前唯一 vertical agent；架构已抽离出共享 Agent Runtime（`src/agent-runtime`），后续 vertical agent 复用同一运行时。
 
 ## Stack
 
-- **语言/运行时**：TypeScript（ES2022, NodeNext），Node ≥ 20
+- **语言/运行时**：TypeScript（ES2022, NodeNext），Node ≥ 20（CI 用 22）
 - **SDK**：`@earendil-works/pi-coding-agent` 0.84.0（agent 能力 + skill 加载 + session 管理）
 - **Web 框架**：Fastify 5（webhook 接收）
-- **日志**：pino 9（结构化 JSON）
+- **日志**：pino 9 + pino-roll（结构化 JSON）
 - **钉钉**：`dingtalk-stream` SDK（Stream 模式：主进程 WebSocket 接收 + SDK API 推送）
-- **存储**：better-sqlite3（动态群路由 SQLite，WAL；原生模块，已入 `allowBuilds` 审批）
+- **存储**：better-sqlite3（动态群路由 `group-routing.db` + 人工决策 `decisions.db`，均 WAL；原生模块，已入 `allowBuilds` 审批）
 - **测试**：vitest 2（forks singleFork，子进程测试隔离）
 - **构建**：tsc 直出 `dist/`（无 bundler）
-- **包管理**：pnpm（lockfile 提交；`onlyBuiltDependencies` 已声明）
+- **包管理**：pnpm 11（lockfile 提交；`allowBuilds` 已声明）
 
 ## Commands
 
@@ -27,7 +27,7 @@ pnpm typecheck        # tsc --noEmit（CI 门禁）
 pnpm test             # vitest run（全量）
 pnpm test:watch       # vitest watch
 pnpm dev              # tsx src/main.ts（开发模式）
-pnpm start            # node dist/main.js（生产）
+pnpm start            # prestart 自动 build；node --enable-source-maps dist/main.js（生产）
 pnpm audit           # pnpm audit --prod
 pnpm metrics          # node scripts/metrics-summary.mjs
 ```
@@ -36,61 +36,73 @@ pnpm metrics          # node scripts/metrics-summary.mjs
 
 ```text
 src/
-  main.ts                  # 入口：config + Fastify + StreamDingTalkBot/Notifier + scheduler + worker manager
-  config/index.ts          # .env 解析 + 配置校验；必填 CIHEAL_BOT_ROOT / CIHEAL_PI_BASE_DIR（绝对路径）缺失即抛
-  webhook/receiver.ts      # POST /webhook：IP allowlist → 限流 → X-Gitlab-Token 验签 → 项目ID路径穿越校验 → 修复开关（URL query `repair=1|true`，缺参=纯播报 notify-only）→ 去重 → 入队 + 分叉群通知
-  agent-runtime/scheduler.ts  # 调度能力（通用层）：per-key 串行 + 跨 key 并行（effective=min(maxParallel,maxWorkers)），pipeline-id 幂等去重 + worker 崩溃自警；SchedulingPolicy 由 vertical agent 声明
-  worker/
-    manager.ts             # SubprocessWorkerManager：per-event spawn 子进程，cwd/env 隔离；从 CIHEAL_PI_BASE_DIR 复制 Pi auth/models 到 .pi-agent
-    entry.ts               # 子进程入口：env-switch DI（agent/glab/dingtalk/verify 模式）+ runRepair
-    main.ts                # 子进程 bootstrap（import entry.main + exit）
-  pipeline/
-    run-repair.ts          # G2 编排：fetch CI log → class-5 早筛 → agent run → extractPatch → G3 校验 → verifyTestsGreen → createMR → 钉钉
-    worktree.ts            # 共享 bare clone + per-pipeline git worktree（agent 真实工作区）
+  main.ts                  # 入口：config + Fastify + StreamDingTalkBot/Notifier + scheduler + decision lifecycle（TTL sweep）
+  config/
+    index.ts               # .env 解析 + 配置校验；必填 CIHEAL_BOT_ROOT / CIHEAL_PI_BASE_DIR（绝对路径）缺失即抛
+    paths.ts               # DATA_ROOT 派生的全部可写路径（work/bare/audit/logs + 两个 SQLite db）
+    retention.ts           # audit/scene 保留策略
+  webhook/receiver.ts      # POST /webhook：IP allowlist → 限流 → X-Gitlab-Token 验签 → 路径穿越校验 → builds[] 解析 failedStages → 修复开关（query `repair=1|true`，缺参=纯播报）→ stage 排除/去重入队 → onNewPipeline hook（决策作废）→ 即时播报
   agent-runtime/
-    runtime.ts             # SharedAgentRuntime：创建 Pi session、模型策略、资源加载、token 预算监控、执行循环（垂直 agent 共享）
+    scheduler.ts           # 调度：per-key 串行 + 跨 key 并行，pipeline-id 幂等去重 + 崩溃自警；可决策转交注册决策；enqueueResume（决策恢复）；skipStages 排除；routed 转交/终局通知
+    runtime.ts             # SharedAgentRuntime：Pi session 创建、模型策略、资源加载、token 预算监控、执行循环
+  worker/
+    manager.ts             # SubprocessWorkerManager：per-event spawn 子进程，cwd/env 隔离；decidable escalated 保留现场；cleanupScene/runResume
+    entry.ts               # 子进程入口：env-switch DI + runRepair / runResumeWorker（mode 分叉）
+    main.ts                # 子进程 bootstrap
+  pipeline/
+    run-repair.ts          # G2 编排：fetch CI log → class-5 早筛 → agent run → extractPatch → G3 校验 → MR 监控重试 → 钉钉；导出 isDecidableEscalation
+    run-resume.ts          # 恢复编排：SessionManager.open 重建保留 session → 决策注入 → 复用 stage-3+ pipeline
+    repair-outcome.ts      # 终局处理：通知 → audit trace（含 decisionId/chainDepth）→ worktree 清理
+    worktree.ts            # 共享 bare clone + per-pipeline git worktree（agent 真实工作区）
+  decision/
+    store.ts               # DecisionStore（SQLite）：决策 CRUD + TTL sweep + invalidateByProject
+    heal-command.ts        # /heal <id> test|prod|drop [备注] 群命令（claim-then-enqueue + 补偿回滚）
+    lifecycle.ts           # onNewPipeline（新 pipeline 作废待决策 + 清现场 + 通知）+ startTtlSweep
   agent/
-    ci-repair-definition.ts  # CI Repair 垂直 agent 的 AgentDefinition（buildPrompt + resources 引用）
-    real-runner.ts         # RealAgentRunner：委托 SharedAgentRuntime，负责 CI 侧结构化结果解析 + 升级 + 预算钉钉告警
+    ci-repair-definition.ts  # CI Repair 垂直 agent 的 AgentDefinition（buildPrompt / buildContinuePrompt / buildDecisionPrompt）
+    real-runner.ts         # RealAgentRunner：委托 SharedAgentRuntime；run/continue/resume；session 文件发现（findSessionFile）
     model-selection.ts     # bot-owned 同族 provider/model 候选链（config/model-candidates.json + model-profiles.json）
     runner.ts / stub-session.ts  # AgentRunner 接口 + StubAgentRunner + e2e stub session
-  agents/ci-repair/        # CI Repair 垂直 agent 资源：resources/APPEND_SYSTEM.md、resources/skills/ci-self-heal-playbook/、result-parser.ts
-  gitlab/glab-client.ts    # glab CLI 包装：fetchCiLog / fetchMrDiff / createMr
+  agents/ci-repair/        # 垂直 agent 资源：APPEND_SYSTEM.md、skills/ci-self-heal-playbook/、result-parser.ts
+  gitlab/glab-client.ts    # glab CLI 包装：fetchCiLog / fetchMrDiff / fetchMrPipelineStatus / createMr
   notify/
-    dingtalk.ts            # DingTalkNotifier 接口 + InMemory（测试）
-    stream-dingtalk.ts     # StreamDingTalkNotifier：SDK API 推送（groupMessages/send）
+    dingtalk.ts / stream-dingtalk.ts  # DingTalkNotifier 接口 + InMemory（测试）+ SDK API 推送
     stream-bot.ts          # DingTalkStreamBot：主进程 WebSocket 接收 TOPIC_ROBOT
-    pipeline-notification.ts  # CI 失败群通知模板（移植 code-review-bot）+ 路由通知工厂
-    project-router.ts      # project 路径→群会话路由（五层：动态精确/通配→静态精确/通配→default）
-    route-store.ts         # SQLite 动态路由存储（webhook_routes 表；/route 写、resolve 每次直读）
-    route-command.ts / help-command.ts  # 群命令：/route add|rm|list（add 绑定当前群）、/help（仅群聊）
-    command-help.ts        # 命令帮助文案外置加载与渲染（config/command-help.json）
-  types.ts / util/log.ts   # 领域类型 + pino logger
-config/                    # model-candidates.json + group-routing.json + command-help.json（bot-owned，非敏感）
+    escalation-notifier.ts # routed 转交通知（待决策消息带 /heal 模板）+ 二次转交终局通知
+    pipeline-notification.ts  # CI 失败群即时播报模板（移植 code-review-bot）
+    project-router.ts      # project → 群路由（五层：动态精确/通配 → 静态精确/通配 → default）
+    route-store.ts         # SQLite 动态路由（webhook_routes 表；/route 写、resolve 直读）
+    route-command.ts / help-command.ts / command-help.ts  # 群命令 /route、/help + 文案外置（config/command-help.json）
+  types.ts / util/log.ts   # 领域类型（PipelineEvent.failedStages 等）+ pino logger
+config/                    # model-candidates.json + model-profiles.json + group-routing.json + command-help.json（bot-owned，非敏感）
 .pi/                       # bot 基础 settings.json（retry / skill-commands 全局策略）
-tests/                     # agent-runtime / agent / config / e2e / worker / notify / webhook / fixture
+tests/                     # agent-runtime / agent / config / decision / e2e / notify / pipeline / webhook / worker
 ```
 
-> CI：`[缺]` 无 `.github/workflows`（仅 `.github/modernize` 工具目录）。Git remote：`[缺]` 未配置。
+> CI：`.github/workflows/ci.yml`（pnpm 11 + Node 22，checkout 含 fixture submodule `fixtures/repo`（ci-bot-fixtures，公开），物化 class1/2/3-failing-test 本地分支后跑 typecheck + test）。Git remote：`github.com/EarthChen/ci-bot`，默认分支 master。
 
 ## Conventions
 
 - **ESM**：`type: module`，import 必须带 `.js` 扩展（NodeNext 解析）
 - **缩进**：tab
-- **DI via env-switch**：`CIHEAL_AGENT_MODE=stub|real`、`CIHEAL_GLAB_MODE=fake|real`、`CIHEAL_DINGTALK_MODE=fake|real`、`CIHEAL_SESSION_FACTORY=stub`、`CIHEAL_STUB_CI_LOG`、`CIHEAL_STUB_VERIFY` —— 测试用 fake/stub，生产用 real
+- **DI via env-switch**：`CIHEAL_AGENT_MODE=stub|real`、`CIHEAL_GLAB_MODE=fake|real`、`CIHEAL_DINGTALK_MODE=fake|real`、`CIHEAL_SESSION_FACTORY=stub`、`CIHEAL_STUB_CI_LOG`、`CIHEAL_STUB_VERIFY`、`CIHEAL_WORKTREE_MODE=fake` —— 测试用 fake/stub，生产用 real
 - **跨进程观测**：fake glab/dingtalk 把调用记到 cwd 下 sidecar JSON（`glab-mr-creates.json` / `dingtalk-sent.json` / `verify-calls.json`），父测试读回
-- **worker 隔离**：per-event 临时 cwd + 独立 `PI_CODING_AGENT_DIR`（=`.pi-agent`）+ 独立 env；worktree 在 `<cwd>/repo`，临时文件（ci-log.txt/mr-diff.patch）在 cwd 根（worktree 外）
+- **worker 隔离**：per-event 临时 cwd + 独立 `PI_CODING_AGENT_DIR`（=`.pi-agent`）+ 独立 env；worktree 在 `<cwd>/repo`
 - **prompt 极薄**：CI log/MR diff 写文件到 cwd，agent 用 read 工具读，不拼进 prompt
 - **patch 从 git diff 提取**：agent 自行执行（bash 改文件 + 跑测试），bot 从 `git diff --cached` 取真实 patch，不信任 agent 自述内容
 - **钉钉 Stream 边界**：WebSocket 接收只在主进程（长驻）；worker 子进程仅 SDK API 推送（无 WebSocket）
+- **session 持久化**：repair 路径用 `SessionManager.create(cwd)` 落盘到保留现场内（`.pi-agent/sessions/`），跨进程 resume 依赖它；`inMemory` 不落盘不可恢复
 
 ## Rules
 
-- **G3 权限边界**：bot 只写测试/文档，`src/main` 禁碰。发现生产代码 bug → 转交人工。`validatePatchPaths` 在 createMR 前校验，违规即升级不建 MR
+- **G3 diff 白名单（ADR-0004）**：单测失败只改测试/文档，严禁碰 `src/main`；static-analysis/Checkstyle 失败可修 **MR diff 内**文件（含 src/main），禁压制式修复（`@SuppressWarnings`/删规则），改动绑定报告的 file:line:rule；diff 外一律转交。`validatePatchPaths` 在 createMR 前兜底校验
 - **绝不自动 merge**：所有 MR 强制人工 review
-- **钉钉通知与 MR 解耦**：agent 永不持有钉钉工具；bot 代码在确定性 pipeline 节点（webhook 即时播报/成功/转交/异常/崩溃自警）调钉钉。群通知路由：静态 `config/group-routing.json` + 动态 SQLite（群内 `/route add <pattern>` 绑定当前群，优先级高于静态；`/help` 查看命令）。`CIHEAL_DINGTALK_MODE=fake` 时主进程播报与命令回复改为记录不推送
-- **预算软上限**：SharedAgentRuntime 在 `turn_end` 累计 token，超 `BOT_BUDGET_TOKENS`（总 200k）或 `BOT_BUDGET_PER_TURN_TOKENS`（单 turn 50k）→ `session.abort()` + 钉钉告警。软上限风险：abort 在 turn 结束后触发，单 turn 可能已超支
-- **class 5 早筛**：bot 在 spawn agent 前用关键词粗筛编译/依赖错，省预算
+- **人工决策边界**：`/heal` 决策（test/prod/drop）只消除 agent 诊断不确定性，不授予新权限；**一轮介入**——恢复后再次转交即终局，不产生新决策；决策仅群聊可发，decider 入审计
+- **现场保留**：可决策转交（agent 主动 escalated 且带 diagnosis）冻干现场（cwd + worktree + session + branch），注册 awaiting_decision；TTL 默认 24h（`CIHEAL_DECISION_TTL_MS`）到期清扫；新 pipeline 到达（含被排除的）作废同项目待决策并清现场；class 5 早筛/bot 故障类转交不保留现场
+- **stage 排除**：`CIHEAL_SKIP_STAGES`（逗号分隔）中的 stage 全部失败时跳过修复（不起 agent、不注册决策），即时播报保留；builds 缺失时降级为原行为
+- **钉钉通知与 MR 解耦**：agent 永不持有钉钉工具；bot 代码在确定性 pipeline 节点调钉钉。转交通知一律走 ProjectRouter 到路由群（与失败播报同群）。`CIHEAL_DINGTALK_MODE=fake` 时改为记录不推送
+- **预算软上限**：SharedAgentRuntime 在 `turn_end` 累计 token，超 `BOT_BUDGET_TOKENS`（总 200k）或 `BOT_BUDGET_PER_TURN_TOKENS`（单 turn 50k）→ `session.abort()` + 钉钉告警。软上限风险：abort 在 turn 结束后触发，单 turn 可能已超支。resume 预算独立计
+- **class 5 早筛**：bot 在 spawn agent 前用关键词粗筛编译/依赖错，省预算（与 stage 排除互补：一个按内容、一个按 stage 名）
 - **class 3 读 spec**：补缺失测试时断言 spec 规定的正确行为，而非当前代码行为（避免固化 bug）
 - **secret 管理**：`GITLAB_WEBHOOK_SECRET` / `GITLAB_TOKEN` / `DINGTALK_CLIENT_ID` / `DINGTALK_CLIENT_SECRET` 走 `.env`（chmod 600 + gitignore），绝不硬编码；`CIHEAL_PI_BASE_DIR` 下的 `auth.json` 不入库不打包
 - **模型候选链**：bot 按 `config/model-candidates.json` 顺序选同族首个可用 provider/model；运行中失败直接转人工（不跨族降级、不切换 provider）
@@ -98,8 +110,8 @@ tests/                     # agent-runtime / agent / config / e2e / worker / not
 
 ## Agent skills / 项目元信息
 
-- **Issue tracker**：`.scratch/<feature>/`（spec + issues，如 `.scratch/shared-agent-runtime/`）
+- **Issue tracker**：`.scratch/<feature>/`（spec + issues：ci-self-heal-bot / shared-agent-runtime / human-decision-resume）
 - **Triage labels**：needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix（见 `docs/agents/triage-labels.md`）
-- **Domain docs**：根 `CONTEXT.md` + `docs/adr/`（见 `docs/agents/domain.md`）
-- **Shared runtime ADR**：`docs/adr/0002-shared-runtime-static-vertical-agents.md`
-- **Real-run playbook**：`docs/real-run-playbook.md`（真实链路端到端运行：预检 → 选 pipeline → webhook 投递 → 监控 → 结果解读）
+- **Domain docs**：根 `CONTEXT.md`（领域词汇表）+ `docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽+session 复用重试 / 0005 现场保留与决策恢复）
+- **Real-run playbook**：`docs/real-run-playbook.md`（真实链路端到端：预检 → 选 pipeline → webhook 投递 → 监控 → 结果解读）
+- **Pi 配置指南**：`docs/pi-agent-configuration.md`

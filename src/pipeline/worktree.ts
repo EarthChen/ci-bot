@@ -51,12 +51,18 @@ const exec = promisify(execFile);
 const HEADS_REFSPEC = "+refs/heads/*:refs/heads/*";
 
 /**
+ * The bot's own repair-branch prefix (single source of truth: also used by
+ * the webhook receiver to ignore pipelines triggered by the bot's own MRs).
+ */
+export const REPAIR_BRANCH_PREFIX = "ci-self-heal/";
+
+/**
  * Negative refspec: never map the bot's own repair branches back into the
  * shared bare. The agent pushes `ci-self-heal/*` to origin; re-importing
  * them collides with the fresh worktree branch of a redelivery (MR !281
  * pipeline 100033426 incident). Requires git >= 2.29.
  */
-const EXCLUDE_REPAIR_REFSPEC = "^refs/heads/ci-self-heal/*";
+const EXCLUDE_REPAIR_REFSPEC = `^refs/heads/${REPAIR_BRANCH_PREFIX}*`;
 
 /** A bare-clone cache keyed by project id (shared across pipelines). */
 interface BareClone {
@@ -278,7 +284,7 @@ async function realWorktree(
 	const repoPath = join(workDir, "repo");
 	const barePath = await ensureBareClone(event.projectId, event.projectUrl);
 	await ensureShaPresent(barePath, event);
-	const branch = `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`;
+	const branch = `${REPAIR_BRANCH_PREFIX}${event.ref}-${event.sha.slice(0, 8)}`;
 	// Self-heal residue from a crashed/uncleaned prior run at the same sha:
 	// stale worktree metadata shields the ci-self-heal branch from deletion,
 	// and `worktree add -b` dies on "a branch named ... already exists".

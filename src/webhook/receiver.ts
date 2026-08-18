@@ -12,6 +12,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Scheduler } from "../agent-runtime/scheduler.js";
 import type { PipelineFailureNotifier } from "../notify/pipeline-notification.js";
 import type { PipelineEvent } from "../types.js";
+import { REPAIR_BRANCH_PREFIX } from "../pipeline/worktree.js";
 import { logger } from "../util/log.js";
 
 export interface WebhookConfig {
@@ -163,6 +164,26 @@ export async function mountWebhook(
 			return reply.code(202).send({ status: "ignored" });
 		}
 
+		// 4b. Bot-owned pipeline guard: the bot's own repair MR (source branch
+		//     ci-self-heal/*) fires pipeline webhooks back at the bot. These must
+		//     not broadcast and must not enter the repair queue — otherwise the
+		//     bot would try to heal its own repair MR (loop) and spam the group.
+		//     Repair-MR CI monitoring is worker-internal polling (ADR-0004), so
+		//     skipping here loses nothing. Also kept away from onNewPipeline so a
+		//     bot pipeline never invalidates the original MR's pending decision.
+		if (
+			event.mrSourceBranch?.startsWith(REPAIR_BRANCH_PREFIX)
+		) {
+			logger.info(
+				{
+					pipelineId: event.pipelineId,
+					mrSourceBranch: event.mrSourceBranch,
+				},
+				"bot-owned pipeline ignored",
+			);
+			return reply.code(202).send({ status: "ignored-bot-pipeline" });
+		}
+		
 		// 5. Repair opt-in gate: only `repair=1|true` in the webhook URL query
 		//    triggers the auto-repair; other events take the notify-only path
 		//    (CI-failure group broadcast, code-review-bot parity).

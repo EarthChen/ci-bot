@@ -101,6 +101,8 @@ describe("webhook pipeline-failure notification fan-out", () => {
 		/** Query string appended to /webhook (defaults to the repair opt-in). */
 		query?: string;
 		onNewPipeline?: (event: PipelineEvent) => Promise<void>;
+		/** Override the default failedPipeline payload. */
+		payload?: unknown;
 	}) {
 		const app = Fastify();
 		const scheduler = {
@@ -112,7 +114,7 @@ describe("webhook pipeline-failure notification fan-out", () => {
 			...(opts.notifier ? { pipelineNotifier: opts.notifier } : {}),
 			...(opts.onNewPipeline ? { onNewPipeline: opts.onNewPipeline } : {}),
 		});
-		const payload = failedPipeline(12345) as Record<string, unknown>;
+		const payload = (opts.payload ?? failedPipeline(12345)) as Record<string, unknown>;
 		const res = await app.inject({
 			method: "POST",
 			url: `/webhook${opts.query ?? "?repair=1"}`,
@@ -268,5 +270,86 @@ describe("webhook pipeline-failure notification fan-out", () => {
 
 		expect(res.statusCode).toBe(202);
 		expect(res.json()).toEqual({ status: "skipped" });
+	});
+});
+
+/** Pipeline event fired by the bot's own repair MR (source branch
+ *  ci-self-heal/*) — must never broadcast or re-enter the repair queue. */
+function botOwnedPipeline(): unknown {
+	return {
+		object_kind: "pipeline",
+		object_attributes: {
+			id: 999,
+			ref: "refs/merge-requests/287/head",
+			sha: "5e0b01c7872e5477",
+			status: "failed",
+		},
+		merge_request: {
+			source_branch: "ci-self-heal/refs/merge-requests/281/head-95fd03b8",
+			iid: 287,
+		},
+		project: {
+			id: 31041,
+			web_url: "https://gitlab.example.com/example/project",
+		},
+	};
+}
+
+describe("webhook bot-owned pipeline guard", () => {
+	const webhookConfig: WebhookConfig = {
+		webhookSecret: "secret",
+		ipAllowlist: [],
+		rateLimitMax: 100,
+		rateLimitWindowMs: 60_000,
+	};
+
+	async function injectBotPipeline(opts: {
+		query?: string;
+		notifier?: PipelineFailureNotifier;
+		onNewPipeline?: (event: PipelineEvent) => Promise<void>;
+	}) {
+		const app = Fastify();
+		const scheduler = {
+			enqueue: vi.fn().mockReturnValue("queued"),
+		} as unknown as Scheduler;
+		await mountWebhook(app, {
+			scheduler,
+			config: webhookConfig,
+			...(opts.notifier ? { pipelineNotifier: opts.notifier } : {}),
+			...(opts.onNewPipeline ? { onNewPipeline: opts.onNewPipeline } : {}),
+		});
+		const res = await app.inject({
+			method: "POST",
+			url: `/webhook${opts.query ?? "?repair=1"}`,
+			headers: { "x-gitlab-token": "secret" },
+			payload: botOwnedPipeline() as Record<string, unknown>,
+		});
+		await app.close();
+		return { res, scheduler };
+	}
+
+	it("bot 修复 MR 的 pipeline（repair=1）→ 不入队、不播报、不作废决策", async () => {
+		const notify = vi.fn().mockResolvedValue(undefined);
+		const onNewPipeline = vi.fn().mockResolvedValue(undefined);
+		const { res, scheduler } = await injectBotPipeline({
+			notifier: { notify },
+			onNewPipeline,
+		});
+
+		expect(res.statusCode).toBe(202);
+		expect(res.json()).toEqual({ status: "ignored-bot-pipeline" });
+		expect(scheduler.enqueue).not.toHaveBeenCalled();
+		expect(notify).not.toHaveBeenCalled();
+		// 关键：不能因 bot 自己的 pipeline 作废原 MR 的待决策
+		expect(onNewPipeline).not.toHaveBeenCalled();
+	});
+
+	it("notify-only 路径（无 repair 参数）同样静默跳过", async () => {
+		const notify = vi.fn().mockResolvedValue(undefined);
+		const { res } = await injectBotPipeline({ query: "", notifier: { notify } });
+
+		expect(res.statusCode).toBe(202);
+		expect(res.json()).toEqual({ status: "ignored-bot-pipeline" });
+		expect(notify).not.toHaveBeenCalled();
 	});
 });

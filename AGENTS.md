@@ -99,7 +99,7 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 - **绝不自动 merge**：所有 MR 强制人工 review
 - **人工决策边界**：`/heal` 决策（test/prod/drop）只消除 agent 诊断不确定性，不授予新权限；**一轮介入**——恢复后再次转交即终局，不产生新决策；决策仅群聊可发，decider 入审计
 - **现场保留**：可决策转交（agent 主动 escalated 且带 diagnosis）冻干现场（cwd + worktree + session + branch），注册 awaiting_decision；TTL 默认 24h（`CIHEAL_DECISION_TTL_MS`）到期清扫；新 pipeline 到达（含被排除的）作废同项目待决策并清现场；class 5 转交（bot 早筛或 agent 判定）/bot 故障类转交不保留现场
-- **stage 排除**：`CIHEAL_SKIP_STAGES`（逗号分隔）中的 stage 全部失败时跳过修复（不起 agent、不注册决策），即时播报保留；builds 缺失时降级为原行为
+- **stage 排除**：`CIHEAL_SKIP_STAGES`（逗号分隔）中的 stage 全部失败时跳过修复（不起 agent、不注册决策），即时播报保留并尾注「不在自愈范围」；builds 缺失时降级为原行为。修复入队成功的失败播报尾注「已开始修复」，消除失败卡与终局卡之间的静默窗口
 - **bot 自身 pipeline 忽略**：源分支为 `ci-self-heal/*` 的 pipeline（bot 修复 MR 触发）回流 webhook 时直接忽略——不播报、不入队、不触发 onNewPipeline（避免 bot 修自己的修复 MR 形成循环、避免作废原 MR 的待决策）；修复 MR 的 CI 监控由 worker 内部轮询驱动（ADR-0004），不受影响
 - **钉钉通知与 MR 解耦**：agent 永不持有钉钉工具；bot 代码在确定性 pipeline 节点调钉钉。转交通知一律走 ProjectRouter 到路由群（与失败播报同群）。`CIHEAL_DINGTALK_MODE=fake` 时改为记录不推送
 - **预算软上限**：SharedAgentRuntime 在 `turn_end` 累计 token，超 `BOT_BUDGET_TOKENS`（总 200k）或 `BOT_BUDGET_PER_TURN_TOKENS`（单 turn 50k）→ `session.abort()` + 钉钉告警。软上限风险：abort 在 turn 结束后触发，单 turn 可能已超支。resume 预算独立计

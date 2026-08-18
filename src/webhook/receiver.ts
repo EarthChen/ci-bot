@@ -10,7 +10,10 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Scheduler } from "../agent-runtime/scheduler.js";
-import type { PipelineFailureNotifier } from "../notify/pipeline-notification.js";
+import type {
+	PipelineFailureNotifier,
+	RepairBroadcastHint,
+} from "../notify/pipeline-notification.js";
 import type { PipelineEvent } from "../types.js";
 import { REPAIR_BRANCH_PREFIX } from "../pipeline/worktree.js";
 import { logger } from "../util/log.js";
@@ -215,7 +218,12 @@ export async function mountWebhook(
 		//    PipelineHandler). Decoupled from repair: notification failures
 		//    never affect the flow; stage-skipped pipelines keep their
 		//    broadcast (failure visibility is independent of repair scope).
-		await notifyQuietly(deps, req.body, event.pipelineId);
+		//    Repair-state footer: the group must know the bot is working on it
+		//    (or that this stage is excluded), closing the silence gap between
+		//    the failure card and the terminal result card.
+		const hint: RepairBroadcastHint =
+			status === "skipped" ? "stage-skipped" : "repair-started";
+		await notifyQuietly(deps, req.body, event.pipelineId, hint);
 		return reply.code(202).send({ status });
 	});
 }
@@ -254,10 +262,11 @@ async function notifyQuietly(
 	deps: MountWebhookDeps,
 	rawPayload: unknown,
 	pipelineId: number,
+	hint?: RepairBroadcastHint,
 ): Promise<void> {
 	if (!deps.pipelineNotifier) return;
 	try {
-		await deps.pipelineNotifier.notify(rawPayload);
+		await deps.pipelineNotifier.notify(rawPayload, hint);
 	} catch (err) {
 		logger.warn({ err, pipelineId }, "pipeline failure notification failed");
 	}

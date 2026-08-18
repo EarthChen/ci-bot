@@ -156,4 +156,39 @@ describe("createPipelineFailureNotifier", () => {
 
 		expect(sender.sentGroups).toHaveLength(0);
 	});
+
+	it("repair-started 提示 → 卡片尾部追加「已开始修复」（repair=1 入队成功）", async () => {
+		const sender = new InMemoryDingTalkNotifier();
+		const router = new ProjectRouter({}, "cid-default");
+		const notifier = createPipelineFailureNotifier({ router, sender });
+
+		await notifier.notify(fullPayload(), "repair-started");
+
+		expect(sender.sentGroups[0].message.text).toContain(
+			"🔧 CI 自愈 bot 已开始修复，完成后将推送结果",
+		);
+	});
+
+	it("stage-skipped 提示 → 卡片尾部追加「不在自愈范围」", async () => {
+		const sender = new InMemoryDingTalkNotifier();
+		const router = new ProjectRouter({}, "cid-default");
+		const notifier = createPipelineFailureNotifier({ router, sender });
+
+		await notifier.notify(fullPayload(), "stage-skipped");
+
+		expect(sender.sentGroups[0].message.text).toContain(
+			"该失败 stage 不在自愈范围（CIHEAL_SKIP_STAGES），不自动修复",
+		);
+	});
+
+	it("无提示（notify-only/移植原状）→ 卡片不带任何修复尾注", async () => {
+		const sender = new InMemoryDingTalkNotifier();
+		const router = new ProjectRouter({}, "cid-default");
+		const notifier = createPipelineFailureNotifier({ router, sender });
+
+		await notifier.notify(fullPayload());
+
+		expect(sender.sentGroups[0].message.text).not.toContain("自愈 bot");
+		expect(sender.sentGroups[0].message.text).not.toContain("不在自愈范围");
+	});
 });

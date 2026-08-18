@@ -124,9 +124,18 @@ export interface GroupMessageSender {
 	sendTo(conversationId: string, message: DingTalkMessage): Promise<void>;
 }
 
+/** Repair-state footer for the failure broadcast (receiver knows the state). */
+export type RepairBroadcastHint = "repair-started" | "stage-skipped";
+
+const REPAIR_FOOTERS: Readonly<Record<RepairBroadcastHint, string>> = {
+	"repair-started": "\n\n---\n🔧 CI 自愈 bot 已开始修复，完成后将推送结果",
+	"stage-skipped":
+		"\n\n---\nℹ️ 该失败 stage 不在自愈范围（CIHEAL_SKIP_STAGES），不自动修复",
+};
+
 /** Webhook receiver seam: notify the routed group about an accepted failure event. */
 export interface PipelineFailureNotifier {
-	notify(rawPayload: unknown): Promise<void>;
+	notify(rawPayload: unknown, hint?: RepairBroadcastHint): Promise<void>;
 }
 
 export interface PipelineFailureNotifierDeps {
@@ -144,7 +153,7 @@ export function createPipelineFailureNotifier(
 	deps: PipelineFailureNotifierDeps,
 ): PipelineFailureNotifier {
 	return {
-		async notify(rawPayload: unknown): Promise<void> {
+		async notify(rawPayload: unknown, hint?: RepairBroadcastHint): Promise<void> {
 			const notification = buildPipelineNotification(rawPayload);
 			if (!notification) return;
 
@@ -165,7 +174,10 @@ export function createPipelineFailureNotifier(
 				);
 				return;
 			}
-			await deps.sender.sendTo(conversationId, notification);
+			const message = hint
+				? { ...notification, text: notification.text + REPAIR_FOOTERS[hint] }
+				: notification;
+			await deps.sender.sendTo(conversationId, message);
 		},
 	};
 }

@@ -135,7 +135,7 @@ describe("webhook pipeline-failure notification fan-out", () => {
 		expect(res.statusCode).toBe(202);
 		expect(res.json()).toEqual({ status: "queued" });
 		expect(notify).toHaveBeenCalledOnce();
-		expect(notify).toHaveBeenCalledWith(payload);
+		expect(notify).toHaveBeenCalledWith(payload, "repair-started");
 	});
 
 	it("does not notify on duplicate events", async () => {
@@ -172,7 +172,7 @@ describe("webhook pipeline-failure notification fan-out", () => {
 		expect(res.json()).toEqual({ status: "notify-only" });
 		expect(scheduler.enqueue).not.toHaveBeenCalled();
 		expect(notify).toHaveBeenCalledOnce();
-		expect(notify).toHaveBeenCalledWith(payload);
+		expect(notify).toHaveBeenCalledWith(payload, undefined);
 	});
 
 	it("treats repair=0 and repair=false as absent", async () => {
@@ -259,7 +259,7 @@ describe("webhook pipeline-failure notification fan-out", () => {
 		);
 		// Q5(a): the immediate failure broadcast survives the repair skip
 		expect(notify).toHaveBeenCalledOnce();
-		expect(notify).toHaveBeenCalledWith(payload);
+		expect(notify).toHaveBeenCalledWith(payload, "stage-skipped");
 	});
 
 	it("still responds skipped when onNewPipeline throws", async () => {
@@ -270,6 +270,18 @@ describe("webhook pipeline-failure notification fan-out", () => {
 
 		expect(res.statusCode).toBe(202);
 		expect(res.json()).toEqual({ status: "skipped" });
+	});
+
+	it("notify-only 路径（无 repair 参数）→ 播报不带修复尾注提示", async () => {
+		const notify = vi.fn().mockResolvedValue(undefined);
+		const { payload } = await injectWebhook({
+			enqueue: "queued",
+			notifier: { notify },
+			query: "",
+		});
+
+		expect(notify).toHaveBeenCalledOnce();
+		expect(notify).toHaveBeenCalledWith(payload, undefined);
 	});
 });
 

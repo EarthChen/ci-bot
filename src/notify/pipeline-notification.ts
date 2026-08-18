@@ -9,6 +9,7 @@
 
 import type { DingTalkMessage } from "./dingtalk.js";
 import type { ProjectRouter } from "./project-router.js";
+import { projectPathFromUrl } from "./project-router.js";
 import { logger } from "../util/log.js";
 
 /** Rendered notification: title is the DingTalk preview line, text the body. */
@@ -158,13 +159,16 @@ export function createPipelineFailureNotifier(
 			if (!notification) return;
 
 			const project = (rawPayload as Record<string, unknown>).project;
+			const projectObj =
+				typeof project === "object" && project !== null
+					? (project as Record<string, unknown>)
+					: {};
 			const projectPath =
-				typeof project === "object" &&
-				project !== null &&
-				typeof (project as Record<string, unknown>).path_with_namespace ===
-					"string"
-					? ((project as Record<string, unknown>).path_with_namespace as string)
-					: "";
+				typeof projectObj.path_with_namespace === "string"
+					? (projectObj.path_with_namespace as string)
+					: typeof projectObj.web_url === "string"
+						? projectPathFromUrl(projectObj.web_url as string)
+						: "";
 
 			const conversationId = deps.router.resolve(projectPath);
 			if (!conversationId) {

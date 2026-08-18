@@ -127,6 +127,19 @@ describe("createPipelineFailureNotifier", () => {
 		);
 	});
 
+	it("缺 path_with_namespace 时从 web_url 推导路径命中绑定（绑定优先）", async () => {
+		const payload = fullPayload();
+		delete (payload.project as Record<string, unknown>).path_with_namespace;
+		const sender = new InMemoryDingTalkNotifier();
+		const router = new ProjectRouter({ "ultron/*": "cid-u" }, "cid-default");
+		const notifier = createPipelineFailureNotifier({ router, sender });
+
+		await notifier.notify(payload);
+
+		expect(sender.sentGroups).toHaveLength(1);
+		expect(sender.sentGroups[0].conversationId).toBe("cid-u");
+	});
+
 	it("falls back to the default group when no route matches", async () => {
 		const sender = new InMemoryDingTalkNotifier();
 		const router = new ProjectRouter({ "other/*": "cid-o" }, "cid-default");

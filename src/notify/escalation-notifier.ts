@@ -16,6 +16,7 @@
 
 import type { DingTalkMessage } from "./dingtalk.js";
 import type { ProjectRouter } from "./project-router.js";
+import { projectPathFromUrl } from "./project-router.js";
 import type { GroupMessageSender } from "./pipeline-notification.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
 import { logger } from "../util/log.js";
@@ -114,7 +115,7 @@ export function createEscalationNotifier(
 ): EscalationNotifier {
 	return {
 		async notifyEscalated(event, outcome, decision) {
-			const conversationId = deps.router.resolve(event.projectId);
+			const conversationId = deps.router.resolve(projectPathFromUrl(event.projectUrl));
 			if (!conversationId) {
 				logger.warn(
 					{ projectId: event.projectId, pipelineId: event.pipelineId },
@@ -131,7 +132,7 @@ export function createEscalationNotifier(
 			await deps.sender.sendTo(conversationId, message);
 		},
 		async notifyResumeTerminal(event, outcome) {
-			const conversationId = deps.router.resolve(event.projectId);
+			const conversationId = deps.router.resolve(projectPathFromUrl(event.projectUrl));
 			if (!conversationId) {
 				logger.warn(
 					{ projectId: event.projectId, pipelineId: event.pipelineId },

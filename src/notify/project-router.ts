@@ -132,3 +132,17 @@ function globToRegExp(pattern: string): RegExp {
 		.replace(/\?/g, ".");
 	return new RegExp(`^${escaped}$`);
 }
+
+
+/**
+ * GitLab project web URL → "group/project" router key (strip scheme/host,
+ * trailing .git / slash). /route binds on project paths (e.g. `ultron/*`);
+ * escalation & notification events only carry projectUrl, so the router key
+ * must be derived from it or the bound group is never hit (falls to default).
+ */
+export function projectPathFromUrl(url: string): string {
+	const withoutScheme = url.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "");
+	const hostEnd = withoutScheme.indexOf("/");
+	const rest = hostEnd === -1 ? "" : withoutScheme.slice(hostEnd + 1);
+	return rest.replace(/\.git\/?$/, "").replace(/\/+$/, "");
+}

@@ -117,11 +117,32 @@ describe("createEscalationNotifier — routed escalation 通知", () => {
 		const { notifier, sender } = makeNotifier();
 		await expect(
 			notifier.notifyEscalated(
-				{ ...event, projectId: "proj-unrouted" },
+				{ ...event, projectUrl: "https://git.example.com/proj-unrouted" },
 				{ kind: "escalated", summary: "x" },
 			),
 		).resolves.toBeUndefined();
 		expect(sender.sentGroups).toEqual([]);
+	});
+
+	it("/route 通配绑定优先：projectUrl 推导路径命中绑定群（MR !281 场景）", async () => {
+		const router = new ProjectRouter({ "ultron/*": "cid-bind" }, "cid-fallback");
+		const sender = new InMemoryDingTalkNotifier();
+		const notifier = createEscalationNotifier({ router, sender });
+
+		await notifier.notifyEscalated(
+			{
+				projectId: "31041",
+				pipelineId: 100033613,
+				ref: "refs/merge-requests/281/head",
+				sha: "6722833b7ae56ca7d8e883e939bc586b160b4024",
+				projectUrl:
+					"https://git.wemomo.com/ultron/ultron-activity-independence",
+			},
+			{ kind: "escalated", summary: "G3 diff 白名单拦截" },
+		);
+
+		expect(sender.sentGroups).toHaveLength(1);
+		expect(sender.sentGroups[0].conversationId).toBe("cid-bind");
 	});
 });
 
@@ -147,10 +168,32 @@ describe("notifyResumeTerminal — 二次转交终局通知（T09）", () => {
 		const { notifier, sender } = makeNotifier();
 		await expect(
 			notifier.notifyResumeTerminal(
-				{ ...event, projectId: "proj-unrouted" },
+				{ ...event, projectUrl: "https://git.example.com/proj-unrouted" },
 				{ kind: "escalated", summary: "x" },
 			),
 		).resolves.toBeUndefined();
 		expect(sender.sentGroups).toEqual([]);
 	});
+
+	it("/route 通配绑定优先：终局通知也走 projectUrl 推导的绑定群", async () => {
+		const router = new ProjectRouter({ "ultron/*": "cid-bind" }, "");
+		const sender = new InMemoryDingTalkNotifier();
+		const notifier = createEscalationNotifier({ router, sender });
+
+		await notifier.notifyResumeTerminal(
+			{
+				projectId: "31041",
+				pipelineId: 100033613,
+				ref: "refs/merge-requests/281/head",
+				sha: "6722833b",
+				projectUrl:
+					"https://git.wemomo.com/ultron/ultron-activity-independence",
+			},
+			{ kind: "escalated", summary: "second escalation" },
+		);
+
+		expect(sender.sentGroups).toHaveLength(1);
+		expect(sender.sentGroups[0].conversationId).toBe("cid-bind");
+	});
 });
+

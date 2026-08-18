@@ -16,7 +16,7 @@
  */
 
 import { spawn, execFile } from "node:child_process";
-import type { Stats } from "node:fs";
+import { existsSync, type Stats } from "node:fs";
 import { chmod, copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join, dirname, relative, resolve } from "node:path";
@@ -316,10 +316,22 @@ function isWithin(parent: string, candidate: string): boolean {
 	return path === "" || (!path.startsWith("..") && !isAbsolute(path));
 }
 
+/**
+ * Pick the worker entry script for the current runtime.
+ *
+ * Dev runs the TS source via tsx (src/worker/main.ts); the docker/production
+ * image only ships the compiled dist bundle (dist/worker/main.js) — a
+ * hardcoded .ts path there would make every worker spawn fail with ENOENT
+ * before writing any worker.log. Prefer the TS source when it exists, else
+ * fall back to the compiled .js (the image ships main.js, not main.ts).
+ */
+export function resolveEntryScript(workerDir: string): string {
+	const tsPath = join(workerDir, "main.ts");
+	return existsSync(tsPath) ? tsPath : join(workerDir, "main.js");
+}
+
 function defaultEntryScript(): string {
-	// Dev: run TS directly via tsx (resolved relative to this compiled file).
-	// The tracer bullet runs under tsx; production builds dist/ first.
-	return join(__dirname, "..", "worker", "main.ts");
+	return resolveEntryScript(join(__dirname, "..", "worker"));
 }
 
 interface ChildResult {

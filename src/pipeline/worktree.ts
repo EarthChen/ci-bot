@@ -42,6 +42,14 @@ import type { PipelineEvent } from "../types.js";
 
 const exec = promisify(execFile);
 
+/**
+ * Fetch refspec for the shared bare clone: all branch heads. `git clone
+ * --bare` does NOT write a fetch refspec (only remote.origin.url), and
+ * without one `git fetch origin` fetches only the remote HEAD — branch tips
+ * never update (see ensureBareClone).
+ */
+const HEADS_REFSPEC = "+refs/heads/*:refs/heads/*";
+
 /** A bare-clone cache keyed by project id (shared across pipelines). */
 interface BareClone {
 	/** Absolute path to the bare repo. */
@@ -158,14 +166,29 @@ async function ensureBareClone(
 	if (!clone.fetchPromise) {
 		clone.fetchPromise = (async () => {
 			try {
-				logger.info({ projectId, barePath }, "bare clone: fetch");
+				// `git clone --bare` writes remote.origin.url but NO fetch refspec,
+				// so a bare `fetch origin` only fetches the remote HEAD — branch
+				// tips never update and newer pipeline shas fail "invalid
+				// reference" (MR !281 pipeline 100033426). Ensure the heads
+				// refspec on every pass: heals pre-fix clones, idempotent
+				// otherwise.
 				await exec(
 					"git",
-					["--git-dir", barePath, "fetch", "--prune", "origin"],
-					{
-						env: gitEnv(),
-					},
+					[
+						"--git-dir",
+						barePath,
+						"config",
+						"remote.origin.fetch",
+						HEADS_REFSPEC,
+					],
+					{ env: gitEnv() },
 				);
+				logger.info({ projectId, barePath }, "bare clone: fetch");
+				// No --prune: with the heads refspec it would delete local
+				// ci-self-heal/* branches that live worktrees still use.
+				await exec("git", ["--git-dir", barePath, "fetch", "origin"], {
+					env: gitEnv(),
+				});
 			} finally {
 				clone!.fetchPromise = null;
 			}
@@ -218,6 +241,7 @@ async function realWorktree(
 ): Promise<string> {
 	const repoPath = join(workDir, "repo");
 	const barePath = await ensureBareClone(event.projectId, event.projectUrl);
+	await ensureShaPresent(barePath, event);
 	const branch = `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`;
 	logger.info(
 		{ projectId: event.projectId, barePath, repoPath, branch, ref: event.ref },
@@ -238,6 +262,58 @@ async function realWorktree(
 		{ env: gitEnv() },
 	);
 	return repoPath;
+}
+
+/**
+ * Ensure the pipeline's sha exists in the bare clone before the worktree is
+ * created. The heads-refspec fetch covers the normal case (sha reachable
+ * from a branch). If the sha is unreachable from any branch (force-push /
+ * rebase after the pipeline ran), fall back to the MR's head ref, which
+ * GitLab keeps at the pipeline's sha until the MR's next push. Fail loud if
+ * still missing — a worktree cannot be created at a nonexistent commit.
+ */
+async function ensureShaPresent(
+	barePath: string,
+	event: PipelineEvent,
+): Promise<void> {
+	if (await shaPresent(barePath, event.sha)) return;
+	if (event.mrIid != null) {
+		logger.info(
+			{ projectId: event.projectId, sha: event.sha, mrIid: event.mrIid },
+			"worktree: sha missing after fetch, fetching MR head ref",
+		);
+		await exec(
+			"git",
+			[
+				"--git-dir",
+				barePath,
+				"fetch",
+				"origin",
+				`refs/merge-requests/${event.mrIid}/head`,
+			],
+			{ env: gitEnv() },
+		);
+		if (await shaPresent(barePath, event.sha)) return;
+	}
+	throw new Error(
+		`pipeline sha ${event.sha} not found in bare clone` +
+			(event.mrIid != null
+				? ` (fetched MR ${event.mrIid} head ref but sha still absent — MR head moved on)`
+				: " (no MR ref fallback for non-MR pipelines)"),
+	);
+}
+
+async function shaPresent(barePath: string, sha: string): Promise<boolean> {
+	try {
+		await exec(
+			"git",
+			["--git-dir", barePath, "cat-file", "-e", `${sha}^{commit}`],
+			{ env: gitEnv() },
+		);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**

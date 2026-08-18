@@ -46,6 +46,36 @@ describe("createEscalationNotifier — routed escalation 通知", () => {
 		expect(message.text).toContain("2026-08-18T11:00:00.000Z");
 	});
 
+	it("escalated 带部分修复 MR → 待决策消息含 MR 链接（MR !281 需求）", async () => {
+		const { notifier, sender } = makeNotifier();
+		await notifier.notifyEscalated(
+			event,
+			{
+				kind: "escalated",
+				summary: "class 3 转交",
+				decidable: true,
+				diagnosisSummary: "根因在 src/main",
+				mrUrl: "https://git.example.com/proj-A/-/merge_requests/77",
+			},
+			{ decisionId: "D-42-ab12", expiresAt: "2026-08-18T11:00:00.000Z" },
+		);
+		expect(sender.sentGroups[0].message.text).toContain(
+			"MR（部分修复）：https://git.example.com/proj-A/-/merge_requests/77",
+		);
+	});
+
+	it("非 decidable 带部分修复 MR → 转交消息含 MR 链接", async () => {
+		const { notifier, sender } = makeNotifier();
+		await notifier.notifyEscalated(event, {
+			kind: "escalated",
+			summary: "budget exceeded",
+			mrUrl: "https://git.example.com/proj-A/-/merge_requests/78",
+		});
+		expect(sender.sentGroups[0].message.text).toContain(
+			"MR（部分修复）：https://git.example.com/proj-A/-/merge_requests/78",
+		);
+	});
+
 	it("非 decidable → 与原 worker 通知内容一致（仅投递路径变化）", async () => {
 		const { notifier, sender } = makeNotifier();
 		await notifier.notifyEscalated(event, {

@@ -70,6 +70,9 @@ export type AgentResult =
 			 *  session error, or unparseable output ("runtime"). Only agent-sourced
 			 *  escalations may enter the awaiting-decision state (/heal). */
 			readonly source: "agent" | "runtime";
+			/** Partial-fix MR the agent created before escalating (push + glab
+			 *  mr create). Absent when no partial MR was opened. */
+			readonly mrUrl?: string;
 			readonly metrics?: AgentMetrics;
 	  };
 
@@ -103,6 +106,9 @@ export type RepairOutcome =
 			readonly decidable?: boolean;
 			/** result.diagnosis.summary — carried for the routed decision notification (T04). */
 			readonly diagnosisSummary?: string;
+			/** Partial-fix MR url (agent created it before escalating); carried
+			 *  for the routed notification and the resume context. */
+			readonly mrUrl?: string;
 	  }
 	| {
 			readonly kind: "failed";

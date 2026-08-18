@@ -54,14 +54,15 @@ function shortSha(sha: string): string {
 /** Plain handoff message — content identical to the old worker notification. */
 function buildHandoffMessage(
 	event: PipelineEvent,
-	reason: string,
+	outcome: EscalatedOutcome,
 ): DingTalkMessage {
 	return {
 		title: "CI 自愈转交人工",
 		text: [
 			`项目 ${event.projectId}`,
 			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
-			`原因：${reason}`,
+			`原因：${outcome.summary}`,
+			...(outcome.mrUrl ? [`MR（部分修复）：${outcome.mrUrl}`] : []),
 		].join("\n"),
 	};
 }
@@ -78,6 +79,7 @@ function buildDecisionMessage(
 			`项目 ${event.projectId}`,
 			`分支 ${event.ref} @ ${shortSha(event.sha)}`,
 			`诊断：${outcome.diagnosisSummary ?? outcome.summary}`,
+			...(outcome.mrUrl ? [`MR（部分修复）：${outcome.mrUrl}`] : []),
 			`决策 id：${decision.decisionId}`,
 			`回复命令决策（复制即用）：`,
 			`/heal ${decision.decisionId} test|prod|drop [备注]`,
@@ -125,7 +127,7 @@ export function createEscalationNotifier(
 			const message =
 				outcome.decidable && decision
 					? buildDecisionMessage(event, outcome, decision)
-					: buildHandoffMessage(event, outcome.summary);
+					: buildHandoffMessage(event, outcome);
 			await deps.sender.sendTo(conversationId, message);
 		},
 		async notifyResumeTerminal(event, outcome) {

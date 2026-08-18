@@ -160,6 +160,9 @@ export class GlabGitLabClient implements GitLabClient {
 			"--description",
 			body,
 			"--yes",
+			// bot 修复 MR 默认勾选 Delete source branch + Squash commits（MR !281 需求）。
+			"--remove-source-branch=true",
+			"--squash-before-merge=true",
 			"--output",
 			"json",
 		]);

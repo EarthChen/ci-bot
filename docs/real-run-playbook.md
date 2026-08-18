@@ -94,7 +94,7 @@ worker 结束后看 `$CIHEAL_DATA_ROOT/audit/<pipelineId>/<workId>-audit-trace.j
 | outcome | 含义 |
 | --- | --- |
 | `mr` | 修复成功：patch 通过 G0 diff 白名单 + G3 路径校验，已开修复 MR（URL 在 trace/钉钉 sidecar），bot 继续监控修复 MR 的 pipeline |
-| `escalated` | **正确的转交**：根因在 `src/main` 生产代码、或改测试会把 bug 固化进断言（class-3 铁律）等；trace 里 `diagnosis`/`reasoning` 带根因定位与给人工的建议 |
+| `escalated` | **正确的转交**：根因在 diff 外 `src/main`、spec 矛盾无测试可依、或改测试会把 bug 固化进断言（class-3 铁律）等；trace 里 `diagnosis`/`reasoning` 带根因定位与给人工的建议。若转交前有部分修复成果，agent 会先开部分修复 MR（普通 MR，描述写明已修/未修/根因），trace 带 `mrUrl`，人工在 MR 上接力（ADR-0006） |
 | `failed` | bot 自身环节失败（fetch-ci-log / worktree / agent-run 等，见 `summary`） |
 
 `metrics.jsonl` 记录 turns / tokens / cost / durationMs，供 `pnpm metrics` 汇总。

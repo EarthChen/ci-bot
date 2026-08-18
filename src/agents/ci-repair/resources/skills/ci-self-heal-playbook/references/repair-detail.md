@@ -11,14 +11,17 @@
 - `src/test/`、`src/it/`（测试源码）
 - `docs/`、`*.md`（文档，仅 class 2 触发）
 - `src/test/resources/`（测试资源）
+- **MR diff 内的 `src/main`**（有限放宽，ADR-0006；仅限 class 2/3 且被测代码在 diff 内违背其自带 spec，见下方铁律）
 
 **绝对禁止的路径**：
 
-- `src/main/java/`、`src/main/kotlin/`、`src/main/resources/`（生产代码）
+- diff 外的 `src/main`（生产代码）
 - `pom.xml`、`build.gradle`、`settings.gradle`（构建配置）
 - 仓库根的 `Dockerfile`、`ci/`、`.gitlab-ci.yml`（CI 配置）
 
 任何 fix 的 file path 命中禁止路径 → **立即转交人工**，不得开 MR。bot 代码有 G3 校验兜底（`validatePatchPaths`），但 agent 应在输出前自检。
+
+**src/main 放宽铁律**：只允许改实现去满足既有失败测试，**严禁改写这些测试的断言语义迎合实现**（编译适配除外）；一切测试语义改动必须在 MR 描述逐条申报。
 
 ## class 1 修复 playbook（测试 bug）
 
@@ -48,16 +51,18 @@
 4. **跑相关测试**确认绿。
 5. **文档同步**（见 doc-sync-detail）。
 
+**src/main 补齐（有限放宽）**：若根因是 diff 内被测代码违背其自带 spec（javadoc/ADR/设计文档承诺未实现）：先读 spec 原文确认其存在，再改实现使其符合 spec，**不改失败测试的断言**；跑受影响模块全量测试确认绿。spec 互相矛盾且无测试可依 → 转交（可先开部分修复 MR）。
+
 **反模式**：
 
-- ❌ 改被测代码回滚变更 → 转交，生产变更不是 agent 该碰的。
+- ❌ 改被测代码回滚 MR 变更 → 转交（回滚生产变更不在放宽范围；放宽仅限「按 spec 补齐实现」）。
 - ❌ 只改编译不改动逻辑（测试编译过但断言还指向旧行为）→ 不算修复。
 
 ## class 3 修复 playbook（缺失测试）
 
 1. **读 spec/PRD**，确定期望的正确行为。spec 目录位置：优先查 `docs/spec/`、`specs/`、`docs/adr/`；若无则读仓库根的 `README.md` / `CONTEXT.md`。
 2. 写测试断言该行为。**关键**：断言 spec 定义的，不是当前代码的。
-3. **spec 不可读/缺失 → 转交**（不得猜规格瞎写测试）。当前代码行为与 spec 不符 → **转交**（不得改生产代码，也不得按 bug 写测试固化它）。
+3. **spec 不可读/缺失 → 转交**（不得猜规格瞎写测试）。当前代码行为与 spec 不符 → 被测代码在 MR diff 内时可按 class 2 的 src/main 补齐修实现；在 diff 外 → **转交**。两者都不得按 bug 写测试固化它。
 4. 跑新测试：
    - 绿 → fixed。
    - 红 → 可能是被测代码实现漏了 spec（生产 bug）→ 转交。也可能误判 class 3 实为 class 2（被测代码改漏了）→ 重新诊断。
@@ -73,6 +78,10 @@
 
 - class 4：`class 4 flaky：<具体信号，如时间相关断言/网络依赖>，转交人工复现`。
 - class 5：`class 5 非单测失败：<依赖错，失败 stage=build>，转交人工`（bot 早筛形状，仅依赖错；编译错由 agent 判定后用你自己的 reason）。
+
+## 部分修复 MR（转交但有成果时）
+
+转交时如果已有通过自测的改动（修好一部分）：先 commit + push + `glab mr create`（标题带 `(部分修复)` 前缀，带 `--remove-source-branch=true --squash-before-merge=true`），描述写明：已修好什么、仍失败什么及根因、需要人工做什么；然后输出 `escalated` 且 `mrUrl` 填该 MR。bot 会把 MR 链接带进转交通知与决策上下文；/heal 恢复后在同一分支继续修（更新同一 MR）。完全无成果（纯 class 5、无把握）→ 不开 MR。
 
 ## 轻量测试结构重构（class 1/2 允许）
 

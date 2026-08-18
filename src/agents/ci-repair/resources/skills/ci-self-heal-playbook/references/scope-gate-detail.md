@@ -34,13 +34,13 @@
 
 | 失败 stage | diff 内可修文件 | diff 外文件 |
 | --- | --- | --- |
-| test | `src/test/`、`src/it/`（含 resources）、`docs/`、`.md` | 一律**转交**（含任何 `src/main`） |
+| test | `src/test/`、`src/it/`（含 resources）、`docs/`、`.md`、**diff 内 `src/main`**（有限放宽，见铁律） | 一律**转交**（含 diff 外 `src/main`） |
 | static-analysis / checkstyle | diff 内**任意文件**（含 `src/main`） | 一律**转交** |
 | build | 编译错进入，由 agent 分类（class 2 按 test 行规则修测试 / class 5 转交）；依赖错 bot 早筛转交，不进入 | — |
 
 要点：
 
-- test 失败仍严禁碰 `src/main`（G3 不变）——那是「非法让测试通过」陷阱。
+- test 失败可改 **diff 内** `src/main`（有限放宽，ADR-0006）。铁律：优先改实现满足既有失败测试，**严禁改写这些测试的断言语义迎合实现**（编译适配除外），测试语义改动在 MR 描述逐条申报——否则就是「非法让测试通过」陷阱。
 - static-analysis/checkstyle 失败允许改 diff 内的 `src/main`；但**超出 diff 即转交**，无论是否生产代码。
 - `pom.xml`/`build.gradle`/`settings.gradle`/`Dockerfile`/`.gitlab-ci.yml` 永不许改（即使 diff 内也转交——属构建/CI 配置）。
 

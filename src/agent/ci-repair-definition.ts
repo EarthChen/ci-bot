@@ -80,7 +80,7 @@ export function buildContinuePrompt(
 		`用 read 工具读取：${ciLogPath}`,
 		``,
 		`# 任务`,
-		`1. 读新 CI 日志，定位仍失败的根因。遵守范围闸：test 失败只改测试/文档；static-analysis/Checkstyle 可改 diff 内 src/main；超出 diff 转交。`,
+		`1. 读新 CI 日志，定位仍失败的根因。遵守范围闸：test 失败可改测试/文档与 diff 内 src/main（铁律：优先满足既有失败测试，严禁改写其断言语义）；static-analysis/Checkstyle 可改 diff 内文件；超出 diff 转交。`,
 		`2. 修复后 git add → git commit → git push origin ${input.sourceBranch}（更新同一 MR，勿新建 MR）。`,
 		`3. 末条消息输出结构化 JSON：fixed 填同一 mrUrl，或 escalated 说明转交原因。`,
 	].join("\n");
@@ -104,8 +104,10 @@ export function buildDecisionPrompt(decision: {
 			? `人工备注（权威 spec 上下文，以其为准）：\n${decision.remark}`
 			: `（无人工备注。）`,
 		``,
-		`# 范围闸（不变）`,
-		`- 只允许改测试/文档；src/main 生产代码一律禁碰（G3）。`,
+		`# 范围闸（有限放宽）`,
+		`- 允许改测试/文档与 **MR diff 内**的 src/main（铁律：优先改实现满足既有失败测试，严禁改写既有失败测试的断言语义；测试语义改动逐条申报）。`,
+		`- diff 外的 src/main 一律禁碰。`,
+		`- 若转交前已建过部分修复 MR：继续 push 到同一源分支更新它，勿新建 MR。`,
 		``,
 		`# 任务`,
 		`1. 基于本 session 此前的诊断与上述决策继续修复，并自行运行测试确认。`,

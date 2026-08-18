@@ -98,7 +98,7 @@ export interface RepairResult {
 	readonly diagnosis?: AuditTrace["diagnosis"];
 	/** Real git diff (authored by the patch extractor), when present. */
 	readonly diff?: string;
-	/** MR url, when outcome === "mr". */
+	/** MR url — the fix MR (outcome "mr") or a partial-fix MR on escalation. */
 	readonly mrUrl?: string;
 	/** Agent metrics; defaults to ZERO_METRICS for failed / class-5. */
 	readonly metrics?: RepairMetrics;
@@ -313,15 +313,17 @@ export async function finishRepair(args: {
 		return { kind: "mr", mrUrl: result.mrUrl ?? "", summary };
 	}
 	if (result.kind === "escalated") {
+		const mrUrl = result.mrUrl ? { mrUrl: result.mrUrl } : {};
 		if (result.decidable) {
 			return {
 				kind: "escalated",
 				summary: result.summary,
 				decidable: true,
 				diagnosisSummary: result.diagnosis?.summary,
+				...mrUrl,
 			};
 		}
-		return { kind: "escalated", summary: result.summary };
+		return { kind: "escalated", summary: result.summary, ...mrUrl };
 	}
 	return {
 		kind: "failed",

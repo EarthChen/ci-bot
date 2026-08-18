@@ -111,4 +111,28 @@ describe("GlabGitLabClient.createMr", () => {
 			"ultron/ultron-activity-independence",
 		);
 	});
+
+	it("defaults Delete source branch + Squash commits (MR !281 需求)", async () => {
+		const { calls, run } = recordingRunner([
+			{ match: /^api \/projects\/31041$/, reply: projectApiReply },
+			{
+				match: /^mr create /,
+				reply: JSON.stringify({
+					web_url: "https://git.wemomo.com/x/-/merge_requests/9",
+				}),
+			},
+		]);
+		const client = new GlabGitLabClient(run);
+		await client.createMr({
+			projectId: "31041",
+			sourceBranch: "ci-self-heal/fix-1",
+			targetBranch: "dev-backend-activity",
+			title: "fix: CI self-heal",
+			diagnosis,
+			patch,
+		});
+		const createCall = calls.at(-1) as string[];
+		expect(createCall).toContain("--remove-source-branch=true");
+		expect(createCall).toContain("--squash-before-merge=true");
+	});
 });

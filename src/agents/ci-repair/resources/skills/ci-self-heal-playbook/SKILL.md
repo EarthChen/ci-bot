@@ -1,15 +1,15 @@
 ---
 name: ci-self-heal-playbook
-description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / 静态分析(SpotBugs,PMD) / Checkstyle 风格检查 任一阶段失败时加载；单测失败只修测试/文档，静态分析/Checkstyle 失败可在 MR diff 文件集内修生产代码(src/main)。任何超出 diff 的改动一律转交人工。覆盖 范围闸(G0) → 诊断(G1 五类) → 修复(G3 边界+每类步骤) → 文档同步(G2) → 自测 → 提交 MR 六段（bot 另负责复用 session 重试）。
+description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / 静态分析(SpotBugs,PMD) / Checkstyle 风格检查 任一阶段失败时加载；单测失败可改测试/文档与 MR diff 内的 src/main（铁律约束），静态分析/Checkstyle 失败可在 MR diff 文件集内修生产代码(src/main)。任何超出 diff 的改动一律转交人工。覆盖 范围闸(G0) → 诊断(G1 五类) → 修复(G3 边界+每类步骤) → 文档同步(G2) → 自测 → 提交 MR 六段（bot 另负责复用 session 重试）。
 ---
 
 # CI 自愈 Playbook
 
-处理 GitLab pipeline 失败的修复：**只改测试 + 文档**，修不了的（生产代码、flaky、编译/依赖）转交人工。
+处理 GitLab pipeline 失败的修复：以**测试 + 文档**为主，单测失败在铁律约束下也可修 **MR diff 内**的 `src/main`；修不了的（diff 外生产代码、flaky、依赖错）转交人工（转交前如有部分修复成果，先开部分修复 MR）。
 
 **铁律（违反任一即转交，不开 MR）：**
 
-1. **改动默认只限测试/文档；静态检查可改 diff 内 `src/main`**。单测失败只改 `src/test|it`/`docs`，不得碰 `src/main`（G3 不变）；SpotBugs/Checkstyle 失败可改 **MR diff 文件集内** 的 `src/main`（bot 按 diff 白名单校验）。任何超出 diff 的文件（含其他 `src/main`）→ 转交，不开 MR。
+1. **改动范围（G3）**：单测失败可改 `src/test|it`/`docs` 与 **MR diff 内**的 `src/main`（有限放宽，ADR-0006）；SpotBugs/Checkstyle 失败可改 **MR diff 文件集内** 的任意文件（含 `src/main`，bot 按 diff 白名单校验）。**铁律：改 `src/main` 只为让既有失败测试通过——优先改实现满足测试，严禁改写既有失败测试的断言语义来迎合实现（编译适配除外）；所有测试语义改动必须在 MR 描述逐条申报。**任何超出 diff 的文件（含其他 `src/main`）→ 转交。
 2. **class 3 按 spec/PRD 断言正确行为**，不按当前代码行为（否则把 bug 固化成测试）。
 3. **不猜修复**。诊断未达 class 1/2/3 确信 → 转交，不反复重试烧预算。
 4. **开完 MR 即返回，绝不等待或合并 CI**。MR 自动触发 CI，由 bot 监控其状态并通知（钉钉）；你**严禁 `glab mr merge`**——所有 MR 必须人工 review 后合并。
@@ -25,7 +25,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 | --- | --- | --- |
 | 0 范围闸(G0) | 定失败 stage + 路径闸分流 | stage 已定、报错文件已列出、已在 test/doc 与 main 间分流 |
 | 1 诊断(G1) | 归五类之一 | 读 CI 日志+MR diff+源码后归类，不猜 |
-| 2 修复(G3) | 按类 playbook 改测试/文档 | 改动只在 test/doc 路径 |
+| 2 修复(G3) | 按类 playbook 改测试/文档（或 diff 内 src/main） | 改动在 G3 边界内 |
 | 3 文档同步(G2) | 仅 class 2 同步相关段落 | 只动与变更行为直接相关的文档段落 |
 | 4 自测绿 | 跑所改测试类 | 退出码 0；不因无关失败 revert 本次改动 |
 | 5 提交 MR + 输出 | git push + glab mr create + JSON | MR URL 填入 `mrUrl`；未输出合法 JSON = 失败 |
@@ -34,19 +34,19 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 
 从 CI 日志定失败 stage，并用**路径闸**决定修还是转交。这一步先于诊断：stage 不在范围或报错文件在 `src/main`，直接转交，不烧预算。
 
-- **test**（Surefire/Gradle test 红）→ 进入诊断 G1（class 1/2/3 可修）；**只改测试/文档**，不得碰 `src/main`（G3 不变）。
+- **test**（Surefire/Gradle test 红）→ 进入诊断 G1（class 1/2/3 可修）；可改测试/文档与 **MR diff 内**的 `src/main`（有限放宽，见铁律 1）；diff 外 `src/main` 一律转交。
 - **static-analysis**（SpotBugs/PMD 报告）→ 违规文件在 **MR diff 文件集内** 即可修（含 `src/main`）：改对应文件使其满足规则；超出 diff → 转交。
 - **checkstyle**（风格检查红）→ 同上：diff 内的文件（含 `src/main`）可修；超出 diff → 转交。
 - **build**（编译/依赖）→ 依赖错 bot 已早筛转交；编译错由你分类：生产代码（src/main）编译挂 = class 5 转交；仅测试编译挂（生产编译过）= class 2 可修。
 
-**路径闸（按 diff 白名单）**：可修文件必须落在 **MR diff 文件集**（本次 pipeline 的 MR 改动文件）内。test 失败只允许 `src/test|it`/`docs`；static-analysis/checkstyle 失败允许 diff 内的任意文件（含 `src/main`）。任何 patch 文件不在 diff 内 → 转交（bot 白名单校验兜底）。
+**路径闸（按 diff 白名单）**：可修文件必须落在 **MR diff 文件集**（本次 pipeline 的 MR 改动文件）内。test 失败允许 `src/test|it`/`docs` 与 diff 内的 `src/main`（有限放宽）；static-analysis/checkstyle 失败允许 diff 内的任意文件（含 `src/main`）。任何 patch 文件不在 diff 内 → 转交（bot 白名单校验兜底）。
 
 **护栏（static-analysis/checkstyle 改 diff 内 `src/main` 时）**：
 
 - 禁压制式修复：不得用 `@SuppressWarnings` / Checkstyle suppression / 删规则让 gate 绿，必须真修。
 - 改动绑定违规的 `file:line:rule`：只在被报告处附近改，不在同文件顺手重构无关代码。
 - 修复需改 diff 外文件 → 转交（别半修）。
-- 单测失败（test stage）仍严禁碰 `src/main`——那是 G3 防的「非法让测试通过」陷阱。
+- 单测失败改 diff 内 `src/main` 时同样禁压制式修复，且**严禁靠改写失败测试断言凑绿**——那是 G3 防的「非法让测试通过」陷阱；测试语义改动必须在 MR 描述逐条申报。
 
 **注意**：一个 static-analysis/checkstyle stage 的违规常跨多个文件。只要其中**任一需修文件不在 diff 内**，该 stage 绿不了 → 整体**转交**（不要只修 diff 内部分就开 MR）。
 
@@ -60,8 +60,8 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 | class | 含义 | 处理 |
 | --- | --- | --- |
 | 1 | 测试 bug（断言/mock/数据错） | 修测试 |
-| 2 | 被测代码变更导致测试过时 | 修测试 + 文档同步 |
-| 3 | 缺失测试（新路径无覆盖） | 按 spec 补测试 |
+| 2 | 被测代码变更导致测试过时 | 修测试（或 diff 内 src/main 补齐实现）+ 文档同步 |
+| 3 | 缺失测试（新路径无覆盖） | 按 spec 补测试（实现违 spec 时可修 diff 内 src/main） |
 | 4 | flaky/环境问题 | 转交 |
 | 5 | 非单测失败（编译/依赖） | 转交 |
 
@@ -75,7 +75,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 
 ## 2 修复（G3 边界 + 每类步骤）
 
-**权限边界**：默认只写 `src/test/`、`src/it/`（含 `src/test/resources/`）、`docs/`、`*.md`。但 **static-analysis/checkstyle 失败**按 G0 范围闸可改 diff 内的 `src/main`（bot 白名单校验兜底）；任何**超出 diff** 的路径（含其他 `src/main`、构建/CI 配置 `pom.xml`/`build.gradle`/`.gitlab-ci.yml`/`Dockerfile`）→ 转交。
+**权限边界**：默认可写 `src/test/`、`src/it/`（含 `src/test/resources/`）、`docs/`、`*.md`；**单测失败另可写 MR diff 内的 `src/main`**（有限放宽，受铁律 1 约束）；**static-analysis/checkstyle 失败**按 G0 范围闸可改 diff 内的 `src/main`（bot 白名单校验兜底）；任何**超出 diff** 的路径（含其他 `src/main`、构建/CI 配置 `pom.xml`/`build.gradle`/`.gitlab-ci.yml`/`Dockerfile`）→ 转交。
 
 **class 1（测试 bug）**
 
@@ -90,6 +90,12 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 2. 过时判定：签名变 → 改调用；行为变 → 改断言。
 3. 修测试 + **文档同步（步 3）**。
 4. 跑所改测试类确认绿（用项目构建工具；多模块在所属模块目录跑，勿在 reactor 根跑）。
+
+**class 2/3 的 src/main 补齐（有限放宽）**：当失败根因是 **MR diff 内**的被测代码违背其自带 spec（javadoc/ADR/设计文档/同 MR 测试承诺，如承诺的默认值未实现、承诺的参数校验缺失）：
+
+1. 先确认 spec 出处真实存在（读原文，不凭测试注释臆断）且文件在 MR diff 内。
+2. 修 src/main 使实现符合 spec，**不改对应失败测试的断言**；若 spec 本身互相矛盾、无测试可依 → 不猜，转交（可先开部分修复 MR）。
+3. 全量跑受影响模块测试确认绿（不只跑所改类）。
 
 **class 3（缺失测试）**
 
@@ -120,7 +126,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 
 1. `git add` 改动文件 → `git commit -m 'fix: ...'`。
 2. `git push origin <源分支>`（分支名由 prompt 给出）。
-3. `glab mr create --source-branch <源分支> --target-branch <目标分支> --title '<标题>' --description '<正文>' --yes`。
+3. `glab mr create --source-branch <源分支> --target-branch <目标分支> --title '<标题>' --description '<正文>' --remove-source-branch=true --squash-before-merge=true --yes`（后两个勾选项为 bot 强制默认，勿省略）。
 4. 从 `glab mr create` 输出取 web_url 填入 `fixed.mrUrl`。glab 在 worktree 内自动识别 remote，**勿传 `--project`**（无效）。
 5. **必须自己 push + create，不得引用他人 MR URL 跳过提交**——每个 pipeline 的 MR 独立 review；引用他人 URL 会被 bot 判为未提交。
 
@@ -141,11 +147,14 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 {
   "kind": "escalated",
   "diagnosis": { "failureClass": 4, "summary": "flaky：本地通过 CI 失败，含时间相关断言" },
-  "reason": "class 4 flaky，转交人工复现"
+  "reason": "class 4 flaky，转交人工复现",
+  "mrUrl": "https://git.example.com/group/repo/-/merge_requests/124"
 }
 ```
 
-**注意**：`fixed` 必含 `diagnosis`+`summary`+`mrUrl`，无 `mrUrl` → bot 视为未建 MR → 转交。`escalated` 含 `diagnosis`+`reason`。未输出合法 JSON → bot 视为失败。MR 自动触发 CI，由 bot 监控状态并通知；你不开合并。
+**部分修复也要开 MR**：转交时如果已有通过自测的改动（哪怕只修好一部分），**先按上面 1-4 步 push + 建 MR**（标题带「(部分修复)」前缀），描述必须写明：已修好什么、仍失败什么及根因、需要人工做什么；然后输出 `escalated` 并附该 MR 的 `mrUrl`。bot 会把 MR 链接带进转交通知与决策上下文；人工 /heal 恢复后你在同一分支继续修（更新同一 MR，勿新建）。完全无有效改动（纯 class 5、无把握）则不建 MR，直接转交。
+
+**注意**：`fixed` 必含 `diagnosis`+`summary`+`mrUrl`，无 `mrUrl` → bot 视为未建 MR → 转交。`escalated` 含 `diagnosis`+`reason`，`mrUrl` 可选（部分修复 MR）。未输出合法 JSON → bot 视为失败。MR 自动触发 CI，由 bot 监控状态并通知（部分修复 MR 除外——它本就带未修项，bot 不监控）；你不开合并。
 
 **重试（bot 复用 session）**：若 MR 的 CI 仍红，bot 会**复用本次 session**、注入新 CI 日志，并指令你 **`git push` 到同一 source 分支更新已有 MR**（勿开新 MR）。你继续在同一 worktree 内修复即可，仍受上述 G0 护栏与权限边界约束；重试有次数上限，用尽则转交人工。
 

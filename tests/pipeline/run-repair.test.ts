@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRepair, extractPatch } from "../../src/pipeline/run-repair.js";
+import { runRepair, extractPatch, parseDiffFiles } from "../../src/pipeline/run-repair.js";
 import type { Worktree } from "../../src/pipeline/worktree.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import type { AgentRunner, AgentRunInput } from "../../src/agent/runner.js";
@@ -290,5 +290,73 @@ describe("extractPatch", () => {
 		expect(patch.diff).not.toContain("ci-log.txt");
 		expect(patch.diff.length).toBeGreaterThan(1024 * 1024);
 		expect(patch.summary).toBe("fix summary");
+	});
+});
+
+describe("parseDiffFiles", () => {
+	it("解析 `diff --git` 格式", () => {
+		expect(
+			parseDiffFiles("diff --git a/src/test/Foo.java b/src/test/Foo.java\n"),
+		).toEqual(["src/test/Foo.java"]);
+	});
+
+	it("解析 glab 统一 `---/+++` 格式（MR !281 实测形状，无 a/ b/ 前缀）", () => {
+		const diff = [
+			"--- src/main/java/A.java",
+			"+++ src/main/java/A.java",
+			"@@ -1 +1 @@",
+			"--- src/main/java/B.java",
+			"+++ src/main/java/B.java",
+			"@@ -0,0 +1,3 @@",
+		].join("\n");
+		expect(parseDiffFiles(diff)).toEqual([
+			"src/main/java/A.java",
+			"src/main/java/B.java",
+		]);
+	});
+
+	it("兼容带 a/ b/ 前缀的统一格式", () => {
+		const diff = [
+			"--- a/src/main/java/A.java",
+			"+++ b/src/main/java/A.java",
+		].join("\n");
+		expect(parseDiffFiles(diff)).toEqual(["src/main/java/A.java"]);
+	});
+
+	it("忽略 /dev/null（纯删除文件）", () => {
+		expect(parseDiffFiles("--- a/x.java\n+++ /dev/null\n")).toEqual([]);
+	});
+});
+
+describe("runRepair — 部分修复 MR", () => {
+	let cwd: string;
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "run-repair-partial-"));
+	});
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("escalated 带 mrUrl（agent 已建部分修复 MR）→ outcome 携带 mrUrl", async () => {
+		const { worktree, remove } = fakeWorktree();
+		const dt = new InMemoryDingTalkNotifier();
+		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
+		const agent = stubAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 3, summary: "根因在 src/main" },
+			reason: "class 3 转交",
+			source: "agent",
+			mrUrl: "https://git.example.com/g/p/-/merge_requests/77",
+		});
+		const out = await runRepair(
+			{ agent, glab, dingtalk: dt, cwd, worktree },
+			event,
+		);
+		expect(out.kind).toBe("escalated");
+		if (out.kind === "escalated") {
+			expect(out.decidable).toBe(true);
+			expect(out.mrUrl).toBe("https://git.example.com/g/p/-/merge_requests/77");
+		}
+		expect(remove).not.toHaveBeenCalled();
 	});
 });

@@ -207,6 +207,7 @@ export async function runRepair(
 				diagnosis: result.diagnosis,
 				metrics: agentMetrics,
 				...(decidable ? { decidable: true } : {}),
+				...(result.mrUrl ? { mrUrl: result.mrUrl } : {}),
 			},
 		});
 	}
@@ -432,14 +433,42 @@ function validatePatchPaths(patch: Patch, diffFiles: readonly string[]): string 
 	return null;
 }
 
-/** Parse the changed file set from a `git diff` text (MR diff). */
+/** Parse the changed file set from an MR diff text. Supports both the
+ * `diff --git a/x b/y` headers and the plain unified `--- x` / `+++ y`
+ * pairs glab emits (the real MR !281 diff had zero `diff --git` lines —
+ * the old parser returned an empty file set, silently disabling G0). */
 export function parseDiffFiles(diff: string): string[] {
 	const files: string[] = [];
+	let minusPath: string | null = null;
 	for (const line of diff.split("\n")) {
-		const m = line.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/);
-		if (m) files.push(m[2]);
+		const gitHeader = line.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/);
+		if (gitHeader) {
+			files.push(gitHeader[2]);
+			minusPath = null;
+			continue;
+		}
+		const minus = line.match(/^--- (.+?)\s*$/);
+		if (minus) {
+			minusPath = minus[1] === "/dev/null" ? null : minus[1];
+			continue;
+		}
+		const plus = line.match(/^\+\+\+ (.+?)\s*$/);
+		if (plus && plus[1] !== "/dev/null") {
+			let path = plus[1];
+			// Strip a/ b/ prefixes only when both sides carry them symmetrically.
+			if (
+				minusPath != null &&
+				path.startsWith("b/") &&
+				minusPath.startsWith("a/") &&
+				minusPath.slice(2) === path.slice(2)
+			) {
+				path = path.slice(2);
+			}
+			files.push(path);
+			minusPath = null;
+		}
 	}
-	return files;
+	return [...new Set(files)];
 }
 
 /** Build/CI config files are never editable, even inside the MR diff. */

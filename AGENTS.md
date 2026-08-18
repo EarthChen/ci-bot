@@ -95,7 +95,7 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 
 ## Rules
 
-- **G3 diff 白名单（ADR-0004）**：单测失败只改测试/文档，严禁碰 `src/main`；static-analysis/Checkstyle 失败可修 **MR diff 内**文件（含 src/main），禁压制式修复（`@SuppressWarnings`/删规则），改动绑定报告的 file:line:rule；diff 外一律转交。`validatePatchPaths` 在 createMR 前兜底校验
+- **G3 diff 白名单（ADR-0004/0006）**：单测失败可改测试/文档与 **MR diff 内**的 `src/main`（有限放宽：铁律是优先满足既有失败测试，严禁改写其断言语义）；static-analysis/Checkstyle 失败可修 **MR diff 内**文件（含 src/main）；禁压制式修复（`@SuppressWarnings`/删规则）；改动绑定报告的 file:line:rule；diff 外一律转交。转交但有部分修复成果 → 开部分修复 MR（描述说明已修/未修/根因，`mrUrl` 随转交通知与决策上下文）。`validatePatchPaths` 在 createMR 前兜底校验
 - **绝不自动 merge**：所有 MR 强制人工 review
 - **人工决策边界**：`/heal` 决策（test/prod/drop）只消除 agent 诊断不确定性，不授予新权限；**一轮介入**——恢复后再次转交即终局，不产生新决策；决策仅群聊可发，decider 入审计
 - **现场保留**：可决策转交（agent 主动 escalated 且带 diagnosis）冻干现场（cwd + worktree + session + branch），注册 awaiting_decision；TTL 默认 24h（`CIHEAL_DECISION_TTL_MS`）到期清扫；新 pipeline 到达（含被排除的）作废同项目待决策并清现场；class 5 转交（bot 早筛或 agent 判定）/bot 故障类转交不保留现场

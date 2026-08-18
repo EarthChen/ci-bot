@@ -34,7 +34,15 @@ function normalizeAgentResult(obj: Partial<AgentResult>): AgentResult | null {
 		};
 	}
 	if (obj.kind === "escalated" && diagnosis && typeof obj.reason === "string") {
-		return { kind: "escalated", diagnosis, reason: obj.reason, source: "agent" };
+		return {
+			kind: "escalated",
+			diagnosis,
+			reason: obj.reason,
+			source: "agent",
+			// 部分修复 MR（ADR-0006）：转交前 agent 已开的 MR 必须透传到
+			// 终局通知与审计（MR !288 事故：此处丢弃导致转交卡无 MR 链接）
+			...(typeof obj.mrUrl === "string" ? { mrUrl: obj.mrUrl } : {}),
+		};
 	}
 	return null;
 }

@@ -60,6 +60,17 @@ describe("AgentResult source tagging", () => {
 		expect(result).toMatchObject({ kind: "escalated", source: "agent" });
 	});
 
+	it("escalated JSON 中的 mrUrl 必须保留（部分修复 MR，MR !288 事故）", () => {
+		const result = tryParseAgentJson(
+			'{"kind":"escalated","diagnosis":{"failureClass":5,"summary":"checkstyle 20/21"},"reason":"剩余 1 处需改 diff 外调用方","mrUrl":"https://gitlab.example.com/p/-/merge_requests/288"}',
+		);
+		expect(result).toMatchObject({
+			kind: "escalated",
+			source: "agent",
+			mrUrl: "https://gitlab.example.com/p/-/merge_requests/288",
+		});
+	});
+
 	it("budget-exceeded escalation is source: 'runtime'", async () => {
 		const runner = new RealAgentRunner({
 			sessionFactory: fakeSessionFactory("irrelevant", 500),

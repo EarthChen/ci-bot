@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRepair } from "../../src/pipeline/run-repair.js";
+import { runRepair, extractPatch } from "../../src/pipeline/run-repair.js";
 import type { Worktree } from "../../src/pipeline/worktree.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import type { AgentRunner, AgentRunInput } from "../../src/agent/runner.js";
@@ -28,7 +30,11 @@ function fakeWorktree(): { worktree: Worktree; remove: ReturnType<typeof vi.fn> 
 }
 
 function stubAgent(result: AgentResult): AgentRunner {
-	return { run: async () => result };
+	return {
+		run: async () => result,
+		continue: async () => result,
+		close: () => {},
+	};
 }
 
 /** Spy runner: records run() calls; satisfies the full AgentRunner interface. */
@@ -247,5 +253,42 @@ describe("runRepair — 编排 + worktree seam", () => {
 			expect(out.diagnosisSummary).toBe("spec unreadable");
 		}
 		expect(remove).not.toHaveBeenCalled();
+	});
+});
+
+describe("extractPatch", () => {
+	const execFileP = promisify(execFile);
+	let repo: string;
+	beforeEach(() => {
+		repo = mkdtempSync(join(tmpdir(), "extract-patch-"));
+	});
+	afterEach(() => {
+		rmSync(repo, { recursive: true, force: true });
+	});
+
+	it("提取超过 1MB 的 diff 并排除 spill 文件（MR !281 实测 maxBuffer 崩溃回归）", async () => {
+		const git = async (...args: string[]) =>
+			(await execFileP("git", args, { cwd: repo })).stdout.trim();
+		await execFileP("git", ["init", "--quiet", "-b", "master", repo]);
+		await git("config", "user.email", "t@ci-bot");
+		await git("config", "user.name", "ci-bot test");
+		writeFileSync(join(repo, "seed.txt"), "baseline\n");
+		await git("add", "-A");
+		await git("commit", "--quiet", "-m", "baseline");
+		const baseSha = await git("rev-parse", "HEAD");
+
+		// 模拟 agent 编辑：>1MB 内容（execFile 默认 maxBuffer = 1MB）
+		writeFileSync(join(repo, "big-test.txt"), "x".repeat(2 * 1024 * 1024));
+		// spill 文件：必须从 patch 中排除
+		writeFileSync(join(repo, "ci-log.txt"), "log\n");
+		writeFileSync(join(repo, "mr-diff.patch"), "diff\n");
+
+		const patch = await extractPatch(repo, "fix summary", baseSha);
+		expect(patch.paths).toContain("big-test.txt");
+		expect(patch.paths).not.toContain("ci-log.txt");
+		expect(patch.paths).not.toContain("mr-diff.patch");
+		expect(patch.diff).not.toContain("ci-log.txt");
+		expect(patch.diff.length).toBeGreaterThan(1024 * 1024);
+		expect(patch.summary).toBe("fix summary");
 	});
 });

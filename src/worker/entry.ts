@@ -128,6 +128,8 @@ async function realGlabRunner(args: readonly string[]): Promise<string> {
 	const execFileP = promisify(execFile);
 	const { stdout } = await execFileP("glab", args as string[], {
 		env: { ...process.env, GITLAB_HOST: process.env.GITLAB_URL ?? "" },
+		// CI logs / MR diffs can exceed execFile's 1MB default buffer.
+		maxBuffer: 128 * 1024 * 1024,
 	});
 	return stdout;
 }

@@ -475,12 +475,20 @@ function shortSha(sha: string): string {
 }
 
 /**
+ * Stdout buffer ceiling for subprocess calls. Node's execFile default
+ * (1MB) is too small: a git diff that includes large MR spill files, or a
+ * multi-module mvn test run, exceeds it easily — the default crashed the
+ * worker with RangeError on MR !281 pipeline 100033426's extractPatch run.
+ */
+const EXEC_MAX_BUFFER = 128 * 1024 * 1024;
+
+/**
  * Extract the real git patch from the agent's worktree.
  * `git diff <baseSha>` is authoritative — captures all agent changes
  * (committed or not) relative to the pipeline's sha. Agent self-reported
  * content is never trusted.
  */
-async function extractPatch(
+export async function extractPatch(
 	cwd: string,
 	summary: string,
 	baseSha: string,
@@ -495,12 +503,12 @@ async function extractPatch(
 	const { stdout: rawDiff } = await exec(
 		"git",
 		["diff", "--no-color", baseSha],
-		{ cwd },
+		{ cwd, maxBuffer: EXEC_MAX_BUFFER },
 	);
 	const { stdout: namesOut } = await exec(
 		"git",
 		["diff", "--name-only", baseSha],
-		{ cwd },
+		{ cwd, maxBuffer: EXEC_MAX_BUFFER },
 	);
 	const paths = namesOut
 		.split("\n")
@@ -572,7 +580,7 @@ async function findSkipAnnotations(cwd: string): Promise<string[]> {
 		const { stdout: namesOut } = await exec(
 			"git",
 			["diff", "--name-only", "--cached"],
-			{ cwd },
+			{ cwd, maxBuffer: EXEC_MAX_BUFFER },
 		);
 		const paths = namesOut
 			.split("\n")
@@ -584,7 +592,7 @@ async function findSkipAnnotations(cwd: string): Promise<string[]> {
 			const { stdout: diff } = await exec(
 				"git",
 				["diff", "--no-color", "--cached", "--", p],
-				{ cwd },
+				{ cwd, maxBuffer: EXEC_MAX_BUFFER },
 			);
 			// Added lines (diff hunk lines starting with '+') that contain a
 			// @Skip or @Disabled annotation.
@@ -690,7 +698,11 @@ class MvnGradleTestRunner implements TestRunner {
 					...(module ? ["-pl", module] : []),
 					...(testArg ? [testArg] : []),
 				];
-				await exec("mvn", args, { cwd, env: { ...process.env } });
+				await exec("mvn", args, {
+					cwd,
+					env: { ...process.env },
+					maxBuffer: EXEC_MAX_BUFFER,
+				});
 				return { status: "green" };
 			}
 			const hasGradle = await exec("test", ["-f", "build.gradle"], { cwd })
@@ -699,7 +711,11 @@ class MvnGradleTestRunner implements TestRunner {
 			if (hasGradle) {
 				const taskArg = !isFull ? gradleTaskArg(patch!.paths) : "";
 				const args = ["test", ...taskArg.split(" ").filter(Boolean)];
-				await exec("./gradlew", args, { cwd, env: { ...process.env } });
+				await exec("./gradlew", args, {
+					cwd,
+					env: { ...process.env },
+					maxBuffer: EXEC_MAX_BUFFER,
+				});
 				return { status: "green" };
 			}
 		} catch (err) {

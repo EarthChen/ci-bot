@@ -60,13 +60,13 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 | class | 含义 | 处理 |
 | --- | --- | --- |
 | 1 | 测试 bug（断言/mock/数据错） | 修测试 |
-| 2 | 被测代码变更导致测试过时 | 修测试（或 diff 内 src/main 补齐实现）+ 文档同步 |
+| 2 | 被测代码变更导致测试过时 | 先意图判定：有意变更→修测试；改出 bug→修 diff 内 src/main；判不定→转交 |
 | 3 | 缺失测试（新路径无覆盖） | 按 spec 补测试（实现违 spec 时可修 diff 内 src/main） |
 | 4 | flaky/环境问题 | 转交 |
 | 5 | 非单测失败（编译/依赖） | 转交 |
 
 - class 1：断言期望与被测代码实际行为不符；mock 返回值过时；测试数据硬编码错。
-- class 2：MR diff 改了 `src/main/`，测试没跟上（签名/行为变）。
+- class 2：MR diff 改了 `src/main/`，测试没跟上（签名/行为变）。行为变必须先做意图判定（有意变更 vs 改出 bug），不得默认更新断言。
 - class 3：CI 显示某路径未覆盖，或 spec 要求的行为无测试。
 - class 4：本地通过、CI 失败；时间/网络/并发相关。
 - class 5：生产代码（`src/main`）编译失败；`cannot resolve` 依赖错；非 test phase。仅测试编译挂归 class 2。
@@ -87,7 +87,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 **class 2（测试过时）**
 
 1. 读 MR diff，理解被测代码改了什么。
-2. 过时判定：签名变 → 改调用；行为变 → 改断言。
+2. 过时判定：签名变 → 改调用；行为变 → **先做意图判定**（见 diagnosis-detail：证据 = MR 描述/issue/设计文档 > javadoc/ADR > 测试历史；有意变更 → 改测试，改出 bug → 修 diff 内 src/main，判不定 → 转交）。
 3. 修测试 + **文档同步（步 3）**。
 4. 跑所改测试类确认绿（用项目构建工具；多模块在所属模块目录跑，勿在 reactor 根跑）。
 

@@ -91,7 +91,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 1. 读 MR diff，理解被测代码改了什么。
 2. 过时判定：签名变 → 改调用；行为变 → **先做意图判定**（见 diagnosis-detail：证据 = MR 描述/issue/设计文档 > javadoc/ADR > 测试历史；有意变更 → 改测试，改出 bug → 修 diff 内 src/main，判不定 → 转交）。
 3. 修测试 + **文档同步（步 3）**。
-4. 跑所改测试类确认绿（用项目构建工具；多模块在所属模块目录跑，勿在 reactor 根跑）。
+4. 跑所改测试类确认绿：多模块 Maven 在仓库根用 `mvn test -pl <模块> -am -Dtest=<类>`（`-am` 连带构建上游依赖模块；勿 cd 进模块目录裸跑 mvn）。
 
 **class 2/3 的 src/main 补齐（有限放宽）**：当失败根因是 **MR diff 内**的被测代码违背其自带 spec（javadoc/ADR/设计文档/同 MR 测试承诺，如承诺的默认值未实现、承诺的参数校验缺失）：
 
@@ -118,7 +118,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 
 ## 4 自测绿
 
-- 只跑所改测试类（Maven `mvn test -Dtest=<类>` / Gradle `./gradlew test --tests <类>` / pnpm / pytest；多模块在所属模块目录）。
+- 只跑所改测试类。**多模块 Maven 必须在仓库根用 `-pl <模块> -am`**：`mvn test -pl <模块> -am -Dtest=<类>`（`-am` 连带构建同仓库上游依赖模块；cd 进模块目录裸跑 mvn 会因兄弟模块依赖缺失而失败，MR !281 实测）。Gradle `./gradlew :<模块>:test --tests <类>`；pnpm / pytest 在所属模块目录。
 - 退出码 0 = 绿。仍红 → 重新诊断（可能误判）→ 转交或重修。
 - 勿因其他无关测试失败 revert 本次改动；仅所改测试本身仍红才回退。
 

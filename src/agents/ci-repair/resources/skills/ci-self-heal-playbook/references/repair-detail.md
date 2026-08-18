@@ -98,7 +98,7 @@
 
 ## 验证（跑测试）
 
-- **v1 只跑相关测试**：失败的那个测试类。命令参考：`mvn test -Dtest=<TestClassName>`（Java/Maven）、`gradle test --tests <TestClassName>`（Java/Gradle）。
+- **v1 只跑相关测试**：失败的那个测试类。命令参考：**多模块 Maven 必须在仓库根用 `mvn test -pl <模块> -am -Dtest=<TestClassName>`**（`-am` 连带构建被测模块依赖的上游模块，否则兄弟模块依赖不在本地仓库会失败；勿 cd 进模块目录裸跑 mvn）；单模块 `mvn test -Dtest=<TestClassName>`；Gradle `./gradlew :<模块>:test --tests <TestClassName>`。
 - 全量回归是 ticket 04，v1 不做。
 - 测试绿才算 fixed；仍红 → 重新诊断 → 转交或重修。
 - 跑测试用 bash 工具，cwd 是 agent 的工作目录（bot 注入的 worker 隔离 cwd）。

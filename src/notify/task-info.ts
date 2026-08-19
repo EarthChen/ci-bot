@@ -7,6 +7,7 @@
  */
 
 import type { AgentRunStats } from "../types.js";
+import { formatFailureClass } from "../types.js";
 
 /** 引用块最大行数（原始播报截断，避免钉钉消息过长）。 */
 const MAX_QUOTED_LINES = 10;
@@ -37,7 +38,7 @@ export function taskInfoLines(stats?: AgentRunStats): string[] {
 			: `Session：复用（源自 pipeline ${stats.reusedFromPipeline}）`,
 		...(stats.failureClass == null
 			? []
-			: [`失败分类：class ${stats.failureClass}`]),
+			: [`失败分类：${formatFailureClass(stats.failureClass)}`]),
 	];
 }
 

@@ -333,3 +333,68 @@ describe("createDecisionLifecycle — startTtlSweep", () => {
 		}
 	});
 });
+
+describe("createDecisionLifecycle — onMrTerminal（MR 合并/关闭清理）", () => {
+	const router = () => new ProjectRouter({ "proj-A": "cid-A" }, "");
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "decision-lifecycle-mr-"));
+		store = new DecisionStore(join(dir, "decisions.db"));
+		sender = new InMemoryDingTalkNotifier();
+	});
+
+	afterEach(() => {
+		store.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	const mrEventJson = (projectId: string, pipelineId: number, mrIid: number): string =>
+		JSON.stringify({ ...makeEvent(projectId, pipelineId), mrIid });
+
+	it("merge：作废该 MR 的 awaiting 决策 + 清现场；其他 MR 不受影响", async () => {
+		const cwdA = makeScene("scene-mr289");
+		const cwdB = makeScene("scene-mr999");
+		seedAwaiting("D-289", "proj-A", cwdA, mrEventJson("proj-A", 42, 289));
+		seedAwaiting("D-999", "proj-A", cwdB, mrEventJson("proj-A", 43, 999));
+		const lifecycle = createDecisionLifecycle({ store, router: router(), sender });
+
+		await lifecycle.onMrTerminal({ projectId: "proj-A", mrIid: 289, action: "merged" });
+
+		const d289 = store.get("D-289")!;
+		expect(d289.status).toBe("invalidated");
+		expect(d289.decided_by).toBe("system:mr-terminal");
+		expect(existsSync(cwdA)).toBe(false);
+		expect(store.get("D-999")!.status).toBe("awaiting_decision");
+		expect(existsSync(cwdB)).toBe(true);
+		expect(sender.sentGroups).toEqual([]); // 静默清理，不发群通知
+	});
+
+	it("非 awaiting 决策即使 mrIid 匹配也不回滚", async () => {
+		const cwd = makeScene("scene-closed");
+		store.create({
+			decision_id: "D-closed",
+			pipeline_id: "42",
+			project_id: "proj-A",
+			event_json: mrEventJson("proj-A", 42, 289),
+			cwd_path: cwd,
+			session_path: join(cwd, ".pi-agent"),
+			branch: "ci-self-heal/main-abcdef12",
+			status: "closed",
+			expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+		});
+		const lifecycle = createDecisionLifecycle({ store, router: router(), sender });
+
+		await lifecycle.onMrTerminal({ projectId: "proj-A", mrIid: 289, action: "merged" });
+
+		expect(store.get("D-closed")!.status).toBe("closed");
+		expect(existsSync(cwd)).toBe(true);
+	});
+
+	it("无匹配决策 → 静默 no-op", async () => {
+		const lifecycle = createDecisionLifecycle({ store, router: router(), sender });
+		await expect(
+			lifecycle.onMrTerminal({ projectId: "proj-A", mrIid: 1, action: "closed" }),
+		).resolves.toBeUndefined();
+		expect(sender.sentGroups).toEqual([]);
+	});
+});

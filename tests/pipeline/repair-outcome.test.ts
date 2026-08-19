@@ -84,6 +84,7 @@ describe("finishRepair — 统一终态 handler", () => {
 		expect(trace.outcome).toBe("mr");
 		expect(trace.mrUrl).toBe("https://mr/1");
 		expect(trace.diff).toBe("diff--");
+		expect(trace.classDescription).toBe("测试 bug（断言/mock/数据错）");
 		expect(dt.sent).toHaveLength(1);
 		expect(dt.sent[0].title).toBe("CI 自愈修复成功");
 		expect(removeCalls).toContain(cwd);

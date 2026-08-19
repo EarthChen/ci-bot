@@ -34,8 +34,30 @@ export interface PipelineEvent {
 	readonly failedStages?: readonly string[];
 }
 
+/** GitLab merge_request webhook 终局事件（action=merge|close）——触发该 MR 关联的 bot 状态清理。 */
+export interface MrTerminalEvent {
+	readonly projectId: string;
+	readonly mrIid: number;
+	readonly action: "merged" | "closed";
+}
+
 /** G1 failure root-cause class (v1 only auto-fixes 1/2/3; 4/5 escalate). */
 export type FailureClass = 1 | 2 | 3 | 4 | 5;
+
+/** G1 权威类名（playbook diagnosis-detail.md 标题逐字一致；bot 侧上报用）。 */
+export const FAILURE_CLASS_NAMES: Readonly<Record<FailureClass, string>> = {
+	1: "测试 bug（断言/mock/数据错）",
+	2: "被测代码变更导致测试过时",
+	3: "缺失测试",
+	4: "flaky / 环境问题",
+	5: "非单测失败（编译/依赖）",
+};
+
+/** 上报统一渲染：class N（类名）；未知数字退化为 class N。 */
+export function formatFailureClass(n: number): string {
+	const name = FAILURE_CLASS_NAMES[n as FailureClass];
+	return name === undefined ? `class ${n}` : `class ${n}（${name}）`;
+}
 
 /** Structured diagnosis output the agent produces. */
 export interface Diagnosis {

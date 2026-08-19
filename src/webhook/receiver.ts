@@ -14,7 +14,7 @@ import type {
 	PipelineFailureNotifier,
 	RepairBroadcastHint,
 } from "../notify/pipeline-notification.js";
-import type { PipelineEvent } from "../types.js";
+import type { MrTerminalEvent, PipelineEvent } from "../types.js";
 import { REPAIR_BRANCH_PREFIX } from "../pipeline/worktree.js";
 import { logger } from "../util/log.js";
 
@@ -120,6 +120,11 @@ export interface MountWebhookDeps {
 	 *  decisions. Errors are caught and logged — the webhook response must
 	 *  never be affected. */
 	readonly onNewPipeline?: (event: PipelineEvent) => Promise<void>;
+	/** Fired on an MR terminal event (merge_request action=merge|close) —
+	 *  drives cleanup of bot state tied to that MR (session archive, awaiting
+	 *  decisions + scene). Errors are caught and logged; never affect the
+	 *  webhook response. */
+	readonly onMrTerminal?: (event: MrTerminalEvent) => Promise<void>;
 }
 
 /** Rate-limit state (in-memory; ticket 07 may move to SQLite-backed). */
@@ -158,6 +163,21 @@ export async function mountWebhook(
 		if (token !== deps.config.webhookSecret) {
 			logger.warn({ ip: req.ip }, "webhook token invalid");
 			return reply.code(401).send({ error: "unauthorized" });
+		}
+
+		// 3b. MR 终局事件（merge_request，action=merge|close）：MR 生命周期
+		//     结束 → 清理该 MR 关联的 bot 状态（session 存档、待决策+现场）。
+		//     幂等；与 bot 无关的 MR 空转无副作用。
+		const mrTerminal = parseMrTerminalEvent(req.body);
+		if (mrTerminal !== null) {
+			if (deps.onMrTerminal) {
+				try {
+					await deps.onMrTerminal(mrTerminal);
+				} catch (err) {
+					logger.warn({ err, mrTerminal }, "onMrTerminal hook failed");
+				}
+			}
+			return reply.code(202).send({ status: "mr-terminal" });
 		}
 
 		// 4. Parse + filter to failed pipelines.
@@ -270,4 +290,27 @@ async function notifyQuietly(
 	} catch (err) {
 		logger.warn({ err, pipelineId }, "pipeline failure notification failed");
 	}
+}
+
+/** Parse a GitLab merge_request webhook payload into an MR terminal event.
+ *  Only action=merge|close are terminal (cleanup-relevant); open/update/
+ *  reopen etc. return null and fall through to the ignore path. */
+export function parseMrTerminalEvent(body: unknown): MrTerminalEvent | null {
+	if (typeof body !== "object" || body === null) return null;
+	const obj = body as Record<string, unknown>;
+	if (obj.object_kind !== "merge_request") return null;
+	const attrs = (obj.object_attributes ?? {}) as Record<string, unknown>;
+	const action =
+		attrs.action === "merge"
+			? "merged"
+			: attrs.action === "close"
+				? "closed"
+				: null;
+	if (action === null) return null;
+	const projectId = extractProjectId(
+		(obj.project ?? {}) as Record<string, unknown>,
+	);
+	if (projectId === null) return null;
+	if (typeof attrs.iid !== "number") return null;
+	return { projectId, mrIid: attrs.iid, action };
 }

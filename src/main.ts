@@ -12,6 +12,7 @@ import { Scheduler, parseSkipStages } from "./agent-runtime/scheduler.js";
 import { CI_REPAIR_SCHEDULING_POLICY } from "./agent/ci-repair-definition.js";
 import { SubprocessWorkerManager } from "./worker/manager.js";
 import { mountWebhook } from "./webhook/receiver.js";
+import { removeMrSession } from "./pipeline/mr-session-store.js";
 import { StreamDingTalkNotifier } from "./notify/stream-dingtalk.js";
 import {
 	type DingTalkMessage,
@@ -238,6 +239,11 @@ async function main(): Promise<void> {
 		},
 		pipelineNotifier,
 		onNewPipeline: (event) => decisionLifecycle.onNewPipeline(event),
+		// MR 终局（merge/close）：作废该 MR 的待决策+清现场，删 session 存档。
+		onMrTerminal: async (mrEvent) => {
+			await decisionLifecycle.onMrTerminal(mrEvent);
+			removeMrSession(mrEvent.projectId, mrEvent.mrIid);
+		},
 	});
 
 	await app.listen({ port: config.port, host: "0.0.0.0" });

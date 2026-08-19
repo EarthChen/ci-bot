@@ -7,6 +7,7 @@
  */
 
 import type { Patch, Diagnosis } from "../types.js";
+import { formatFailureClass } from "../types.js";
 
 /** Result of a glab mr create call. */
 export interface CreatedMr {
@@ -183,7 +184,7 @@ function buildMrBody(diagnosis: Diagnosis, patch: Patch): string {
 	return [
 		"## CI 自愈 Bot 修复",
 		"",
-		`**根因分类**: class ${diagnosis.failureClass}`,
+		`**根因分类**: ${formatFailureClass(diagnosis.failureClass)}`,
 		`**诊断摘要**: ${diagnosis.summary}`,
 		"",
 		"### 修复内容",

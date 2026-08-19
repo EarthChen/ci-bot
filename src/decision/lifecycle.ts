@@ -14,7 +14,7 @@
 import type { DingTalkMessage } from "../notify/dingtalk.js";
 import type { GroupMessageSender } from "../notify/pipeline-notification.js";
 import type { ProjectRouter } from "../notify/project-router.js";
-import type { PipelineEvent } from "../types.js";
+import type { MrTerminalEvent, PipelineEvent } from "../types.js";
 import { logger } from "../util/log.js";
 import { cleanupScene } from "../worker/manager.js";
 import type { DecisionRecord, DecisionStore } from "./store.js";
@@ -33,6 +33,9 @@ export interface TtlSweepHandle {
 export interface DecisionLifecycle {
 	/** Called when a NEW pipeline event is accepted (enqueued) by the webhook. */
 	onNewPipeline(event: PipelineEvent): Promise<void>;
+	/** Called on MR terminal (merge/close): invalidate awaiting decisions
+	 *  tied to that MR + clean their scenes. Silent — no group notification. */
+	onMrTerminal(event: MrTerminalEvent): Promise<void>;
 	/** Start the main-process TTL sweep timer (T08). Default interval 60s,
 	 *  overridable via opts or CIHEAL_DECISION_SWEEP_INTERVAL_MS. */
 	startTtlSweep(opts?: { intervalMs?: number }): TtlSweepHandle;
@@ -64,6 +67,37 @@ export function createDecisionLifecycle(
 				conversationId,
 				buildInvalidationMessage(event, invalidated),
 			);
+		},
+		async onMrTerminal(event) {
+			// 该 MR 关联的待决策（event_json.mrIid 匹配）：MR 已合并/关闭，
+			// 决策对象消失 → 作废 + 清现场。静默（仅日志）——MR 终局是正常
+			// 生命周期，不打扰群。
+			const matched = deps.store
+				.listByProject(event.projectId)
+				.filter(
+					(r) =>
+						r.status === "awaiting_decision" &&
+						mrIidOf(r) === event.mrIid,
+				);
+			for (const record of matched) {
+				deps.store.updateStatus(record.decision_id, {
+					status: "invalidated",
+					decided_by: "system:mr-terminal",
+					remark: `MR ${event.mrIid} ${event.action}`,
+				});
+				await cleanupRecordScene(record);
+			}
+			if (matched.length > 0) {
+				logger.info(
+					{
+						projectId: event.projectId,
+						mrIid: event.mrIid,
+						action: event.action,
+						decisionIds: matched.map((r) => r.decision_id),
+					},
+					"awaiting decisions invalidated on MR terminal",
+				);
+			}
 		},
 		startTtlSweep(opts) {
 			const intervalMs =
@@ -165,4 +199,14 @@ function buildExpiryMessage(
 			...expired.map((r) => `- ${r.decision_id}`),
 		].join("\n"),
 	};
+}
+
+/** mrIid recorded on the decision (event_json); missing/unparseable → undefined. */
+function mrIidOf(record: DecisionRecord): number | undefined {
+	try {
+		const event = JSON.parse(record.event_json) as PipelineEvent;
+		return event.mrIid;
+	} catch {
+		return undefined;
+	}
 }

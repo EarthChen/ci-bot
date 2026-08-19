@@ -162,3 +162,33 @@ export function evictMrSessions(dir: string, cap: number): void {
 		// best-effort retention — never break the save path
 	}
 }
+
+/**
+ * Remove this MR's archive (jsonl + meta sidecar) — MR 终局（merge/close）
+ * 清理入口。Returns whether an archive actually existed. best-effort：
+ * I/O 失败记日志返回 false，绝不抛出。
+ */
+export function removeMrSession(projectId: string, mrIid: number): boolean {
+	try {
+		const dir = resolveMrSessionsDir();
+		const key = storeKey(projectId, mrIid);
+		const sessionPath = join(dir, `${key}.jsonl`);
+		const existed = existsSync(sessionPath);
+		rmSync(sessionPath, { force: true });
+		rmSync(join(dir, `${key}.meta.json`), { force: true });
+		if (existed) {
+			logger.info({ projectId, mrIid }, "mr session archive removed (MR terminal)");
+		}
+		return existed;
+	} catch (err) {
+		logger.warn(
+			{
+				err: err instanceof Error ? err.message : String(err),
+				projectId,
+				mrIid,
+			},
+			"mr session removal failed (non-fatal)",
+		);
+		return false;
+	}
+}

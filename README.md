@@ -36,6 +36,8 @@ pnpm dev
 #    http://<host>:<PORT>/webhook/gitlab?repair=1
 #    并设置 X-Gitlab-Token = GITLAB_WEBHOOK_SECRET
 #    （不带 repair 参数 = 纯失败播报，不触发修复）
+#    事件勾选：Pipeline events + Merge request events
+#    （后者用于 MR 合并/关闭后清理 bot 侧关联状态，ADR-0008）
 
 # 3. 触发一次单测失败的 pipeline，观察 bot 自动诊断 + 开 MR + 钉钉通知
 

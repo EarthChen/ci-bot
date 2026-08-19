@@ -73,7 +73,7 @@ docker compose logs -f                     # 看到 "ci-self-heal bot listening"
 HOST_PORT=18080 docker compose up -d
 ```
 
-最后在 GitLab 项目设置里把 pipeline webhook 指向 `http://<宿主机地址>:<HOST_PORT>/webhook/gitlab?repair=1`，Secret Token 填 `.env` 的 `GITLAB_WEBHOOK_SECRET`（不带 `repair` 参数 = 纯失败播报）。
+最后在 GitLab 项目设置里把 pipeline webhook 指向 `http://<宿主机地址>:<HOST_PORT>/webhook/gitlab?repair=1`，Secret Token 填 `.env` 的 `GITLAB_WEBHOOK_SECRET`（不带 `repair` 参数 = 纯失败播报）。事件类型同时勾选 **Pipeline events** 与 **Merge request events**（后者用于 MR 合并/关闭后清理 bot 侧关联状态，ADR-0008）。
 
 ## 4. 裸 docker run（不用 compose）
 

@@ -4,10 +4,11 @@ import type { Scheduler } from "../../src/agent-runtime/scheduler.js";
 import type { PipelineFailureNotifier } from "../../src/notify/pipeline-notification.js";
 import {
 	mountWebhook,
+	parseMrTerminalEvent,
 	parsePipelinePayload,
 	type WebhookConfig,
 } from "../../src/webhook/receiver.js";
-import type { PipelineEvent } from "../../src/types.js";
+import type { MrTerminalEvent, PipelineEvent } from "../../src/types.js";
 
 
 function failedPipeline(projectId: string | number): unknown {
@@ -363,5 +364,117 @@ describe("webhook bot-owned pipeline guard", () => {
 		expect(res.statusCode).toBe(202);
 		expect(res.json()).toEqual({ status: "ignored-bot-pipeline" });
 		expect(notify).not.toHaveBeenCalled();
+	});
+});
+
+describe("webhook MR 终局事件（merge_request）", () => {
+	const webhookConfig: WebhookConfig = {
+		webhookSecret: "secret",
+		ipAllowlist: [],
+		rateLimitMax: 100,
+		rateLimitWindowMs: 60_000,
+	};
+
+	function mrPayload(action: string): Record<string, unknown> {
+		return {
+			object_kind: "merge_request",
+			object_attributes: { iid: 289, action },
+			project: { id: 31041, web_url: "https://gitlab.example.com/g/p" },
+		};
+	}
+
+	async function injectMr(opts: {
+		action: string;
+		token?: string;
+		onMrTerminal?: (event: MrTerminalEvent) => Promise<void>;
+	}) {
+		const app = Fastify();
+		const scheduler = { enqueue: vi.fn() } as unknown as Scheduler;
+		await mountWebhook(app, {
+			scheduler,
+			config: webhookConfig,
+			...(opts.onMrTerminal ? { onMrTerminal: opts.onMrTerminal } : {}),
+		});
+		const res = await app.inject({
+			method: "POST",
+			url: "/webhook/gitlab",
+			headers: { "x-gitlab-token": opts.token ?? "secret" },
+			payload: mrPayload(opts.action),
+		});
+		await app.close();
+		return { res, scheduler };
+	}
+
+	it("action=merge → 202 mr-terminal，hook 收到归一化事件，不入修复队列", async () => {
+		const onMrTerminal = vi.fn().mockResolvedValue(undefined);
+		const { res, scheduler } = await injectMr({ action: "merge", onMrTerminal });
+		expect(res.statusCode).toBe(202);
+		expect(res.json()).toEqual({ status: "mr-terminal" });
+		expect(onMrTerminal).toHaveBeenCalledWith({
+			projectId: "31041",
+			mrIid: 289,
+			action: "merged",
+		});
+		expect(scheduler.enqueue).not.toHaveBeenCalled();
+	});
+
+	it("action=close → hook 收到 action=closed", async () => {
+		const onMrTerminal = vi.fn().mockResolvedValue(undefined);
+		const { res } = await injectMr({ action: "close", onMrTerminal });
+		expect(res.statusCode).toBe(202);
+		expect(onMrTerminal).toHaveBeenCalledWith(
+			expect.objectContaining({ action: "closed" }),
+		);
+	});
+
+	it("action=open/update → 202 ignored，hook 不调用", async () => {
+		const onMrTerminal = vi.fn().mockResolvedValue(undefined);
+		for (const action of ["open", "update"]) {
+			const { res } = await injectMr({ action, onMrTerminal });
+			expect(res.statusCode).toBe(202);
+			expect(res.json()).toEqual({ status: "ignored" });
+		}
+		expect(onMrTerminal).not.toHaveBeenCalled();
+	});
+
+	it("验签优先：错误 token → 401，hook 不调用", async () => {
+		const onMrTerminal = vi.fn().mockResolvedValue(undefined);
+		const { res } = await injectMr({ action: "merge", token: "wrong", onMrTerminal });
+		expect(res.statusCode).toBe(401);
+		expect(onMrTerminal).not.toHaveBeenCalled();
+	});
+
+	it("hook 异常不影响响应（仍 202）", async () => {
+		const onMrTerminal = vi.fn().mockRejectedValue(new Error("boom"));
+		const { res } = await injectMr({ action: "merge", onMrTerminal });
+		expect(res.statusCode).toBe(202);
+		expect(res.json()).toEqual({ status: "mr-terminal" });
+	});
+});
+
+describe("parseMrTerminalEvent", () => {
+	function base(over: Record<string, unknown> = {}): unknown {
+		return {
+			object_kind: "merge_request",
+			object_attributes: { iid: 289, action: "merge" },
+			project: { id: 31041 },
+			...over,
+		};
+	}
+
+	it("非数字 iid → null", () => {
+		expect(
+			parseMrTerminalEvent(base({ object_attributes: { iid: "289", action: "merge" } })),
+		).toBeNull();
+	});
+
+	it("project id 非法（路径穿越形态）→ null", () => {
+		expect(
+			parseMrTerminalEvent(base({ project: { id: "../../../etc" } })),
+		).toBeNull();
+	});
+
+	it("object_kind 非 merge_request → null", () => {
+		expect(parseMrTerminalEvent(base({ object_kind: "pipeline" }))).toBeNull();
 	});
 });

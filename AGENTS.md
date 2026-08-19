@@ -41,7 +41,7 @@ src/
     index.ts               # .env 解析 + 配置校验；必填 CIHEAL_BOT_ROOT / CIHEAL_PI_BASE_DIR（绝对路径）缺失即抛
     paths.ts               # DATA_ROOT 派生的全部可写路径（work/bare/audit/logs + 两个 SQLite db）
     retention.ts           # audit/scene 保留策略
-  webhook/receiver.ts      # POST /webhook/gitlab：IP allowlist → 限流 → X-Gitlab-Token 验签 → 路径穿越校验 → builds[] 解析 failedStages → 修复开关（query `repair=1|true`，缺参=纯播报）→ stage 排除/去重入队 → onNewPipeline hook（决策作废）→ 即时播报
+  webhook/receiver.ts      # POST /webhook/gitlab：IP allowlist → 限流 → X-Gitlab-Token 验签 → 路径穿越校验 → builds[] 解析 failedStages → 修复开关（query `repair=1|true`，缺参=纯播报）→ stage 排除/去重入队 → onNewPipeline hook（决策作废）→ 即时播报；另接收 merge_request 终局事件（action=merge|close）→ onMrTerminal hook（MR 关联状态清理）
   agent-runtime/
     scheduler.ts           # 调度：串行键=project+MR（同项目多 MR 可并发）+ 全局 BOT_CONCURRENCY 封顶，pipeline-id 幂等去重 + 崩溃自警；可决策转交注册决策；enqueueResume（决策恢复）；skipStages 排除；routed 转交/终局通知
     runtime.ts             # SharedAgentRuntime：Pi session 创建、模型策略、资源加载、token 预算监控、执行循环
@@ -57,7 +57,7 @@ src/
   decision/
     store.ts               # DecisionStore（SQLite）：决策 CRUD + TTL sweep + invalidateByProject
     heal-command.ts        # /heal <id> test|prod|drop [备注] 群命令（claim-then-enqueue + 补偿回滚）
-    lifecycle.ts           # onNewPipeline（新 pipeline 作废待决策 + 清现场 + 通知）+ startTtlSweep
+    lifecycle.ts           # onNewPipeline（新 pipeline 作废待决策 + 清现场 + 通知）+ onMrTerminal（MR 合并/关闭作废该 MR 待决策 + 清现场，静默）+ startTtlSweep
   agent/
     ci-repair-definition.ts  # CI Repair 垂直 agent 的 AgentDefinition（buildPrompt / buildContinuePrompt / buildDecisionPrompt）
     real-runner.ts         # RealAgentRunner：委托 SharedAgentRuntime；run/continue/resume；session 文件发现（findSessionFile）
@@ -102,6 +102,7 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 - **跨 pipeline session 复用（ADR-0007）**：带 MR 成果的终局（mr / 部分修复转交）把 Pi session jsonl 存档到 `DATA_ROOT/mr-sessions/<proj>-<mr>.jsonl`（latest-wins，LRU 上限 32）；同 MR 后续 pipeline 命中则拷入新 worker → `SessionManager.open` + `AgentSession.compact()`（/compact 编程接口）+ continue，prompt 强制声明「MR 已更新到新 commit、不得沿用旧诊断」；存档/复用任何环节失败均降级为全新 session，不阻断修复；审计记 `reusedFromPipeline`
 - **stage 排除**：`CIHEAL_SKIP_STAGES`（逗号分隔）中的 stage 全部失败时跳过修复（不起 agent、不注册决策），即时播报保留并尾注「不在自愈范围」；builds 缺失时降级为原行为。修复入队成功的失败播报尾注「已开始修复」，消除失败卡与终局卡之间的静默窗口
 - **bot 自身 pipeline 忽略**：源分支为 `ci-self-heal/*` 的 pipeline（bot 修复 MR 触发）回流 webhook 时直接忽略——不播报、不入队、不触发 onNewPipeline（避免 bot 修自己的修复 MR 形成循环、避免作废原 MR 的待决策）；修复 MR 的 CI 监控由 worker 内部轮询驱动（ADR-0004），不受影响
+- **MR 终局清理（ADR-0008）**：merge_request 事件 action=merge|close → 删该 MR 的 session 存档（mr-sessions）+ 作废关联该 MR（event_json.mrIid 匹配）的 awaiting 决策并清现场（`system:mr-terminal`）；幂等、对 bot 无关 MR 空转，仅日志不发群通知。bare clone/audit 不动（共享资产/retention 域）。GitLab 侧需同时勾选 Merge request events；事件丢失时退化为既有 LRU/TTL 被动回收
 - **钉钉通知与 MR 解耦**：agent 永不持有钉钉工具；bot 代码在确定性 pipeline 节点调钉钉。转交通知一律走 ProjectRouter 到路由群（与失败播报同群）。`CIHEAL_DINGTALK_MODE=fake` 时改为记录不推送
 - **预算软上限**：SharedAgentRuntime 在 `turn_end` 累计 token，超 `BOT_BUDGET_TOKENS`（总 200k）或 `BOT_BUDGET_PER_TURN_TOKENS`（单 turn 50k）→ `session.abort()` + 钉钉告警。软上限风险：abort 在 turn 结束后触发，单 turn 可能已超支。resume 预算独立计
 - **class 5 早筛**：bot 在 spawn agent 前用关键词筛**依赖错**直接转交，省预算；编译错放行 agent 判 class 2/5（仅测试编译挂 = class 2 可修）——分类是 agent 的职责（与 stage 排除互补：一个按内容、一个按 stage 名）
@@ -114,6 +115,6 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 
 - **Issue tracker**：`.scratch/<feature>/`（spec + issues：ci-self-heal-bot / shared-agent-runtime / human-decision-resume）
 - **Triage labels**：needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix（见 `docs/agents/triage-labels.md`）
-- **Domain docs**：根 `CONTEXT.md`（领域词汇表）+ `docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽+session 复用重试 / 0005 现场保留与决策恢复）
+- **Domain docs**：根 `CONTEXT.md`（领域词汇表）+ `docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽+session 复用重试 / 0005 现场保留与决策恢复 / 0008 MR 终局清理）
 - **Real-run playbook**：`docs/real-run-playbook.md`（真实链路端到端：预检 → 选 pipeline → webhook 投递 → 监控 → 结果解读）
 - **Pi 配置指南**：`docs/pi-agent-configuration.md`

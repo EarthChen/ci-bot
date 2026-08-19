@@ -45,7 +45,12 @@ describe("taskInfoLines — 任务元信息行", () => {
 			failureClass: 5,
 		});
 		expect(lines[2]).toBe("Session：复用（源自 pipeline 99）");
-		expect(lines[3]).toBe("失败分类：class 5");
+		expect(lines[3]).toBe("失败分类：class 5（非单测失败（编译/依赖））");
+	});
+
+	it("未知 class 数字 → 退化为裸 class N（不报错）", () => {
+		const lines = taskInfoLines({ ...stats, failureClass: 9 });
+		expect(lines[3]).toBe("失败分类：class 9");
 	});
 
 	it("无模型（stub runner）→ 省略模型行", () => {

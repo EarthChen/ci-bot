@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
 	saveMrSession,
 	findMrSession,
+	removeMrSession,
 	evictMrSessions,
 	MR_SESSION_MAX_ENTRIES,
 } from "../../src/pipeline/mr-session-store.js";
@@ -96,5 +97,19 @@ describe("mr-session-store", () => {
 
 	it("cap 常量为正", () => {
 		expect(MR_SESSION_MAX_ENTRIES).toBeGreaterThan(0);
+	});
+
+	it("removeMrSession：MR 终局删除存档（jsonl+meta），find 不再命中", () => {
+		saveMrSession(event(), sourcePath, "mr");
+		expect(removeMrSession("31041", 281)).toBe(true);
+		expect(findMrSession(event())).toBeNull();
+		// 重复删除 → false（幂等）
+		expect(removeMrSession("31041", 281)).toBe(false);
+	});
+
+	it("removeMrSession：无存档 → false，不报错；不碰其他 MR 存档", () => {
+		saveMrSession(event({ mrIid: 300 }), sourcePath, "mr");
+		expect(removeMrSession("31041", 999)).toBe(false);
+		expect(findMrSession(event({ mrIid: 300 }))).not.toBeNull();
 	});
 });

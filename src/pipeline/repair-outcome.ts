@@ -14,9 +14,11 @@ import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import type {
 	AgentModelRef,
 	AgentRunStats,
+	FailureClass,
 	PipelineEvent,
 	RepairOutcome,
 } from "../types.js";
+import { FAILURE_CLASS_NAMES } from "../types.js";
 import { taskInfoSection } from "../notify/task-info.js";
 import { logger } from "../util/log.js";
 import { writeFileSync, mkdirSync, appendFileSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
@@ -73,6 +75,8 @@ export interface AuditTrace {
 	readonly sceneChanges?: readonly string[];
 	/** ADR-0007：本次修复复用了该 pipeline 的 session（跨 pipeline 复用可追溯）。 */
 	readonly reusedFromPipeline?: number;
+	/** G1 类名（bot-owned 静态映射）——audit/metrics 可读性，与 diagnosis.failureClass 同源。 */
+	readonly classDescription?: string;
 }
 
 /** Metrics slice embedded in an audit trace. */
@@ -354,6 +358,9 @@ export async function finishRepair(args: {
 		event: auditEvent(event),
 		outcome: result.kind,
 		diagnosis: result.diagnosis,
+		...(result.diagnosis
+			? { classDescription: FAILURE_CLASS_NAMES[result.diagnosis.failureClass as FailureClass] }
+			: {}),
 		diff,
 		reasoning,
 		mrUrl: result.mrUrl,

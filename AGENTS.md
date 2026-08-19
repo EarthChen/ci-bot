@@ -117,4 +117,5 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 - **Triage labels**：needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix（见 `docs/agents/triage-labels.md`）
 - **Domain docs**：根 `CONTEXT.md`（领域词汇表）+ `docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽+session 复用重试 / 0005 现场保留与决策恢复 / 0008 MR 终局清理 / 0009 G3 扩围决策）
 - **Real-run playbook**：`docs/real-run-playbook.md`（真实链路端到端：预检 → 选 pipeline → webhook 投递 → 监控 → 结果解读）
+- **dev 部署手册**：`docs/dev-deployment.md`（push → pull → compose build/up → 验证清单 → 回滚；红线：不覆盖远端 `.env`/`data/`/本地路由配置）
 - **Pi 配置指南**：`docs/pi-agent-configuration.md`

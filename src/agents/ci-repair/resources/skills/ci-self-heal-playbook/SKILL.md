@@ -9,7 +9,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 
 **铁律（违反任一即转交，不开 MR）：**
 
-1. **改动范围（G3）**：单测失败可改 `src/test|it`/`docs` 与 **MR diff 内**的 `src/main`（有限放宽，ADR-0006）；SpotBugs/Checkstyle 失败可改 **MR diff 文件集内** 的任意文件（含 `src/main`，bot 按 diff 白名单校验）。**铁律：改 `src/main` 只为让既有失败测试通过——优先改实现满足测试，严禁改写既有失败测试的断言语义来迎合实现（编译适配除外）；所有测试语义改动必须在 MR 描述逐条申报。**任何超出 diff 的文件（含其他 `src/main`）→ 转交。
+1. **改动范围（G3）**：单测失败可改 `src/test|it`/`docs` 与 **MR diff 内**的 `src/main`（有限放宽，ADR-0006）；SpotBugs/Checkstyle 失败可改 **MR diff 文件集内** 的任意文件（含 `src/main`，bot 按 diff 白名单校验）。**铁律：改 `src/main` 只为让既有失败测试通过——优先改实现满足测试，严禁改写既有失败测试的断言语义来迎合实现（编译适配除外）；所有测试语义改动必须在 MR 描述逐条申报。**任何超出 diff 的文件（含其他 `src/main`）→ 转交。**唯一例外：diff 外文件是你自建的过程产物**（spotbugs/checkstyle 过滤器 xml、临时脚本、日志——本应写 /tmp）→ 从工作区与暂存区删除后照常继续，不转交（实测：一个误入 patch 的过滤器文件曾废弃 36 分钟/123 turn/$20 的整轮修复）。
 2. **class 3 按 spec/PRD 断言正确行为**，不按当前代码行为（否则把 bug 固化成测试）。
 3. **不猜修复**。诊断未达 class 1/2/3 确信 → 转交，不反复重试烧预算。
 4. **开完 MR 即返回，绝不等待或合并 CI**。MR 自动触发 CI，由 bot 监控其状态并通知（钉钉）；你**严禁 `glab mr merge`**——所有 MR 必须人工 review 后合并。
@@ -127,7 +127,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 
 **提交 MR（你自己完成，bot 不会代劳）**：
 
-1. `git add` 改动文件 → `git commit -m 'fix: ...'`。
+1. `git add <逐个列明改动文件>` → `git commit -m 'fix: ...'`。**严禁 `git add -A`/`git add .`**；提交前 `git status` 自检无意外文件（过程产物一律写 /tmp；patch 中出现 diff 外文件先判断是否自建产物，是则删除继续，见铁律 1）。
 2. `git push origin <源分支>`（分支名由 prompt 给出）。
 3. `glab mr create --source-branch <源分支> --target-branch <目标分支> --title '<标题>' --description '<正文>' --remove-source-branch=true --squash-before-merge=true --yes`（后两个勾选项为 bot 强制默认，勿省略）。
 4. 从 `glab mr create` 输出取 web_url 填入 `fixed.mrUrl`。glab 在 worktree 内自动识别 remote，**勿传 `--project`**（无效）。

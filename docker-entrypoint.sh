@@ -21,5 +21,13 @@ fi
 # MAVEN_CONFIG 对齐 HOME（基础镜像默认 /root/.m2，非 root 时不可达）
 export MAVEN_CONFIG="${HOME}/.m2"
 
+# glab git 协议强制 HTTPS：MR 创建/git push 必须走 GITLAB_TOKEN 认证，
+# 而非 SSH（容器内无 SSH key，且 MR author 需关联 token owner）。
+# glab auth login 默认写 git_protocol: ssh，此处每次启动覆盖为 https。
+_glab_cfg="${HOME}/.config/glab-cli/config.yml"
+if [ -f "$_glab_cfg" ]; then
+	sed -i 's/git_protocol: ssh/git_protocol: https/' "$_glab_cfg" 2>/dev/null || true
+fi
+
 # exec 让 node 直接接收 SIGTERM（main.ts 已做优雅关闭），不经过 shell 中转
 exec node --enable-source-maps dist/main.js

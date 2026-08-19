@@ -15,7 +15,7 @@ CI 单测自愈 bot：headless 长驻 TS 服务，监听 GitLab pipeline 失败 
 - **钉钉**：`dingtalk-stream` SDK（Stream 模式：主进程 WebSocket 接收 + SDK API 推送）
 - **存储**：better-sqlite3（动态群路由 `group-routing.db` + 人工决策 `decisions.db`，均 WAL；原生模块，已入 `allowBuilds` 审批）
 - **测试**：vitest 2（forks singleFork，子进程测试隔离）
-- **Dashboard 前端**：React 19 + React Router 7 + Vite 6（pnpm workspace `packages/dashboard`，构建输出到 `dist/dashboard/`，Fastify `@fastify/static` 同进程托管）
+- **Dashboard 前端**：React 19 + React Router 7 + Vite 6（pnpm workspace `packages/dashboard`，构建输出到 `dist/dashboard-web/`（`dist/dashboard` 被 tsc 的 src/dashboard 后端模块占用），Fastify `@fastify/static` 同进程托管）
 - **构建**：tsc 直出 `dist/`（bot）+ Vite 构建（dashboard）
 - **包管理**：pnpm 11（lockfile 提交；`allowBuilds` 已声明；pnpm workspace 管理 monorepo）
 
@@ -23,7 +23,7 @@ CI 单测自愈 bot：headless 长驻 TS 服务，监听 GitLab pipeline 失败 
 
 ```bash
 pnpm install          # 安装依赖（非交互用 ./node_modules/.bin/tsc|vitest 绕过 onlyBuiltDependencies 审批）
-pnpm build            # tsc -p tsconfig.json → dist/ + dashboard Vite build → dist/dashboard/
+pnpm build            # tsc -p tsconfig.json → dist/ + dashboard Vite build → dist/dashboard-web/
 pnpm build:bot        # tsc -p tsconfig.json → dist/（仅 bot）
 pnpm build:dashboard  # pnpm --filter @ci-bot/dashboard build（仅前端）
 pnpm typecheck        # tsc --noEmit（CI 门禁；只含 src/，不含 tests/）
@@ -84,7 +84,7 @@ src/
     metrics-aggregator.ts  # MetricsAggregator：启动预加载 audit JSONL + 增量更新 → 聚合指标快照
     ipc-types.ts           # Worker→Main IPC 消息类型（stage/turn/tool 进度）+ 类型守卫 + sendIpc 工具函数
   types.ts / util/log.ts   # 领域类型（PipelineEvent.failedStages 等）+ pino logger
-packages/dashboard/        # React SPA 前端（pnpm workspace；Vite 构建 → dist/dashboard/）
+packages/dashboard/        # React SPA 前端（pnpm workspace；Vite 构建 → dist/dashboard-web/）
   src/
     App.tsx                # 路由入口：Overview / Decisions / Metrics 三页
     hooks/useEventSource.ts  # SSE 连接管理 + worker 状态 Map

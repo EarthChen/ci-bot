@@ -28,7 +28,7 @@ The first SSE message is a full `system_snapshot` (health, scheduler, active wor
 
 ### React + Vite in a monorepo sub-package
 
-The frontend lives in `packages/dashboard` under a pnpm workspace. Vite builds independently into `dist/dashboard/`; Fastify serves the artifacts via `@fastify/static`. The root `tsc` compilation and the dashboard `vite build` are isolated — different `tsconfig.json` files, no shared `node_modules` pollution. CI gains one additional step (`pnpm --filter dashboard build`).
+The frontend lives in `packages/dashboard` under a pnpm workspace. Vite builds into `dist/dashboard-web/` (`dist/dashboard/` is occupied by the tsc-compiled `src/dashboard/` backend modules — sharing the directory let `emptyOutDir` delete the compiled backend, breaking startup); Fastify serves the artifacts via `@fastify/static`. The root `tsc` compilation and the dashboard `vite build` are isolated — different `tsconfig.json` files, no shared `node_modules` pollution. CI gains one additional step (`pnpm --filter dashboard build`).
 
 Trade-off: a React SPA introduces a second build pipeline and frontend dependency surface into a backend-only project. Accepted because the dashboard will grow to multiple views (ops, decisions, metrics) and an interactive time-range selector, where server-rendered templates would become painful.
 

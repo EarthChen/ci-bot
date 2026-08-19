@@ -262,9 +262,10 @@ async function main(): Promise<void> {
 		onLifecycleEvent: (type, data) => eventHub.emit({ type, data }),
 	});
 
-	// Dashboard: serve the React SPA from dist/dashboard/ (built by Vite).
+	// Dashboard: serve the React SPA from dist/dashboard-web/ (built by Vite;
+	// dist/dashboard 被 tsc 的 src/dashboard 后端模块占用，见 vite.config）。
 	const __mainDirname = dirname(fileURLToPath(import.meta.url));
-	const dashboardDir = join(__mainDirname, "dashboard");
+	const dashboardDir = join(__mainDirname, "dashboard-web");
 	if (existsSync(dashboardDir)) {
 		await mountDashboardStatic(app, dashboardDir);
 	}

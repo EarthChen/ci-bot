@@ -23,8 +23,10 @@ import { logger } from "../util/log.js";
 /** Decision slice delivered with a resume task (scheduler envelope, T05). */
 export interface ResumeContext {
 	readonly decisionId: string;
-	readonly value: "test";
+	readonly value: "test" | "widen";
 	readonly remark: string;
+	/** G3 扩围（ADR-0009）：批准的 MR diff 外文件清单（仅 widen）。 */
+	readonly oosPaths?: readonly string[];
 }
 
 /** Normalize an unknown error to a message string. */
@@ -90,6 +92,7 @@ export async function runResumeRepair(
 		result = await agent.resume(agentInput, {
 			value: resume.value,
 			remark: resume.remark,
+			...(resume.oosPaths?.length ? { oosPaths: resume.oosPaths } : {}),
 		});
 	} catch (err) {
 		return finishRepair({
@@ -132,7 +135,12 @@ export async function runResumeRepair(
 	const mrDiff = event.mrIid
 		? await glab.fetchMrDiff(event.projectId, event.mrIid)
 		: "";
-	const diffFiles = parseDiffFiles(mrDiff);
+	const diffFilesBase = parseDiffFiles(mrDiff);
+	// G3 扩围（ADR-0009）：widen 批准后白名单追加获批的 MR diff 外文件。
+	const diffFiles =
+		resume.value === "widen" && resume.oosPaths?.length
+			? [...new Set([...diffFilesBase, ...resume.oosPaths])]
+			: diffFilesBase;
 	try {
 		return await repairFixed({
 			deps,

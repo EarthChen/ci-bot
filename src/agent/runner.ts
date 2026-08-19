@@ -39,8 +39,10 @@ export interface AgentRunInput {
 
 /** Human decision slice handed to a resume run (T06). */
 export interface ResumeDecision {
-	readonly value: "test";
+	readonly value: "test" | "widen";
 	readonly remark: string;
+	/** G3 扩围（ADR-0009）：批准的 MR diff 外文件清单（仅 widen）。 */
+	readonly oosPaths?: readonly string[];
 }
 
 export interface AgentRunner {

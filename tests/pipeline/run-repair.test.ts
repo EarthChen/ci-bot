@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRepair, extractPatch, parseDiffFiles, buildDiffIndex, snapshotSceneChanges } from "../../src/pipeline/run-repair.js";
+import { runRepair, extractPatch, parseDiffFiles, buildDiffIndex, snapshotSceneChanges, widenableG3Paths, outsideDiffPaths } from "../../src/pipeline/run-repair.js";
 import type { Worktree } from "../../src/pipeline/worktree.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import type { AgentRunner, AgentRunInput } from "../../src/agent/runner.js";
@@ -564,5 +564,49 @@ describe("runRepair — ADR-0007 跨 pipeline session 复用", () => {
 		const input = run.mock.calls[0][0];
 		expect(input.reuseSessionFile).toBeUndefined();
 		expect(input.reuseMeta).toBeUndefined();
+	});
+});
+
+describe("outsideDiffPaths / widenableG3Paths — G3 扩围判定（ADR-0009）", () => {
+	const patch = (paths: readonly string[]) => ({
+		diff: "",
+		paths,
+		summary: "s",
+	});
+	const diffFiles = ["src/main/java/A.java", "docs/x.md"];
+
+	it("outsideDiffPaths：返回 MR diff 外文件；无 diff 上下文时为空", () => {
+		expect(
+			outsideDiffPaths(
+				patch(["src/main/java/A.java", "m/src/test/java/TTest.java"]),
+				diffFiles,
+			),
+		).toEqual(["m/src/test/java/TTest.java"]);
+		expect(outsideDiffPaths(patch(["a"]), [])).toEqual([]);
+	});
+
+	it("widenable：diff 外全为测试/文档 → 返回清单", () => {
+		expect(
+			widenableG3Paths(
+				patch(["src/main/java/A.java", "m/src/test/java/TTest.java", "docs/guide.md"]),
+				diffFiles,
+			),
+		).toEqual(["m/src/test/java/TTest.java", "docs/guide.md"]);
+	});
+
+	it("不可扩围：混入 diff 外 src/main → null（铁律）", () => {
+		expect(
+			widenableG3Paths(patch(["other/src/main/java/B.java"]), diffFiles),
+		).toBeNull();
+	});
+
+	it("不可扩围：碰 build/CI 配置 → null（即使其余全是测试）", () => {
+		expect(
+			widenableG3Paths(patch(["pom.xml", "m/src/test/java/TTest.java"]), diffFiles),
+		).toBeNull();
+	});
+
+	it("无需扩围：patch 全在 diff 内 → null", () => {
+		expect(widenableG3Paths(patch(["src/main/java/A.java"]), diffFiles)).toBeNull();
 	});
 });

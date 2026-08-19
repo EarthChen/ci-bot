@@ -420,6 +420,7 @@ describe("Scheduler — enqueueResume（T05）", () => {
 			decision_value: "test",
 			remark: "spec says five",
 			decided_at: "2026-08-17T01:00:00.000Z",
+			oos_paths: null,
 		};
 	}
 
@@ -772,5 +773,73 @@ describe("parseSkipStages（CIHEAL_SKIP_STAGES env 解析）", () => {
 		expect(parseSkipStages(undefined)).toBeUndefined();
 		expect(parseSkipStages("")).toBeUndefined();
 		expect(parseSkipStages("  ,  ")).toBeUndefined();
+	});
+});
+
+describe("Scheduler — G3 扩围（ADR-0009）", () => {
+	it("decidable escalated 带 oosPaths → 决策注册含 oos_paths", async () => {
+		const create = vi.fn();
+		const outcome: RepairOutcome = {
+			kind: "escalated",
+			summary: "G3/diff 违规：patch touches file outside MR diff: m/src/test/T.java",
+			decidable: true,
+			oosPaths: ["m/src/test/T.java"],
+		};
+		const scheduler = new Scheduler({
+			workerManager: { run: async () => outcome },
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+			decisionStore: { create },
+		});
+		scheduler.enqueue(makeEvent("proj-A", 888));
+		await scheduler.idle();
+
+		expect(create).toHaveBeenCalledTimes(1);
+		expect(create.mock.calls[0][0].oos_paths).toBe(
+			JSON.stringify(["m/src/test/T.java"]),
+		);
+	});
+
+	it("widen 决策 → 信封 value=widen + oosPaths", async () => {
+		const runResume = vi.fn(
+			async (_task: import("../../src/agent-runtime/scheduler.js").ResumeTask) => {
+				void _task; // arity required for mock.calls[0][0] assertions
+				return { kind: "escalated" as const, summary: "terminal" };
+			},
+		);
+		const scheduler = new Scheduler({
+			workerManager: {
+				run: async () => ({ kind: "escalated" as const, summary: "x" }),
+				runResume,
+			},
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+			decisionStore: { create: vi.fn() },
+		});
+		await scheduler.enqueueResume({
+			decision_id: "D-9-ab12",
+			pipeline_id: "9",
+			project_id: "A",
+			event_json: JSON.stringify(makeEvent("A", 9)),
+			cwd_path: "/tmp/retained/work-9",
+			session_path: "/tmp/retained/work-9/.pi-agent",
+			branch: "ci-self-heal/main-abc12345",
+			status: "resumed",
+			created_at: "2026-08-17T00:00:00.000Z",
+			expires_at: "2026-08-18T00:00:00.000Z",
+			decided_by: "staff-1",
+			decision_value: "widen",
+			remark: "",
+			decided_at: "2026-08-17T01:00:00.000Z",
+			oos_paths: JSON.stringify(["m/src/test/T.java"]),
+		});
+		await scheduler.idle();
+
+		expect(runResume).toHaveBeenCalledTimes(1);
+		const task = runResume.mock.calls[0][0];
+		expect(task.decision.value).toBe("widen");
+		expect(task.decision.oosPaths).toEqual(["m/src/test/T.java"]);
 	});
 });

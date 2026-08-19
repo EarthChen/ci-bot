@@ -25,6 +25,7 @@ const CREATE_TABLE_SQL = `
 		decided_by TEXT,
 		decision_value TEXT,
 		remark TEXT,
+		oos_paths TEXT,
 		decided_at TEXT
 	)
 `;
@@ -51,6 +52,8 @@ export interface DecisionRecord {
 	readonly decided_by: string | null;
 	readonly decision_value: string | null;
 	readonly remark: string | null;
+	/** G3 扩围（ADR-0009）：转交时冻入的 MR diff 外测试/文档文件清单（JSON 数组）；无则 null。 */
+	readonly oos_paths: string | null;
 	readonly decided_at: string | null;
 }
 
@@ -64,6 +67,8 @@ export interface CreateDecisionParams {
 	readonly branch: string;
 	readonly status?: DecisionStatus;
 	readonly expires_at: string;
+	/** G3 扩围文件清单（JSON 数组）；仅 widenable 转交携带。 */
+	readonly oos_paths?: string;
 }
 
 export interface UpdateStatusParams {
@@ -87,6 +92,7 @@ interface DecisionRow {
 	decided_by: string | null;
 	decision_value: string | null;
 	remark: string | null;
+	oos_paths: string | null;
 	decided_at: string | null;
 }
 
@@ -105,6 +111,7 @@ function rowToRecord(row: DecisionRow): DecisionRecord {
 		decided_by: row.decided_by,
 		decision_value: row.decision_value,
 		remark: row.remark,
+		oos_paths: row.oos_paths,
 		decided_at: row.decided_at,
 	};
 }
@@ -117,6 +124,13 @@ export class DecisionStore {
 		this.db = new Database(dbPath);
 		this.db.pragma("journal_mode = WAL");
 		this.db.exec(CREATE_TABLE_SQL);
+		// Migration（存量库增量）：旧表缺 oos_paths 时补列（G3 扩围，ADR-0009）。
+		const cols = this.db
+			.prepare("PRAGMA table_info(decisions)")
+			.all() as { name: string }[];
+		if (!cols.some((c) => c.name === "oos_paths")) {
+			this.db.exec("ALTER TABLE decisions ADD COLUMN oos_paths TEXT");
+		}
 	}
 
 	create(params: CreateDecisionParams): void {
@@ -125,8 +139,9 @@ export class DecisionStore {
 			.prepare(
 				`INSERT INTO decisions (
 					decision_id, pipeline_id, project_id, event_json,
-					cwd_path, session_path, branch, status, created_at, expires_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					cwd_path, session_path, branch, status, created_at, expires_at,
+					oos_paths
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(
 				params.decision_id,
@@ -139,6 +154,7 @@ export class DecisionStore {
 				params.status ?? "awaiting_decision",
 				now,
 				params.expires_at,
+				params.oos_paths ?? null,
 			);
 	}
 

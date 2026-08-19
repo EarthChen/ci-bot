@@ -33,3 +33,22 @@ describe("buildDecisionPrompt（T06）", () => {
 		expect(prompt).toContain("JSON");
 	});
 });
+
+describe("buildDecisionPrompt — widen（ADR-0009）", () => {
+	it("widen：含批准扩围清单与范围边界；不复用 test 决策文案", () => {
+		const prompt = buildDecisionPrompt({
+			value: "widen",
+			remark: "",
+			oosPaths: ["m/src/test/java/TTest.java"],
+		});
+		expect(prompt).toContain("/heal widen");
+		expect(prompt).toContain("- m/src/test/java/TTest.java");
+		expect(prompt).toContain("diff 外的 src/main 一律禁碰");
+		expect(prompt).not.toContain("该失败按测试侧问题处理");
+	});
+
+	it("test 决策不渲染扩围清单段", () => {
+		const prompt = buildDecisionPrompt({ value: "test", remark: "" });
+		expect(prompt).not.toContain("批准扩围的文件");
+	});
+});

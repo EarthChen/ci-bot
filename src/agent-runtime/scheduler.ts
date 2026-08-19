@@ -48,8 +48,10 @@ export interface ResumeTask {
 	readonly cwd: string;
 	readonly decision: {
 		readonly decisionId: string;
-		readonly value: "test";
+		readonly value: "test" | "widen";
 		readonly remark: string;
+		/** G3 扩围（ADR-0009）：批准的 MR diff 外文件清单（仅 widen）。 */
+		readonly oosPaths?: readonly string[];
 	};
 }
 
@@ -203,7 +205,7 @@ export class Scheduler {
 				// carries the real decision id; a registration failure degrades to the
 				// plain message (decision undefined) instead of crashing the scheduler.
 				const decision = outcome.decidable
-					? this.registerDecision(event, cwd)
+					? this.registerDecision(event, cwd, outcome.oosPaths)
 					: undefined;
 				await this.sendEscalationNotification(event, outcome, decision);
 			}
@@ -242,6 +244,7 @@ export class Scheduler {
 	private registerDecision(
 		event: PipelineEvent,
 		cwd: string,
+		oosPaths?: readonly string[],
 	): EscalationDecision | undefined {
 		const store = this.deps.decisionStore;
 		if (!store) return undefined;
@@ -259,6 +262,8 @@ export class Scheduler {
 			session_path: join(cwd, ".pi-agent"),
 			branch: `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`,
 			expires_at: new Date(Date.now() + ttlMs).toISOString(),
+			// G3 扩围（ADR-0009）：widenable 转交冻入清单，/heal widen 依赖它。
+			...(oosPaths?.length ? { oos_paths: JSON.stringify(oosPaths) } : {}),
 		};
 		try {
 			store.create(params);
@@ -337,11 +342,14 @@ export class Scheduler {
 			mode: "resume",
 			event,
 			cwd: record.cwd_path,
-			decision: {
-				decisionId: record.decision_id,
-				value: "test",
-				remark: record.remark ?? "",
-			},
+		decision: {
+			decisionId: record.decision_id,
+			value: record.decision_value === "widen" ? "widen" : "test",
+			remark: record.remark ?? "",
+			...(parseOosPaths(record)?.length
+				? { oosPaths: parseOosPaths(record) }
+				: {}),
+		},
 		};
 		const key = this.deps.policy.serialKey(event);
 		// FIFO per key: chain onto the previous resume for the same project.
@@ -439,4 +447,22 @@ export class Scheduler {
 
 function dedupKey(event: PipelineEvent): string {
 	return `${event.projectId}:${event.pipelineId}`;
+}
+
+/** 解析决策上的 oos_paths（JSON 数组）；损坏 fail-loud（widen 完全依赖清单）。 */
+function parseOosPaths(record: DecisionRecord): readonly string[] | undefined {
+	if (!record.oos_paths) return undefined;
+	try {
+		const parsed = JSON.parse(record.oos_paths) as unknown;
+		if (Array.isArray(parsed) && parsed.every((p) => typeof p === "string")) {
+			return parsed as string[];
+		}
+		throw new Error("oos_paths is not a string array");
+	} catch (err) {
+		throw new Error(
+			`resume decision ${record.decision_id} has corrupt oos_paths: ${
+				(err as Error).message
+			}`,
+		);
+	}
 }

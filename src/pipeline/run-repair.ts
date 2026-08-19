@@ -343,6 +343,10 @@ export async function repairFixed(args: {
 	}
 	const g3 = validatePatchPaths(patch, diffFiles);
 	if (g3) {
+		// G3 扩围（ADR-0009）：违规全为 MR diff 外的测试/文档文件时可决策——
+		// 冻干现场 + 注册决策（携带文件清单），人工 /heal <id> widen 批准后续修；
+		// 混入 src/main 或 build 配置仍为死路（铁律不变）。
+		const oosPaths = widenableG3Paths(patch, diffFiles);
 		return finishRepair({
 			dingtalk,
 			cwd: deps.cwd,
@@ -356,6 +360,7 @@ export async function repairFixed(args: {
 				diff: patch.diff,
 				metrics: args.agentMetrics,
 				model: result.model,
+				...(oosPaths ? { decidable: true, oosPaths } : {}),
 			},
 		});
 	}
@@ -522,6 +527,37 @@ function validatePatchPaths(patch: Patch, diffFiles: readonly string[]): string 
 		}
 	}
 	return null;
+}
+
+/** patch 中 MR diff 外的文件清单（G3 扩围决策上下文）；无 diff 上下文时为空。 */
+export function outsideDiffPaths(
+	patch: Patch,
+	diffFiles: readonly string[],
+): string[] {
+	if (diffFiles.length === 0) return [];
+	return patch.paths.filter((p) => !diffFiles.includes(p));
+}
+
+/** 可扩围路径（ADR-0009）：含 src/test|it 段，或文档文件。
+ *  刻意比 !isProductionPath 严格：多模块仓库的 `svc/src/main/...` 前缀规则
+ *  无法可靠判为生产路径（^src/main 锚定路径开头），扩围是授权边界，必须保守。 */
+export function isWidenEligiblePath(p: string): boolean {
+	const norm = p.replace(/\\/g, "/");
+	if (/(^|\/)src\/(test|it)\//.test(norm)) return true;
+	if (/(^|\/)docs?\//.test(norm)) return true;
+	return /\.(md|adoc|rst)$/.test(norm);
+}
+
+/** G3 违规可扩围判定（ADR-0009）：patch 不碰 build/CI 配置，且 diff 外文件
+ *  全为测试/文档（isWidenEligiblePath）时返回该清单；否则 null（死路转交，铁律不变）。 */
+export function widenableG3Paths(
+	patch: Patch,
+	diffFiles: readonly string[],
+): readonly string[] | null {
+	if (patch.paths.some(isForbiddenConfig)) return null;
+	const oos = outsideDiffPaths(patch, diffFiles);
+	if (oos.length === 0 || !oos.every(isWidenEligiblePath)) return null;
+	return oos;
 }
 
 /** Parse the changed file set from an MR diff text. Supports both the

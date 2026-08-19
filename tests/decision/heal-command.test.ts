@@ -212,3 +212,57 @@ describe("handleHealCommand", () => {
 		expect(store.get("D-42-ab12")!.decided_by).toBe("Alice");
 	});
 });
+
+describe("/heal widen — G3 扩围批准（ADR-0009）", () => {
+	let dir: string;
+	let store: DecisionStore;
+	let reply: ReturnType<typeof vi.fn>;
+	let enqueueResume: ReturnType<typeof vi.fn>;
+	let deps: HealCommandDeps;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "heal-widen-"));
+		store = new DecisionStore(join(dir, "decisions.db"));
+		reply = vi.fn().mockResolvedValue(undefined);
+		enqueueResume = vi.fn().mockResolvedValue(undefined);
+		deps = { store, reply, enqueueResume, usageText: USAGE_TEXT };
+	});
+
+	afterEach(() => {
+		store.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	function seedWidenDecision(oosPaths?: readonly string[]): void {
+		store.create({
+			decision_id: "D-widen-1",
+			pipeline_id: "42",
+			project_id: "proj-heal",
+			event_json: JSON.stringify(event),
+			cwd_path: "/tmp/widen-scene",
+			session_path: "/tmp/widen-scene/.pi-agent",
+			branch: "ci-self-heal/main-abcdef12",
+			expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+			...(oosPaths ? { oos_paths: JSON.stringify(oosPaths) } : {}),
+		});
+	}
+
+	it("widen + 带清单 → resumed + enqueueResume，回复确认批准扩围", async () => {
+		seedWidenDecision(["m/src/test/java/TTest.java"]);
+		await handleHealCommand(deps, message("/heal D-widen-1 widen"));
+		expect(store.get("D-widen-1")!.status).toBe("resumed");
+		expect(store.get("D-widen-1")!.decision_value).toBe("widen");
+		expect(enqueueResume).toHaveBeenCalledOnce();
+		const msg = reply.mock.calls[0][1] as DingTalkMessage;
+		expect(msg.title).toContain("已批准扩围");
+	});
+
+	it("widen 但决策无清单 → 拒绝 + 用法，状态不变", async () => {
+		seedWidenDecision();
+		await handleHealCommand(deps, message("/heal D-widen-1 widen"));
+		expect(store.get("D-widen-1")!.status).toBe("awaiting_decision");
+		expect(enqueueResume).not.toHaveBeenCalled();
+		const msg = reply.mock.calls[0][1] as DingTalkMessage;
+		expect(msg.text).toContain("没有可扩围的文件清单");
+	});
+});

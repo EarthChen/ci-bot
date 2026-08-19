@@ -263,3 +263,38 @@ describe("escalation notifier — 结构化消息：任务信息 + 原始播报�
 		expect(text).not.toContain("**原始失败播报**");
 	});
 });
+
+describe("createEscalationNotifier — G3 扩围（ADR-0009）", () => {
+	it("decidable + oosPaths → 决策卡列出可扩围文件 + widen 选项", async () => {
+		const { notifier, sender } = makeNotifier();
+		await notifier.notifyEscalated(
+			event,
+			{
+				kind: "escalated",
+				summary: "G3/diff 违规：patch touches file outside MR diff: m/src/test/T.java",
+				decidable: true,
+				diagnosisSummary: "class 2 被测代码变更导致测试过时",
+				oosPaths: ["m/src/test/T.java", "docs/x.md"],
+			},
+			{ decisionId: "D-42-ab12", expiresAt: "2026-08-20T00:00:00.000Z" },
+		);
+
+		expect(sender.sentGroups).toHaveLength(1);
+		const text = sender.sentGroups[0].message.text;
+		expect(text).toContain("m/src/test/T.java");
+		expect(text).toContain("docs/x.md");
+		expect(text).toContain("test|prod|drop|widen");
+	});
+
+	it("无 oosPaths 的决策 → 命令行仍是 test|prod|drop，不出现 widen", async () => {
+		const { notifier, sender } = makeNotifier();
+		await notifier.notifyEscalated(
+			event,
+			{ kind: "escalated", summary: "x", decidable: true, diagnosisSummary: "y" },
+			{ decisionId: "D-42-cd34", expiresAt: "2026-08-20T00:00:00.000Z" },
+		);
+		const text = sender.sentGroups[0].message.text;
+		expect(text).toContain("test|prod|drop [备注]");
+		expect(text).not.toContain("widen");
+	});
+});

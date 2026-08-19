@@ -256,3 +256,64 @@ describe("runResumeRepair — 恢复编排（T06）", () => {
 		expect(existsSync(repoCwd)).toBe(true);
 	});
 });
+
+describe("runResumeRepair — widen 扩围（ADR-0009）", () => {
+	let cwd: string;
+	let repoCwd: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "run-resume-widen-"));
+		repoCwd = seedRetainedRepo(cwd);
+	});
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	/** MR diff 只含 main 文件——resume 改动的测试文件在 diff 外。 */
+	function glabMainOnlyDiff(): GitLabClient {
+		return {
+			fetchCiLog: async () => "test failure",
+			fetchMrDiff: async () =>
+				"diff --git a/src/main/java/com/example/Calculator.java b/src/main/java/com/example/Calculator.java",
+			fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: 999 }),
+			createMr: async () => ({ url: "https://mr/x" }),
+		};
+	}
+
+	function widenDeps(agent: AgentRunner) {
+		const { worktree } = retainedWorktree(repoCwd);
+		return {
+			agent,
+			glab: glabMainOnlyDiff(),
+			dingtalk: new InMemoryDingTalkNotifier(),
+			cwd,
+			worktree,
+		};
+	}
+
+	const TEST_FILE = "src/test/java/com/example/CalculatorTest.java";
+
+	it("widen + 批准清单含该测试文件 → G3 放行，mr 终局", async () => {
+		const out = await runResumeRepair(
+			widenDeps(resumeAgent({ result: fixedWithMr, writeTest: true })),
+			{ ...event, mrIid: 7 },
+			{
+				decisionId: "D-widen-1",
+				value: "widen",
+				remark: "",
+				oosPaths: [TEST_FILE],
+			},
+		);
+		expect(out.kind).toBe("mr");
+	});
+
+	it("同样 patch 但 test 决策（无扩围）→ G3 拦截转交", async () => {
+		const out = await runResumeRepair(
+			widenDeps(resumeAgent({ result: fixedWithMr, writeTest: true })),
+			{ ...event, mrIid: 7 },
+			{ decisionId: "D-test-1", value: "test", remark: "" },
+		);
+		expect(out.kind).toBe("escalated");
+		expect(out.summary).toContain("G3/diff 违规");
+	});
+});

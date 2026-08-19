@@ -25,7 +25,7 @@ import { cleanupScene } from "../worker/manager.js";
 import { logger } from "../util/log.js";
 import type { DecisionRecord, DecisionStore } from "./store.js";
 
-const HEAL_VALUES = ["test", "prod", "drop"] as const;
+const HEAL_VALUES = ["test", "prod", "drop", "widen"] as const;
 type HealValue = (typeof HEAL_VALUES)[number];
 
 
@@ -106,6 +106,40 @@ export async function handleHealCommand(
 			);
 			return true;
 		}
+		case "widen": {
+			// G3 扩围（ADR-0009）：仅携带 widenable 清单的决策可扩围。
+			if (!record.oos_paths) {
+				await sendReply(
+					deps,
+					message,
+					"该决策没有可扩围的文件清单（仅 G3 拦下的 diff 外测试/文档转交支持 widen）。",
+					deps.usageText,
+				);
+				return true;
+			}
+			deps.store.updateStatus(id, {
+				status: "resumed",
+				decided_by: decidedBy,
+				decision_value: "widen",
+				...(remark ? { remark } : {}),
+			});
+			try {
+				await deps.enqueueResume(record);
+			} catch (err) {
+				// Compensating write: hand the decision back for a retry.
+				deps.store.updateStatus(id, { status: "awaiting_decision" });
+				logger.error({ err, decisionId: id }, "resume scheduling failed");
+				await sendReply(deps, message, "恢复调度失败，请重试");
+				return true;
+			}
+			await sendReply(
+				deps,
+				message,
+				`✅ 已批准扩围并恢复执行（${id}）`,
+				"bot 将在批准的文件范围内继续修复并更新同一 MR，结果另行通知。",
+			);
+			return true;
+		}
 		case "prod": {
 			deps.store.updateStatus(id, {
 				status: "closed",
@@ -137,7 +171,17 @@ export async function handleHealCommand(
 
 /** Event slice stored with the decision (drives cleanupScene's branch/bare paths). */
 function parseEvent(record: DecisionRecord): PipelineEvent {
-	return JSON.parse(record.event_json) as PipelineEvent;
+	try {
+		return JSON.parse(record.event_json) as PipelineEvent;
+	} catch (err) {
+		// Fail loud with context（与 scheduler.enqueueResume 同款处理）：
+		// 损坏的 event_json 绝不静默传入 cleanupScene。
+		throw new Error(
+			`decision ${record.decision_id} has corrupt event_json: ${
+				(err as Error).message
+			}`,
+		);
+	}
 }
 
 async function sendReply(

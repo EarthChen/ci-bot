@@ -77,6 +77,8 @@ export interface AuditTrace {
 	readonly reusedFromPipeline?: number;
 	/** G1 类名（bot-owned 静态映射）——audit/metrics 可读性，与 diagnosis.failureClass 同源。 */
 	readonly classDescription?: string;
+	/** G3 扩围（ADR-0009）：widenable 转交冻入的 MR diff 外文件清单（决策与审计可追溯）。 */
+	readonly oosPaths?: readonly string[];
 }
 
 /** Metrics slice embedded in an audit trace. */
@@ -126,6 +128,8 @@ export interface RepairResult {
 	readonly decidable?: boolean;
 	/** Escalated-only：agent 转交前已改动的文件清单（入审计）。 */
 	readonly sceneChanges?: readonly string[];
+	/** G3 扩围（ADR-0009）：widenable 转交携带的 MR diff 外测试/文档文件清单。 */
+	readonly oosPaths?: readonly string[];
 	/** 实际选中的模型（runner 填充；终局通知任务信息上报）。 */
 	readonly model?: AgentModelRef;
 }
@@ -361,6 +365,7 @@ export async function finishRepair(args: {
 		...(result.diagnosis
 			? { classDescription: FAILURE_CLASS_NAMES[result.diagnosis.failureClass as FailureClass] }
 			: {}),
+		...(result.oosPaths?.length ? { oosPaths: result.oosPaths } : {}),
 		diff,
 		reasoning,
 		mrUrl: result.mrUrl,
@@ -396,6 +401,7 @@ export async function finishRepair(args: {
 				decidable: true,
 				diagnosisSummary: result.diagnosis?.summary,
 				...mrUrl,
+				...(result.oosPaths?.length ? { oosPaths: result.oosPaths } : {}),
 				...(agentStats ? { agentStats } : {}),
 			};
 		}

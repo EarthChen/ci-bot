@@ -12,9 +12,8 @@ function makeEvent(projectId = "proj-1", pipelineId = "pipe-1") {
 
 function makeCreateParams(overrides: Partial<DecisionRecord> = {}): Omit<
 	DecisionRecord,
-	"status" | "created_at" | "expires_at" | "decided_by" | "decision_value" | "remark" | "decided_at"
-> & { status?: DecisionStatus; expires_at?: string } {
-	const now = new Date().toISOString();
+	"status" | "created_at" | "expires_at" | "decided_by" | "decision_value" | "remark" | "decided_at" | "oos_paths"
+> & { status?: DecisionStatus; expires_at: string } {
 	const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 	return {
 		decision_id: overrides.decision_id ?? "D-pipe-1-a1b2",
@@ -307,5 +306,62 @@ describe("DecisionStore", () => {
 			// keep afterEach close() idempotent
 			store = new DecisionStore(join(dir, "decisions.db"));
 		});
+	});
+});
+
+describe("DecisionStore — oos_paths（G3 扩围文件清单，ADR-0009）", () => {
+	let dir: string;
+	let store: DecisionStore;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "decision-store-oos-"));
+		store = new DecisionStore(join(dir, "decisions.db"));
+	});
+
+	afterEach(() => {
+		store.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("create 写入 oos_paths → get 原样返回；缺省为 null", () => {
+		const oos = ["a/src/test/java/XTest.java", "docs/y.md"];
+		store.create({
+			...makeCreateParams({ decision_id: "D-oos-1" }),
+			oos_paths: JSON.stringify(oos),
+		});
+		expect(store.get("D-oos-1")!.oos_paths).toBe(JSON.stringify(oos));
+
+		store.create(makeCreateParams({ decision_id: "D-oos-2" }));
+		expect(store.get("D-oos-2")!.oos_paths).toBeNull();
+	});
+
+	it("迁移：legacy 库无 oos_paths 列 → 构造时自动补列，读写正常", () => {
+		const legacyDb = join(dir, "legacy.db");
+		const db = new Database(legacyDb);
+		db.exec(`CREATE TABLE decisions (
+			decision_id TEXT PRIMARY KEY,
+			pipeline_id TEXT NOT NULL,
+			project_id TEXT NOT NULL,
+			event_json TEXT NOT NULL,
+			cwd_path TEXT NOT NULL,
+			session_path TEXT NOT NULL,
+			branch TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'awaiting_decision',
+			created_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			decided_by TEXT,
+			decision_value TEXT,
+			remark TEXT,
+			decided_at TEXT
+		)`);
+		db.close();
+
+		const migrated = new DecisionStore(legacyDb);
+		migrated.create({
+			...makeCreateParams({ decision_id: "D-legacy" }),
+			oos_paths: JSON.stringify(["t.java"]),
+		});
+		expect(migrated.get("D-legacy")!.oos_paths).toBe(JSON.stringify(["t.java"]));
+		migrated.close();
 	});
 });

@@ -115,17 +115,33 @@ export function buildContinuePrompt(
 export function buildDecisionPrompt(decision: {
 	readonly value: string;
 	readonly remark: string;
+	/** G3 扩围（ADR-0009）：批准的 MR diff 外文件清单（仅 widen）。 */
+	readonly oosPaths?: readonly string[];
 }): string {
+	const widen = decision.value === "widen";
 	return [
 		`# 人工决策已下达（最终决定，必须遵照执行）`,
 		``,
-		`决策（/heal ${decision.value}）：该失败按测试侧问题处理，继续修复。`,
+		widen
+			? `决策（/heal widen）：人工确认下述 MR diff 外文件为过时测试（master 既有失败），批准本次修复扩围包含它们。`
+			: `决策（/heal ${decision.value}）：该失败按测试侧问题处理，继续修复。`,
+		...(widen && decision.oosPaths?.length
+			? [
+					`批准扩围的文件（仅本次修复可改）：`,
+					...decision.oosPaths.map((p) => `- ${p}`),
+				]
+			: []),
 		decision.remark
 			? `人工备注（权威 spec 上下文，以其为准）：\n${decision.remark}`
 			: `（无人工备注。）`,
 		``,
 		`# 范围闸（有限放宽）`,
 		`- 允许改测试/文档与 **MR diff 内**的 src/main（铁律：优先改实现满足既有失败测试，严禁改写既有失败测试的断言语义；测试语义改动逐条申报）。`,
+		...(widen
+			? [
+					`- 上述批准扩围文件即修复对象（master 既有失败测试）：按 spec 或被测代码变更后的正确语义修复；断言语义改动逐条申报；清单外文件仍一律禁碰。`,
+				]
+			: []),
 		`- diff 外的 src/main 一律禁碰。`,
 		`- 若转交前已建过部分修复 MR：继续 push 到同一源分支更新它，勿新建 MR。`,
 		``,

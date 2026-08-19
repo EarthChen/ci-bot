@@ -162,6 +162,9 @@ export type RepairOutcome =
 			/** Partial-fix MR url (agent created it before escalating); carried
 			 *  for the routed notification and the resume context. */
 			readonly mrUrl?: string;
+			/** G3 扩围（ADR-0009）：MR diff 外的测试/文档文件清单；决策卡列出、
+			 *  /heal widen 批准后随 resume 注入白名单。仅 decidable 转交携带。 */
+			readonly oosPaths?: readonly string[];
 			/** 任务元信息（模型/token/耗时/轮数/session 复用），终局通知上报用。 */
 			readonly agentStats?: AgentRunStats;
 	  }

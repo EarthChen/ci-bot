@@ -9,12 +9,13 @@
 			]
 		},
 		"/heal": {
-			"summary": "对保留现场的转交失败做人工决策（test/prod/drop）",
+			"summary": "对保留现场的转交失败做人工决策（test/prod/drop/widen）",
 			"usage": [
-				"`/heal <决策id> test|prod|drop [备注]` 对「CI 自愈待人工决策」转交消息中的决策 id 做出决策（仅群聊）",
+				"`/heal <决策id> test|prod|drop|widen [备注]` 对「CI 自愈待人工决策」转交消息中的决策 id 做出决策（仅群聊）",
 				"`test` 按测试问题继续修复（备注可附 spec 规定的正确行为）",
 				"`prod` 确认源码 bug，关闭事件并清理现场，人工修复源码",
-				"`drop` 丢弃该失败并清理现场"
+				"`drop` 丢弃该失败并清理现场",
+				"`widen` 批准扩围：G3 拦下的 MR diff 外测试/文档文件确认为过时测试，随本次 MR 继续修复（仅决策卡列出扩围清单时可用）"
 			]
 		},
 		"/help": {

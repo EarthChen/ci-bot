@@ -109,8 +109,17 @@ function buildDecisionMessage(
 			"",
 			"**需要人工决策**",
 			`- 决策 id：${decision.decisionId}`,
+			...(outcome.oosPaths?.length
+				? [
+					"- ⚠️ G3 拦截：patch 触及 MR diff 外文件（疑似 master 既有失败测试）：",
+					...outcome.oosPaths.map((p) => `  - \`${p}\``),
+					"- 人工确认其为过时测试后，可用 widen 批准扩围（随本次 MR 修复）：",
+				]
+				: []),
 			"- 回复命令决策（复制即用）：",
-			`- \`/heal ${decision.decisionId} test|prod|drop [备注]\``,
+			`- \`/heal ${decision.decisionId} test|prod|drop${
+				outcome.oosPaths?.length ? "|widen" : ""
+			} [备注]\``,
 			`- 过期时间：${decision.expiresAt}`,
 		].join("\n"),
 	};

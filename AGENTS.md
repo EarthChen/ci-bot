@@ -56,7 +56,7 @@ src/
     worktree.ts            # 共享 bare clone + per-pipeline git worktree（agent 真实工作区）
   decision/
     store.ts               # DecisionStore（SQLite）：决策 CRUD + TTL sweep + invalidateByProject
-    heal-command.ts        # /heal <id> test|prod|drop [备注] 群命令（claim-then-enqueue + 补偿回滚）
+    heal-command.ts        # /heal <id> test|prod|drop|widen [备注] 群命令（claim-then-enqueue + 补偿回滚；widen=G3 扩围批准）
     lifecycle.ts           # onNewPipeline（新 pipeline 作废待决策 + 清现场 + 通知）+ onMrTerminal（MR 合并/关闭作废该 MR 待决策 + 清现场，静默）+ startTtlSweep
   agent/
     ci-repair-definition.ts  # CI Repair 垂直 agent 的 AgentDefinition（buildPrompt / buildContinuePrompt / buildDecisionPrompt）
@@ -95,9 +95,9 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 
 ## Rules
 
-- **G3 diff 白名单（ADR-0004/0006）**：单测失败可改测试/文档与 **MR diff 内**的 `src/main`（有限放宽：铁律是优先满足既有失败测试，严禁改写其断言语义）；static-analysis/Checkstyle 失败可修 **MR diff 内**文件（含 src/main）；禁压制式修复（`@SuppressWarnings`/删规则）；改动绑定报告的 file:line:rule；diff 外一律转交。转交但有部分修复成果 → 开部分修复 MR（描述说明已修/未修/根因，`mrUrl` 随转交通知与决策上下文）。`validatePatchPaths` 在 createMR 前兜底校验
+- **G3 diff 白名单（ADR-0004/0006/0009）**：单测失败可改测试/文档与 **MR diff 内**的 `src/main`（有限放宽：铁律是优先满足既有失败测试，严禁改写其断言语义）；static-analysis/Checkstyle 失败可修 **MR diff 内**文件（含 src/main）；禁压制式修复（`@SuppressWarnings`/删规则）；改动绑定报告的 file:line:rule；diff 外一律转交，**例外：违规全为 diff 外测试/文档时可决策**——冻干现场 + 清单随决策卡片展示，`/heal <id> widen` 批准后白名单扩为「MR diff + 清单」继续修复（ADR-0009）。转交但有部分修复成果 → 开部分修复 MR（描述说明已修/未修/根因，`mrUrl` 随转交通知与决策上下文）。`validatePatchPaths` 在 createMR 前兑底校验
 - **绝不自动 merge**：所有 MR 强制人工 review
-- **人工决策边界**：`/heal` 决策（test/prod/drop）只消除 agent 诊断不确定性，不授予新权限；**一轮介入**——恢复后再次转交即终局，不产生新决策；决策仅群聊可发，decider 入审计
+- **人工决策边界**：`/heal` 决策（test/prod/drop/widen）只消除不确定性，不授予清单外新权限；widen 仅确认转交时冻入的 diff 外测试/文档清单（master 既有失败测试），批准范围随本次 MR；**一轮介入**——恢复后再次转交即终局，不产生新决策；决策仅群聊可发，decider 入审计
 - **现场保留**：可决策转交（agent 主动 escalated 且带 diagnosis）冻干现场（cwd + worktree + session + branch），注册 awaiting_decision；TTL 默认 24h（`CIHEAL_DECISION_TTL_MS`）到期清扫；新 pipeline 到达（含被排除的）作废同项目待决策并清现场；class 5 转交（bot 早筛或 agent 判定）/bot 故障类转交不保留现场
 - **跨 pipeline session 复用（ADR-0007）**：带 MR 成果的终局（mr / 部分修复转交）把 Pi session jsonl 存档到 `DATA_ROOT/mr-sessions/<proj>-<mr>.jsonl`（latest-wins，LRU 上限 32）；同 MR 后续 pipeline 命中则拷入新 worker → `SessionManager.open` + `AgentSession.compact()`（/compact 编程接口）+ continue，prompt 强制声明「MR 已更新到新 commit、不得沿用旧诊断」；存档/复用任何环节失败均降级为全新 session，不阻断修复；审计记 `reusedFromPipeline`
 - **stage 排除**：`CIHEAL_SKIP_STAGES`（逗号分隔）中的 stage 全部失败时跳过修复（不起 agent、不注册决策），即时播报保留并尾注「不在自愈范围」；builds 缺失时降级为原行为。修复入队成功的失败播报尾注「已开始修复」，消除失败卡与终局卡之间的静默窗口
@@ -115,6 +115,6 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 
 - **Issue tracker**：`.scratch/<feature>/`（spec + issues：ci-self-heal-bot / shared-agent-runtime / human-decision-resume）
 - **Triage labels**：needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix（见 `docs/agents/triage-labels.md`）
-- **Domain docs**：根 `CONTEXT.md`（领域词汇表）+ `docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽+session 复用重试 / 0005 现场保留与决策恢复 / 0008 MR 终局清理）
+- **Domain docs**：根 `CONTEXT.md`（领域词汇表）+ `docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽+session 复用重试 / 0005 现场保留与决策恢复 / 0008 MR 终局清理 / 0009 G3 扩围决策）
 - **Real-run playbook**：`docs/real-run-playbook.md`（真实链路端到端：预检 → 选 pipeline → webhook 投递 → 监控 → 结果解读）
 - **Pi 配置指南**：`docs/pi-agent-configuration.md`

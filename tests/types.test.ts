@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+// G1 类名映射的单一来源测试（types.ts FAILURE_CLASS_NAMES / formatFailureClass）。
 import { FAILURE_CLASS_NAMES, formatFailureClass } from "../src/types.js";
 
 describe("FAILURE_CLASS_NAMES — G1 权威类名", () => {

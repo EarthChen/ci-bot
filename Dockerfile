@@ -39,7 +39,8 @@ COPY packages/ packages/
 RUN pnpm build
 
 # 剔除 devDependencies（typescript/vitest/tsx/@types/*）
-RUN pnpm prune --prod
+# CI=true：workspace 有可剔除模块时 prune 会交互式确认，容器内无 TTY 会直接失败
+RUN CI=true pnpm prune --prod
 
 # ==================== Stage 2: Runtime ====================
 # maven:3.9-eclipse-temurin-8：官方镜像自带 Maven 3.9 + Temurin JDK 8；

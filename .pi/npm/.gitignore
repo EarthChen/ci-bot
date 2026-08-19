@@ -1,0 +1,11 @@
+# pi 默认忽略 .pi/npm 全部内容（依赖启动时自动安装）；但 bot 的 worker
+# 子进程与 Docker 镜像没有自动安装环节，钉版本的包必须入库随镜像分发。
+# 见 docs/dev-deployment.md 与 ADR 无关：仅放行已钉版本的包树。
+*
+!.gitignore
+!package.json
+!package-lock.json
+!node_modules/
+node_modules/*
+!node_modules/pi-cache-optimizer/
+!node_modules/pi-cache-optimizer/**

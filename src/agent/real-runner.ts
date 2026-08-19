@@ -363,6 +363,8 @@ async function createDefaultSession(
 		noThemes: true,
 		noContextFiles: true,
 		additionalSkillPaths: [...definition.resources.skillPaths],
+		// Bot-owned pi package：显式路径加载，noExtensions 保持 true（worktree/用户目录发现仍禁用）。
+		additionalExtensionPaths: [cacheOptimizerExtensionPath(botRoot)],
 		// Keep Pi's built-in tool guidance; target worktree SYSTEM.md is not trusted.
 		systemPromptOverride: () => undefined,
 		appendSystemPrompt: [definition.resources.appendSystemPromptPath],
@@ -425,6 +427,21 @@ function resolveBotRoot(): string {
 		throw new Error("CIHEAL_BOT_ROOT does not contain config");
 	}
 	return botRoot;
+}
+
+/** Bot-owned pi package 扩展（`pi install -l` 装到 <botRoot>/.pi/npm）。
+ *  显式路径 + noExtensions:true = 只加载这一个 bot-owned 文件，worktree 发现保持禁用。 */
+const CACHE_OPTIMIZER_EXTENSION = ".pi/npm/node_modules/pi-cache-optimizer/index.ts";
+
+function cacheOptimizerExtensionPath(botRoot: string): string {
+	const extensionPath = joinPath(botRoot, CACHE_OPTIMIZER_EXTENSION);
+	if (!existsSync(extensionPath)) {
+		logger.warn(
+			{ path: extensionPath },
+			"pi-cache-optimizer extension missing — cache optimization disabled",
+		);
+	}
+	return extensionPath;
 }
 
 /** Keep provider responses and credential details out of MR and DingTalk output. */

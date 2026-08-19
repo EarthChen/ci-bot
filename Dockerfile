@@ -78,6 +78,16 @@ RUN NODE_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x64) \
 RUN git config --system user.email "ci-self-heal-bot@local" \
     && git config --system user.name "ci-self-heal-bot"
 
+# JDK 21（Temurin）：目标项目 quality job（checkstyle/spotbugs）跑在 temurin-21，agent 本地
+# 复跑需对齐 JDK 版本；预装入镜像，避免 agent 每次修复运行时自下载 ~200MB
+# （实测任务 100033952：agent 自行 curl adoptium 下载 JDK21）。TARGETARCH：arm64→aarch64 / amd64→x64
+RUN JDK21_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x64) \
+    && curl -fsSL "https://api.adoptium.net/v3/binary/latest/21/ga/linux/${JDK21_ARCH}/jdk/hotspot/normal/eclipse" -o /tmp/jdk21.tar.gz \
+    && mkdir -p /opt/java/openjdk21 \
+    && tar -xzf /tmp/jdk21.tar.gz -C /opt/java/openjdk21 --strip-components=1 \
+    && rm /tmp/jdk21.tar.gz \
+    && /opt/java/openjdk21/bin/java -version
+
 WORKDIR /app
 
 # 从 build 阶段复制产物

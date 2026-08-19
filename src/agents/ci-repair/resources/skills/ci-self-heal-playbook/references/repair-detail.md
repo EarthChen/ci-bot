@@ -114,6 +114,7 @@
 ### 本地环境约束与依赖取证
 
 - Maven 优先 `-o`（本地仓库已预热）；`-o` 报缺 artifact 时可去掉 `-o` 重试单点拉取，仍失败 = 网络不可达 → 放弃该路径改走取证，勿循环重试。
+- 镜像内置双 JDK：JDK 8（`/opt/java/openjdk`，默认 JAVA_HOME）与 JDK 21（`/opt/java/openjdk21`）。复跑静态检查按 CI job 的 JDK 版本对齐：日志见 temurin-21 则用 `JAVA_HOME=/opt/java/openjdk21 PATH=/opt/java/openjdk21/bin:$PATH mvn ...`。**严禁运行时下载 JDK 或任何工具**——镜像缺什么就绕开或在转交理由中说明，不得自行联网获取。
 - 需要知道**某类属于哪个 jar / 方法签名 / 内部实现**（内部库无源码；如改配置 Bean 字段名前确认反序列化库）时按序：① 定位 jar：`mvn org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath -o -pl <模块> -Dmdep.outputFile=/tmp/cp.txt`（带全限定版本，offline 下裸 `dependency:` 前缀可能因缺 metadata 失败）或直接按 groupId 路径 grep 本地仓库；② 列内容：`jar tf <jar>`（JDK 自带，一定存在）；③ 看字节码：`javap -c -classpath <jar> <全限定类名>`。
 - **改反序列化 Bean（@MomoConfig / Jackson / fastjson 配置类）字段名必须先保留外部键**：先取证确认序列化库，加 `@JsonProperty("<原键>")`（Jackson）或 `@JSONField(name="<原键>")`（fastjson）再改名；裸改名会破坏外部配置绑定，且编译与测试都发现不了。
 - **禁止静默失败循环**：批量扫描（遍历 jar/文件）前先在单个样本上验证命令可用、stderr 可见；循环内不得用 `2>/dev/null` 吞工具错误——工具缺失时「全部未命中」会伪装成结论（实测：unzip 缺失导致 9520 个 jar 白扫，浪费 7 分钟）。

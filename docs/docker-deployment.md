@@ -14,7 +14,7 @@
 | `CIHEAL_PI_BASE_DIR` | `/run/secrets/ci-self-heal-pi` | 部署时挂载 `./secrets/pi`（只读），放 `auth.json` / `models.json` |
 | `CIHEAL_DATA_ROOT` | `/var/lib/ci-self-heal` | bind mount 到宿主 `${CIHEAL_HOST_DATA_DIR:-./data}`：work/bare/audit/logs + 两个 SQLite 直接落宿主文件系统 |
 | 运行身份 | `HOST_UID:HOST_GID`（compose `user:`） | 容器以宿主用户运行，写 bind mount 的文件直接属宿主用户；必填（见 §6），设 0 回到 root |
-| Maven 本地仓库 | `/root/.m2` | 默认挂宿主 `~/.m2` 复用缓存（v1 共享可写设计）；`CIHEAL_HOST_M2_DIR` 可切隔离目录 |
+| Maven 本地仓库 | `/var/lib/ci-self-heal/.home/.m2` | 默认挂宿主 `~/.m2` 复用缓存（v1 共享可写设计）；挂载到 entrypoint 的 HOME/.m2，与 data 卷嵌套（更深路径优先）；`CIHEAL_HOST_M2_DIR` 可切隔离目录 |
 | 监听端口 | 容器内固定 `8080` | 宿主端口由 `HOST_PORT` 控制（默认 8080） |
 
 compose 的 `environment` 优先级高于 `env_file: .env`，下表变量被固化为容器内值——**`.env` 里填什么都不生效**（静默覆盖：不改不报错，改了也不起作用）：
@@ -90,7 +90,7 @@ docker run -d --name ci-self-heal-bot \
   -p 8080:8080 \
   -v ./secrets/pi:/run/secrets/ci-self-heal-pi:ro \
   -v ./data:/var/lib/ci-self-heal \
-  -v ~/.m2:/root/.m2 \
+  -v ~/.m2:/var/lib/ci-self-heal/.home/.m2 \
   ci-self-heal-bot
 ```
 

@@ -9,7 +9,7 @@
 #     --user "$(id -u):$(id -g)" \
 #     -v ./secrets/pi:/run/secrets/ci-self-heal-pi:ro \
 #     -v ./data:/var/lib/ci-self-heal \
-#     -v ~/.m2:/root/.m2 \
+#     -v ~/.m2:/var/lib/ci-self-heal/.home/.m2 \
 #     ci-self-heal-bot
 
 # ==================== Stage 1: Build ====================
@@ -92,6 +92,12 @@ COPY --chmod=755 docker-entrypoint.sh /app/docker-entrypoint.sh
 # 预建数据目录（CIHEAL_DATA_ROOT=/var/lib/ci-self-heal）
 # CIHEAL_PI_BASE_DIR 由 operator 通过 volume/secret 挂载，此处仅创建占位
 RUN mkdir -p /var/lib/ci-self-heal /run/secrets/ci-self-heal-pi
+
+# 非 root 运行时 Java user.home 修复（OpenShift pattern）：
+# JDK 8 通过 getpwuid 解析 user.home，UID 不在 /etc/passwd 则回退为 "?"
+# → Maven 无法定位 local repository（/app/?/.m2/repository）。
+# 放开 /etc/passwd 写权限，由 docker-entrypoint.sh 在运行时动态注册 UID。
+RUN chmod 666 /etc/passwd
 
 ENV CIHEAL_BOT_ROOT=/app
 ENV CIHEAL_PI_BASE_DIR=/run/secrets/ci-self-heal-pi

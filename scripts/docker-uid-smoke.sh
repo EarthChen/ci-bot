@@ -74,7 +74,7 @@ if docker exec ci-self-heal-bot sh -c 'echo canary > /var/lib/ci-self-heal/uid-c
 fi
 
 # 断言 3（参考，macOS 被 virtiofs 掩盖）：.m2 卷新写文件属主 == 宿主用户
-if docker exec ci-self-heal-bot sh -c 'echo canary > /root/.m2/uid-canary' 2>/dev/null; then
+if docker exec ci-self-heal-bot sh -c 'echo canary > /var/lib/ci-self-heal/.home/.m2/uid-canary' 2>/dev/null; then
 	own=$(file_owner "$TMP/m2/uid-canary" 2>/dev/null || echo "?")
 	echo "INFO: m2 canary 属主=$own（宿主 $HOST_UID）"
 fi

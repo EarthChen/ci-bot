@@ -50,8 +50,9 @@ services:
       # Maven 本地仓库：复用宿主 ~/.m2（v1 设计决策，见 src/pipeline/worktree.ts sandbox
       # 记录：concurrency=1 下共享可写 .m2，跨 pipeline/宿主构建复用缓存是有意收益）。
       # 需隔离时改 CIHEAL_HOST_M2_DIR（.env 中必须用绝对路径，~ 不会被展开）。
-      # 注意：容器以 root 运行，Linux 宿主上它新写的 artifact 属主为 root，见部署手册 §6
-      - ${CIHEAL_HOST_M2_DIR:-~/.m2}:/root/.m2
+      # 挂载到 entrypoint 设定的 HOME/.m2（/var/lib/ci-self-heal/.home/.m2），
+      # 与 data 卷嵌套——Docker 以更深路径优先，.m2 来自宿主、.home 其余文件来自 data 卷
+      - ${CIHEAL_HOST_M2_DIR:-~/.m2}:/var/lib/ci-self-heal/.home/.m2
 
     # 健康检查：webhook 端点无独立 /health，用 TCP 端口探活
     healthcheck:

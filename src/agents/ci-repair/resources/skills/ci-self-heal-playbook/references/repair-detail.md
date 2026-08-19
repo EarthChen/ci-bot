@@ -102,3 +102,18 @@
 - 全量回归是 ticket 04，v1 不做。
 - 测试绿才算 fixed；仍红 → 重新诊断 → 转交或重修。
 - 跑测试用 bash 工具，cwd 是 agent 的工作目录（bot 注入的 worker 隔离 cwd）。
+
+### static-analysis / checkstyle 失败的验证
+
+失败 stage 是 static-analysis/checkstyle 时，验收标准不是 `mvn test`，而是**用与 CI 相同版本/规则集复跑对应工具，确认 diff 修改行上 0 阻断违规**：
+
+1. 从 CI 日志提取工具版本与规则集（如 `spotbugs:4.8.6.8:check`、checkstyle 版本 + 规则文件）；规则集在仓库内（checkstyle.xml / exclude filter）直接用，CI 从外部拉取时按日志定位同源规则。
+2. 在仓库根用 `-pl <模块>` 复跑（同「跑测试」的多模块姿势）；先 `mvn -o -pl <模块> -am compile -DskipTests` 保编译过，再跑规则检查。
+3. 只计**本次修改行**上的阻断违规；未修改行的历史遗留不算失败（对齐 CI 行级闸；CI 若是全量闸，以 CI 日志实际判定为准）。
+
+### 本地环境约束与依赖取证
+
+- Maven 优先 `-o`（本地仓库已预热）；`-o` 报缺 artifact 时可去掉 `-o` 重试单点拉取，仍失败 = 网络不可达 → 放弃该路径改走取证，勿循环重试。
+- 需要知道**某类属于哪个 jar / 方法签名 / 内部实现**（内部库无源码；如改配置 Bean 字段名前确认反序列化库）时按序：① 定位 jar：`mvn org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath -o -pl <模块> -Dmdep.outputFile=/tmp/cp.txt`（带全限定版本，offline 下裸 `dependency:` 前缀可能因缺 metadata 失败）或直接按 groupId 路径 grep 本地仓库；② 列内容：`jar tf <jar>`（JDK 自带，一定存在）；③ 看字节码：`javap -c -classpath <jar> <全限定类名>`。
+- **改反序列化 Bean（@MomoConfig / Jackson / fastjson 配置类）字段名必须先保留外部键**：先取证确认序列化库，加 `@JsonProperty("<原键>")`（Jackson）或 `@JSONField(name="<原键>")`（fastjson）再改名；裸改名会破坏外部配置绑定，且编译与测试都发现不了。
+- **禁止静默失败循环**：批量扫描（遍历 jar/文件）前先在单个样本上验证命令可用、stderr 可见；循环内不得用 `2>/dev/null` 吞工具错误——工具缺失时「全部未命中」会伪装成结论（实测：unzip 缺失导致 9520 个 jar 白扫，浪费 7 分钟）。

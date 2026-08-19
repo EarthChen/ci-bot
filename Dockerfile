@@ -46,12 +46,14 @@ FROM maven:3.9-eclipse-temurin-8
 # git：bare clone + worktree 操作
 # ca-certificates：HTTPS 调用 GitLab API
 # glab CLI：GitLab API 封装（fetchCiLog / fetchMrDiff / createMr）
+# unzip/python3：agent 依赖取证（检查 jar 内容/写脚本）。缺失时批量扫描会静默失败
+#   白烧预算（实测：unzip 缺失时 agent 对 9520 个 jar 的空扫循环跑了 7 分钟）
 # 注：install.sh 已失效（404）；固定版本从 gitlab.com 直下 .deb + dpkg 安装
 # TARGETARCH 由 BuildKit 注入（amd64/arm64），按目标平台选 .deb，避免硬编码架构
 ARG GLAB_VERSION=1.113.0
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ca-certificates curl xz-utils \
+    git ca-certificates curl xz-utils unzip python3 \
     && curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${TARGETARCH}.deb" -o /tmp/glab.deb \
     && dpkg -i /tmp/glab.deb \
     && rm /tmp/glab.deb \

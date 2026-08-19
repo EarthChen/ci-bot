@@ -27,7 +27,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 | 1 诊断(G1) | 归五类之一 | 读 CI 日志+MR diff+源码后归类，不猜 |
 | 2 修复(G3) | 按类 playbook 改测试/文档（或 diff 内 src/main） | 改动在 G3 边界内 |
 | 3 文档同步(G2) | 仅 class 2 同步相关段落 | 只动与变更行为直接相关的文档段落 |
-| 4 自测绿 | 跑所改测试类 | 退出码 0；不因无关失败 revert 本次改动 |
+| 4 自测绿 | 跑所改测试类（static-analysis/checkstyle 复跑同版本规则） | test 退出码 0 / 修改行 0 阻断违规；不因无关失败 revert 本次改动 |
 | 5 提交 MR + 输出 | git push + glab mr create + JSON | MR URL 填入 `mrUrl`；未输出合法 JSON = 失败 |
 
 ## 0 范围闸（G0）——先决定「能不能修」
@@ -119,6 +119,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 ## 4 自测绿
 
 - 只跑所改测试类。**多模块 Maven 必须在仓库根用 `-pl <模块> -am`**：`mvn test -pl <模块> -am -Dtest=<类>`（`-am` 连带构建同仓库上游依赖模块；cd 进模块目录裸跑 mvn 会因兄弟模块依赖缺失而失败，MR !281 实测）。Gradle `./gradlew :<模块>:test --tests <类>`；pnpm / pytest 在所属模块目录。
+- static-analysis/checkstyle 失败不跑 `mvn test` 验收：用与 CI 同版本/规则集复跑对应工具，修改行上 0 阻断违规才算绿（见 repair-detail「验证」节）。
 - 退出码 0 = 绿。仍红 → 重新诊断（可能误判）→ 转交或重修。
 - 勿因其他无关测试失败 revert 本次改动；仅所改测试本身仍红才回退。
 

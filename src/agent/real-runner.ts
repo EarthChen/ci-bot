@@ -85,6 +85,7 @@ export class RealAgentRunner implements AgentRunner {
 		switch (opened.result.status) {
 			case "completed":
 				agentResult = this.parseResult(opened.result.finalText);
+				agentResult = await this.retryUnparseable(agentResult);
 				break;
 			case "budget_exceeded":
 				agentResult = this.escalateBudget(opened.result.reason);
@@ -132,6 +133,7 @@ export class RealAgentRunner implements AgentRunner {
 		switch (result.status) {
 			case "completed":
 				agentResult = this.parseResult(result.finalText);
+				agentResult = await this.retryUnparseable(agentResult);
 				break;
 			case "budget_exceeded":
 				agentResult = this.escalateBudget(result.reason);
@@ -201,6 +203,7 @@ export class RealAgentRunner implements AgentRunner {
 		switch (opened.result.status) {
 			case "completed":
 				agentResult = this.parseResult(opened.result.finalText);
+				agentResult = await this.retryUnparseable(agentResult);
 				break;
 			case "budget_exceeded":
 				agentResult = this.escalateBudget(opened.result.reason);
@@ -245,6 +248,52 @@ export class RealAgentRunner implements AgentRunner {
 		return parsed;
 	}
 
+	/**
+	 * One-shot retry when the agent's final message is not valid JSON.
+	 * Re-prompts the same session with a focused instruction demanding only
+	 * the structured JSON contract — costs one small turn, avoids a full
+	 * runtime escalation for a formatting slip (qwen3.8-max 长会话复发).
+	 */
+	private async retryUnparseable(
+		initialResult: AgentResult,
+	): Promise<AgentResult> {
+		if (
+			initialResult.kind !== "escalated" ||
+			initialResult.source !== "runtime" ||
+			!initialResult.reason.startsWith("unparseable") ||
+			!this.activeSession
+		) {
+			return initialResult;
+		}
+
+		logger.info("retrying unparseable agent result with JSON-only re-prompt");
+
+		const runtime = new SharedAgentRuntime({
+			sessionFactory: async () => {
+				throw new Error("unused — continueSession does not call factory");
+			},
+			budget: this.budget,
+		});
+
+		try {
+			const retryResult = await runtime.continueSession(
+				this.activeSession,
+				UNPARSEABLE_RETRY_PROMPT,
+			);
+			if (retryResult.status === "completed") {
+				const parsed = tryParseAgentJson(retryResult.finalText);
+				if (parsed) {
+					logger.info("unparseable retry succeeded — using retried result");
+					return parsed;
+				}
+			}
+		} catch (err) {
+			logger.warn({ err }, "unparseable retry continue failed");
+		}
+
+		return initialResult;
+	}
+
 	private escalateBudget(reason: string): AgentResult {
 		return {
 			kind: "escalated",
@@ -268,6 +317,20 @@ export class RealAgentRunner implements AgentRunner {
 /** unparseable 结果的摘要上限：终局上报需要完整诊断上下文
  * （旧 200 字符曾截断 MR !281 的根因描述）；钉钉 markdown 限额远大于此。 */
 export const UNPARSEABLE_SUMMARY_CHARS = 1500;
+
+/** Focused re-prompt sent when the agent's final message is not valid JSON. */
+export const UNPARSEABLE_RETRY_PROMPT = [
+	"你的上一条消息不是合法的结构化 JSON 结果。请**只输出 JSON**，不要包含任何其他文字。",
+	"",
+	"必须严格遵循以下格式之一：",
+	'```json',
+	'{"kind":"fixed","diagnosis":{"failureClass":<1-5>,"summary":"..."},"summary":"...","mrUrl":"..."}',
+	'```',
+	"或",
+	'```json',
+	'{"kind":"escalated","diagnosis":{"failureClass":<1-5>,"summary":"..."},"reason":"..."}',
+	'```',
+].join("\n");
 
 /** 截断 unparseable agent 输出为 reason 摘要（超长带省略号标记）。 */
 export function summarizeUnparseable(text: string): string {

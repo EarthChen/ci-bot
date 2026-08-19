@@ -23,7 +23,8 @@ CI 单测自愈 bot：headless 长驻 TS 服务，监听 GitLab pipeline 失败 
 ```bash
 pnpm install          # 安装依赖（非交互用 ./node_modules/.bin/tsc|vitest 绕过 onlyBuiltDependencies 审批）
 pnpm build            # tsc -p tsconfig.json → dist/
-pnpm typecheck        # tsc --noEmit（CI 门禁）
+pnpm typecheck        # tsc --noEmit（CI 门禁；只含 src/，不含 tests/）
+./node_modules/.bin/tsc -p tsconfig.test.json --noEmit  # 含 tests/ 的完整类型检查
 pnpm test             # vitest run（全量）
 pnpm test:watch       # vitest watch
 pnpm dev              # tsx src/main.ts（开发模式）
@@ -53,9 +54,10 @@ src/
     run-repair.ts          # G2 编排：fetch CI log → class-5 早筛（仅依赖错）→ agent run → extractPatch → G3 校验 → MR 监控重试 → 钉钉；导出 isDecidableEscalation
     run-resume.ts          # 恢复编排：SessionManager.open 重建保留 session → 决策注入 → 复用 stage-3+ pipeline
     repair-outcome.ts      # 终局处理：通知 → audit trace（含 decisionId/chainDepth）→ worktree 清理
+    mr-session-store.ts    # 跨 pipeline session 存档（ADR-0007）：save/find/evict/remove，LRU 上限 32
     worktree.ts            # 共享 bare clone + per-pipeline git worktree（agent 真实工作区）
   decision/
-    store.ts               # DecisionStore（SQLite）：决策 CRUD + TTL sweep + invalidateByProject
+    store.ts               # DecisionStore（SQLite）：决策 CRUD（含 widen 的 oos_paths 清单）+ TTL sweep + invalidateByProject
     heal-command.ts        # /heal <id> test|prod|drop|widen [备注] 群命令（claim-then-enqueue + 补偿回滚；widen=G3 扩围批准）
     lifecycle.ts           # onNewPipeline（新 pipeline 作废待决策 + 清现场 + 通知）+ onMrTerminal（MR 合并/关闭作废该 MR 待决策 + 清现场，静默）+ startTtlSweep
   agent/
@@ -75,7 +77,7 @@ src/
     route-command.ts / help-command.ts / command-help.ts  # 群命令 /route、/help + 文案外置（config/command-help.json）
   types.ts / util/log.ts   # 领域类型（PipelineEvent.failedStages 等）+ pino logger
 config/                    # model-candidates.json + model-profiles.json + group-routing.json + command-help.json（bot-owned，非敏感）
-.pi/                       # bot 基础 settings.json（retry / skill-commands 全局策略）
+.pi/                       # bot 基础 settings.json（retry / skill-commands）+ npm/pi-cache-optimizer（prompt/KV 缓存优化 pi package，worker 经 additionalExtensionPaths 显式加载，worktree 发现保持禁用）
 tests/                     # agent-runtime / agent / config / decision / e2e / notify / pipeline / webhook / worker
 ```
 
@@ -95,7 +97,7 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 
 ## Rules
 
-- **G3 diff 白名单（ADR-0004/0006/0009）**：单测失败可改测试/文档与 **MR diff 内**的 `src/main`（有限放宽：铁律是优先满足既有失败测试，严禁改写其断言语义）；static-analysis/Checkstyle 失败可修 **MR diff 内**文件（含 src/main）；禁压制式修复（`@SuppressWarnings`/删规则）；改动绑定报告的 file:line:rule；diff 外一律转交，**例外：违规全为 diff 外测试/文档时可决策**——冻干现场 + 清单随决策卡片展示，`/heal <id> widen` 批准后白名单扩为「MR diff + 清单」继续修复（ADR-0009）。转交但有部分修复成果 → 开部分修复 MR（描述说明已修/未修/根因，`mrUrl` 随转交通知与决策上下文）。`validatePatchPaths` 在 createMR 前兑底校验
+- **G3 diff 白名单（ADR-0004/0006/0009）**：单测失败可改测试/文档与 **MR diff 内**的 `src/main`（有限放宽：铁律是优先满足既有失败测试，严禁改写其断言语义）；static-analysis/Checkstyle 失败可修 **MR diff 内**文件（含 src/main）；禁压制式修复（`@SuppressWarnings`/删规则）；改动绑定报告的 file:line:rule；diff 外一律转交，**例外：违规全为 diff 外测试/文档时可决策**——冻干现场 + 清单随决策卡片展示，`/heal <id> widen` 批准后白名单扩为「MR diff + 清单」继续修复（ADR-0009）。转交但有部分修复成果 → 开部分修复 MR（描述说明已修/未修/根因，`mrUrl` 随转交通知与决策上下文）。`validatePatchPaths` 在 createMR 前兜底校验
 - **绝不自动 merge**：所有 MR 强制人工 review
 - **人工决策边界**：`/heal` 决策（test/prod/drop/widen）只消除不确定性，不授予清单外新权限；widen 仅确认转交时冻入的 diff 外测试/文档清单（master 既有失败测试），批准范围随本次 MR；**一轮介入**——恢复后再次转交即终局，不产生新决策；决策仅群聊可发，decider 入审计
 - **现场保留**：可决策转交（agent 主动 escalated 且带 diagnosis）冻干现场（cwd + worktree + session + branch），注册 awaiting_decision；TTL 默认 24h（`CIHEAL_DECISION_TTL_MS`）到期清扫；新 pipeline 到达（含被排除的）作废同项目待决策并清现场；class 5 转交（bot 早筛或 agent 判定）/bot 故障类转交不保留现场
@@ -113,9 +115,9 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 
 ## Agent skills / 项目元信息
 
-- **Issue tracker**：`.scratch/<feature>/`（spec + issues：ci-self-heal-bot / shared-agent-runtime / human-decision-resume）
+- **Issue tracker**：`.scratch/<feature>/`（spec + issues：ci-self-heal-bot / shared-agent-runtime / human-decision-resume / ci-agent-fix）
 - **Triage labels**：needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix（见 `docs/agents/triage-labels.md`）
-- **Domain docs**：根 `CONTEXT.md`（领域词汇表）+ `docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽+session 复用重试 / 0005 现场保留与决策恢复 / 0008 MR 终局清理 / 0009 G3 扩围决策）
+- **Domain docs**：根 `CONTEXT.md`（领域词汇表）+ `docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽+session 复用重试 / 0005 现场保留与决策恢复 / 0006 G3 有限放宽+部分修复 MR / 0007 跨 pipeline session 复用+压缩 / 0008 MR 终局清理 / 0009 G3 扩围决策）
 - **Real-run playbook**：`docs/real-run-playbook.md`（真实链路端到端：预检 → 选 pipeline → webhook 投递 → 监控 → 结果解读）
 - **dev 部署手册**：`docs/dev-deployment.md`（push → pull → compose build/up → 验证清单 → 回滚；红线：不覆盖远端 `.env`/`data/`/本地路由配置）
 - **Pi 配置指南**：`docs/pi-agent-configuration.md`

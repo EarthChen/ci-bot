@@ -1,11 +1,14 @@
 # CI Self-Heal Bot
 
-监听 GitLab pipeline 失败 webhook，用 AI agent（pi SDK）自动诊断根因、修复测试/文档（单测失败绝不碰生产代码；static-analysis/Checkstyle 可修 MR diff 内文件）、开 MR 供人工 review、钉钉推送结果。诊断不确定的转交支持人工在群内 `/heal` 决策，bot 复用原 session 继续修复。
+监听 GitLab pipeline 失败 webhook，用 AI agent（pi SDK）自动诊断根因、修复测试/文档（单测失败绝不碰生产代码；static-analysis/Checkstyle 可修 MR diff 内文件）、开 MR 供人工 review、钉钉推送结果。诊断不确定的转交支持人工在群内 `/heal` 决策（test/prod/drop/widen），bot 复用原 session 继续修复。
 
 ## 特性
 
 - **修复范围（G3 diff 白名单，ADR-0004）**：单测失败只修测试/文档，严禁碰 `src/main`；static-analysis（SpotBugs/PMD）/ Checkstyle 失败可修 MR diff 内文件（含 `src/main`），禁压制式修复；发现范围外的生产代码 bug 自动转交人工
 - **人工决策恢复**：agent 诊断不确定（分不清测试错还是源码错）时转交并**冻干现场**（worktree + session + 分支），群内收到带决策 id 的通知；`/heal <id> test|prod|drop [备注]` 后 bot 跨进程恢复原 Pi session 注入决策继续修复；一轮介入，二次转交即终局
+- **G3 扩围决策（ADR-0009）**：修复被 G3 拦在 MR diff 外、且违规全为测试/文档（典型：master 既有失败测试）时可决策——决策卡列出文件清单，`/heal <id> widen` 批准后白名单扩为「MR diff + 清单」随本次 MR 继续修复；混入 `src/main` 或 build 配置仍是死路
+- **MR 终局清理（ADR-0008）**：修复 MR 被合并/关闭（GitLab merge_request webhook）→ 自动删该 MR 的 session 存档、作废关联待决策并清现场，幂等静默
+- **跨 pipeline session 复用（ADR-0007）**：带 MR 成果的终局存档 Pi session（LRU 32）；同 MR 后续 pipeline 失败时开存档 + 压缩 + 继续，不重复诊断已修部分
 - **确定性失败不进修复**：`CIHEAL_SKIP_STAGES=format` 之类的 stage 排除，format 等机械性失败不起 agent、不烧预算，即时播报保留
 - **真实工作区**：每个 pipeline 从共享 bare clone 创建 git worktree，agent 在真实代码上迭代
 - **共享 Agent Runtime**：`src/agent-runtime` 抽离 Pi session / 模型策略 / 资源加载 / token 预算监控，垂直 agent（如 CI Repair）复用同一运行时
@@ -14,7 +17,7 @@
 - **极薄 prompt**：CI log/MR diff 写文件到工作区，agent 用 read 工具读，不拼进 prompt
 - **钉钉 Stream 双向**：主进程 WebSocket 接收 @bot 群命令（`/route` 动态路由、`/heal` 决策、`/help`）+ SDK API 主动推送；转交/失败通知按项目路由到对应群
 - **模型候选链**：bot 按 `config/model-candidates.json` 顺序选择同族首个可用 provider/model，运行中失败直接转人工
-- **Pi 配置隔离**：只加载 bot 自带 settings 与 playbook，不加载目标 worktree 的 `.pi` 配置或扩展
+- **Pi 配置隔离**：只加载 bot 自带 settings 与 playbook，不加载目标 worktree 的 `.pi` 配置或扩展；唯一例外是 bot-owned pi package（`pi-cache-optimizer`，提升 prompt/KV 缓存命中）经显式路径加载
 
 ## 安装
 
@@ -45,6 +48,7 @@ pnpm dev
 #    /heal D-<pipeline>-<rand> test 按 spec 补断言   # bot 恢复 session 继续修
 #    /heal D-<pipeline>-<rand> prod                  # 确认源码 bug，bot 关闭
 #    /heal D-<pipeline>-<rand> drop                  # 丢弃
+#    /heal D-<pipeline>-<rand> widen                 # 批准扩围（仅决策卡列出清单时可用，ADR-0009）
 ```
 
 生产部署：
@@ -54,7 +58,7 @@ pnpm build
 pnpm start
 ```
 
-容器化部署（Docker Compose，镜像自带 JDK 8 + Maven + glab 完整修复运行时）见 `docs/docker-deployment.md`。
+容器化部署（Docker Compose，镜像自带 JDK 8 + Maven + glab 完整修复运行时）见 `docs/docker-deployment.md`；dev 环境部署流程见 `docs/dev-deployment.md`。
 
 真实链路端到端演练（预检 → 选 pipeline → webhook 投递 → 监控 → 结果解读）见 `docs/real-run-playbook.md`。
 
@@ -108,11 +112,14 @@ e2e 测试用真实子进程 + stub session（无真实 LLM），通过 sidecar 
 
 - 领域词汇表：`CONTEXT.md`
 - 设计 spec：`.scratch/ci-self-heal-bot/spec.md`、`.scratch/human-decision-resume/spec.md`
-- ADR：`docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽 + session 复用重试 / 0005 现场保留与决策恢复）
+- ADR：`docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽 + session 复用重试 / 0005 现场保留与决策恢复 / 0006 G3 有限放宽 + 部分修复 MR / 0007 跨 pipeline session 复用 + 压缩 / 0008 MR 终局清理 / 0009 G3 扩围决策）
 - agent skill：`src/agents/ci-repair/resources/skills/ci-self-heal-playbook/`
 - Pi 运行时配置指南：`docs/pi-agent-configuration.md`
 - 真实链路演练：`docs/real-run-playbook.md`
 - Docker 部署手册：`docs/docker-deployment.md`
+- dev 环境部署手册：`docs/dev-deployment.md`
+- 可观测性：`docs/observability/observability.md`
+- 供应链安全：`docs/security/supply-chain.md`
 
 ## 许可证
 

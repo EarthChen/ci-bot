@@ -15,14 +15,17 @@ CI 单测自愈 bot：headless 长驻 TS 服务，监听 GitLab pipeline 失败 
 - **钉钉**：`dingtalk-stream` SDK（Stream 模式：主进程 WebSocket 接收 + SDK API 推送）
 - **存储**：better-sqlite3（动态群路由 `group-routing.db` + 人工决策 `decisions.db`，均 WAL；原生模块，已入 `allowBuilds` 审批）
 - **测试**：vitest 2（forks singleFork，子进程测试隔离）
-- **构建**：tsc 直出 `dist/`（无 bundler）
-- **包管理**：pnpm 11（lockfile 提交；`allowBuilds` 已声明）
+- **Dashboard 前端**：React 19 + React Router 7 + Vite 6（pnpm workspace `packages/dashboard`，构建输出到 `dist/dashboard/`，Fastify `@fastify/static` 同进程托管）
+- **构建**：tsc 直出 `dist/`（bot）+ Vite 构建（dashboard）
+- **包管理**：pnpm 11（lockfile 提交；`allowBuilds` 已声明；pnpm workspace 管理 monorepo）
 
 ## Commands
 
 ```bash
 pnpm install          # 安装依赖（非交互用 ./node_modules/.bin/tsc|vitest 绕过 onlyBuiltDependencies 审批）
-pnpm build            # tsc -p tsconfig.json → dist/
+pnpm build            # tsc -p tsconfig.json → dist/ + dashboard Vite build → dist/dashboard/
+pnpm build:bot        # tsc -p tsconfig.json → dist/（仅 bot）
+pnpm build:dashboard  # pnpm --filter @ci-bot/dashboard build（仅前端）
 pnpm typecheck        # tsc --noEmit（CI 门禁；只含 src/，不含 tests/）
 ./node_modules/.bin/tsc -p tsconfig.test.json --noEmit  # 含 tests/ 的完整类型检查
 pnpm test             # vitest run（全量）
@@ -75,13 +78,24 @@ src/
     project-router.ts      # project → 群路由（五层：动态精确/通配 → 静态精确/通配 → default）
     route-store.ts         # SQLite 动态路由（webhook_routes 表；/route 写、resolve 直读）
     route-command.ts / help-command.ts / command-help.ts  # 群命令 /route、/help + 文案外置（config/command-help.json）
+  dashboard/
+    routes.ts              # Dashboard API 路由：/api/status（health+scheduler）、/api/decisions、/api/metrics、/api/events（SSE）
+    event-hub.ts           # EventHub：主进程事件聚合 + SSE 广播 + 系统快照（snapshot）+ keepalive
+    metrics-aggregator.ts  # MetricsAggregator：启动预加载 audit JSONL + 增量更新 → 聚合指标快照
+    ipc-types.ts           # Worker→Main IPC 消息类型（stage/turn/tool 进度）+ 类型守卫 + sendIpc 工具函数
   types.ts / util/log.ts   # 领域类型（PipelineEvent.failedStages 等）+ pino logger
+packages/dashboard/        # React SPA 前端（pnpm workspace；Vite 构建 → dist/dashboard/）
+  src/
+    App.tsx                # 路由入口：Overview / Decisions / Metrics 三页
+    hooks/useEventSource.ts  # SSE 连接管理 + worker 状态 Map
+    pages/                 # Overview（健康+调度+Workers 表）、Decisions（待决策+历史）、Metrics（成功率+分布）
+    components/            # StatusCard、ConnectionBadge 通用展示组件
 config/                    # model-candidates.json + model-profiles.json + group-routing.json + command-help.json（bot-owned，非敏感）
 .pi/                       # bot 基础 settings.json（retry / skill-commands）+ npm/pi-cache-optimizer（prompt/KV 缓存优化 pi package，worker 经 additionalExtensionPaths 显式加载，worktree 发现保持禁用）
-tests/                     # agent-runtime / agent / config / decision / e2e / notify / pipeline / webhook / worker
+tests/                     # agent-runtime / agent / config / dashboard / decision / e2e / notify / pipeline / webhook / worker
 ```
 
-> CI：`.github/workflows/ci.yml`（pnpm 11 + Node 22，checkout 含 fixture submodule `fixtures/repo`（ci-bot-fixtures，公开），物化 class1/2/3-failing-test 本地分支后跑 typecheck + test）。Git remote：`github.com/EarthChen/ci-bot`，默认分支 master。
+> CI：`.github/workflows/ci.yml`（pnpm 11 + Node 22，checkout 含 fixture submodule `fixtures/repo`（ci-bot-fixtures，公开），物化 class1/2/3-failing-test 本地分支后跑 typecheck + dashboard build + test）。Git remote：`github.com/EarthChen/ci-bot`，默认分支 master。
 
 ## Conventions
 
@@ -117,7 +131,7 @@ tests/                     # agent-runtime / agent / config / decision / e2e / n
 
 - **Issue tracker**：`.scratch/<feature>/`（spec + issues：ci-self-heal-bot / shared-agent-runtime / human-decision-resume / ci-agent-fix）
 - **Triage labels**：needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix（见 `docs/agents/triage-labels.md`）
-- **Domain docs**：根 `CONTEXT.md`（领域词汇表）+ `docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽+session 复用重试 / 0005 现场保留与决策恢复 / 0006 G3 有限放宽+部分修复 MR / 0007 跨 pipeline session 复用+压缩 / 0008 MR 终局清理 / 0009 G3 扩围决策）
+- **Domain docs**：根 `CONTEXT.md`（领域词汇表）+ `docs/adr/`（0001 bot-owned Pi 运行时 / 0002 共享运行时 / 0003 DATA_ROOT 统一 / 0004 G3 放宽+session 复用重试 / 0005 现场保留与决策恢复 / 0006 G3 有限放宽+部分修复 MR / 0007 跨 pipeline session 复用+压缩 / 0008 MR 终局清理 / 0009 G3 扩围决策 / 0010 实时 Dashboard）
 - **Real-run playbook**：`docs/real-run-playbook.md`（真实链路端到端：预检 → 选 pipeline → webhook 投递 → 监控 → 结果解读）
 - **dev 部署手册**：`docs/dev-deployment.md`（push → pull → compose build/up → 验证清单 → 回滚；红线：不覆盖远端 `.env`/`data/`/本地路由配置）
 - **Pi 配置指南**：`docs/pi-agent-configuration.md`

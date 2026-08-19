@@ -392,6 +392,7 @@ describe("e2e human-decision — 验收门（T11）", () => {
 			running: 0,
 			queued: 0,
 			inflight: 0,
+			serialKeys: [],
 		});
 	}, 120_000);
 

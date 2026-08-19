@@ -78,6 +78,13 @@ export interface UpdateStatusParams {
 	readonly remark?: string;
 }
 
+export type DecisionChangeAction = "create" | "update";
+
+export type DecisionChangeCallback = (
+	action: DecisionChangeAction,
+	record: DecisionRecord,
+) => void;
+
 interface DecisionRow {
 	decision_id: string;
 	pipeline_id: string;
@@ -118,6 +125,7 @@ function rowToRecord(row: DecisionRow): DecisionRecord {
 
 export class DecisionStore {
 	private readonly db: Database.Database;
+	private onChange?: DecisionChangeCallback;
 
 	constructor(dbPath: string) {
 		mkdirSync(dirname(dbPath), { recursive: true });
@@ -131,6 +139,10 @@ export class DecisionStore {
 		if (!cols.some((c) => c.name === "oos_paths")) {
 			this.db.exec("ALTER TABLE decisions ADD COLUMN oos_paths TEXT");
 		}
+	}
+
+	setOnChange(callback: DecisionChangeCallback | undefined): void {
+		this.onChange = callback;
 	}
 
 	create(params: CreateDecisionParams): void {
@@ -156,6 +168,7 @@ export class DecisionStore {
 				params.expires_at,
 				params.oos_paths ?? null,
 			);
+		this.notifyChange("create", params.decision_id);
 	}
 
 	get(decisionId: string): DecisionRecord | undefined {
@@ -188,12 +201,28 @@ export class DecisionStore {
 		if (result.changes === 0) {
 			throw new Error(`Decision not found: ${decisionId}`);
 		}
+		this.notifyChange("update", decisionId);
+	}
+
+	private notifyChange(action: DecisionChangeAction, decisionId: string): void {
+		if (!this.onChange) return;
+		const record = this.get(decisionId);
+		if (record) {
+			this.onChange(action, record);
+		}
 	}
 
 	listByStatus(status: DecisionStatus): DecisionRecord[] {
 		const rows = this.db
 			.prepare("SELECT * FROM decisions WHERE status = ? ORDER BY created_at")
 			.all(status) as DecisionRow[];
+		return rows.map(rowToRecord);
+	}
+
+	listAll(): DecisionRecord[] {
+		const rows = this.db
+			.prepare("SELECT * FROM decisions ORDER BY created_at DESC")
+			.all() as DecisionRow[];
 		return rows.map(rowToRecord);
 	}
 

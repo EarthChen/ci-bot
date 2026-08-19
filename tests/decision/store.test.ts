@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DecisionStore } from "../../src/decision/store.js";
 import type { DecisionRecord, DecisionStatus } from "../../src/decision/store.js";
+import { sanitizeDecision } from "../../src/dashboard/routes.js";
 
 function makeEvent(projectId = "proj-1", pipelineId = "pipe-1") {
 	return { projectId, pipelineId, sha: "abc123", ref: "main" };
@@ -110,6 +111,76 @@ describe("DecisionStore", () => {
 			expect(() =>
 				store.updateStatus("nonexistent", { status: "closed" }),
 			).toThrow(/not found/i);
+		});
+	});
+
+	describe("onChange callback", () => {
+		it("fires create action after create()", () => {
+			const changes: Array<{ action: string; decisionId: string }> = [];
+			store.setOnChange((action, record) => {
+				changes.push({ action, decisionId: record.decision_id });
+			});
+			store.create(makeCreateParams({ decision_id: "D-onchange-1" }));
+			expect(changes).toEqual([{ action: "create", decisionId: "D-onchange-1" }]);
+		});
+
+		it("fires update action after updateStatus()", () => {
+			store.create(makeCreateParams({ decision_id: "D-onchange-2" }));
+			const changes: Array<{ action: string; status: string }> = [];
+			store.setOnChange((action, record) => {
+				changes.push({ action, status: record.status });
+			});
+			store.updateStatus("D-onchange-2", {
+				status: "resumed",
+				decided_by: "alice",
+				decision_value: "test",
+			});
+			expect(changes).toEqual([{ action: "update", status: "resumed" }]);
+		});
+
+		it("update → decision_resolved SSE event when wired like main.ts", () => {
+			store.create(makeCreateParams({ decision_id: "D-sse-2" }));
+			const emitted: Array<{ type: string; data: Record<string, unknown> }> = [];
+			const hub = {
+				emit: (event: { type: string; data: Record<string, unknown> }) => {
+					emitted.push(event);
+				},
+			};
+			store.setOnChange((action, record) => {
+				hub.emit({
+					type: action === "create" ? "decision_created" : "decision_resolved",
+					data: sanitizeDecision(record),
+				});
+			});
+			store.updateStatus("D-sse-2", {
+				status: "resumed",
+				decided_by: "alice",
+				decision_value: "test",
+			});
+			expect(emitted).toHaveLength(1);
+			expect(emitted[0].type).toBe("decision_resolved");
+			expect(emitted[0].data.status).toBe("resumed");
+		});
+
+		it("create → decision_created SSE event when wired like main.ts", () => {
+			const emitted: Array<{ type: string; data: Record<string, unknown> }> = [];
+			const hub = {
+				emit: (event: { type: string; data: Record<string, unknown> }) => {
+					emitted.push(event);
+				},
+			};
+			store.setOnChange((action, record) => {
+				hub.emit({
+					type: action === "create" ? "decision_created" : "decision_resolved",
+					data: sanitizeDecision(record),
+				});
+			});
+			store.create(makeCreateParams({ decision_id: "D-sse-1" }));
+			expect(emitted).toHaveLength(1);
+			expect(emitted[0].type).toBe("decision_created");
+			expect(emitted[0].data.decision_id).toBe("D-sse-1");
+			expect(emitted[0].data).not.toHaveProperty("cwd_path");
+			expect(emitted[0].data).not.toHaveProperty("session_path");
 		});
 	});
 

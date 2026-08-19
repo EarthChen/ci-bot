@@ -4,8 +4,11 @@
  * Production: `node dist/main.js`. Dev/tests: `tsx src/main.ts`.
  */
 
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
+import fastifyStatic from "@fastify/static";
 import { DWClient } from "dingtalk-stream";
 import { loadEnvFile, loadConfig } from "./config/index.js";
 import { Scheduler, parseSkipStages } from "./agent-runtime/scheduler.js";
@@ -37,8 +40,13 @@ import { createDecisionLifecycle } from "./decision/lifecycle.js";
 import { loadGroupRouting, ProjectRouter } from "./notify/project-router.js";
 import { DingTalkStreamBot } from "./notify/stream-bot.js";
 import { logger } from "./util/log.js";
-import { resolveDecisionDbPath, resolveLogDir, resolveRouteDbPath, resolveWorkRoot } from "./config/paths.js";
+import { resolveAuditDir, resolveDecisionDbPath, resolveLogDir, resolveRouteDbPath, resolveWorkRoot } from "./config/paths.js";
 import { DecisionStore } from "./decision/store.js";
+import { mountDashboardApi, sanitizeDecision } from "./dashboard/routes.js";
+import { EventHub } from "./dashboard/event-hub.js";
+import { MetricsAggregator } from "./dashboard/metrics-aggregator.js";
+import { dispatchIpcMessage } from "./dashboard/ipc-dispatch.js";
+import { isWorkerIpcMessage } from "./dashboard/ipc-types.js";
 
 async function main(): Promise<void> {
 	loadEnvFile(".env");
@@ -197,6 +205,22 @@ async function main(): Promise<void> {
 	} catch (err) {
 		logger.warn({ err }, "dingtalk stream bot 启动失败，继续运行（仅缺失 WS 接收）");
 	}
+	// Dashboard: EventHub (SSE broadcast) + MetricsAggregator (audit preload).
+	const eventHub = new EventHub();
+	const metricsAggregator = new MetricsAggregator();
+	try {
+		await metricsAggregator.load(resolveAuditDir());
+	} catch (err) {
+		logger.warn({ err }, "metrics preload failed — dashboard starts with empty metrics");
+	}
+
+	decisionStore.setOnChange((action, record) => {
+		eventHub.emit({
+			type: action === "create" ? "decision_created" : "decision_resolved",
+			data: sanitizeDecision(record),
+		});
+	});
+
 	// Per-event worker cwd root — derived from CIHEAL_DATA_ROOT (work/).
 	const workRoot = resolveWorkRoot();
 	const workerManager = new SubprocessWorkerManager({
@@ -214,6 +238,17 @@ async function main(): Promise<void> {
 			DINGTALK_CLIENT_SECRET: config.dingtalkClientSecret,
 			DINGTALK_CONVERSATION_ID: config.dingtalkConversationId,
 		},
+		onIpcMessage: (event, msg) => {
+			if (!isWorkerIpcMessage(msg)) return;
+			dispatchIpcMessage(
+				{
+					eventHub,
+					metricsAggregator,
+					workerId: `${event.projectId}-${event.pipelineId}`,
+				},
+				msg,
+			);
+		},
 	});
 	const scheduler = new Scheduler({
 		workerManager,
@@ -224,9 +259,44 @@ async function main(): Promise<void> {
 		workerCrashThreshold: Number(process.env.BOT_WORKER_CRASH_THRESHOLD ?? "3"),
 		decisionStore,
 		escalationNotifier,
-		// Stage exclusion: pipelines whose failed stages are ALL in this list
-		// (e.g. deterministic format checks) skip repair entirely.
 		skipStages: parseSkipStages(process.env.CIHEAL_SKIP_STAGES),
+		onLifecycleEvent: (type, data) => eventHub.emit({ type, data }),
+	});
+
+	// Dashboard: serve the React SPA from dist/dashboard/ (built by Vite).
+	const __mainDirname = dirname(fileURLToPath(import.meta.url));
+	const dashboardDir = join(__mainDirname, "dashboard");
+	if (existsSync(dashboardDir)) {
+		await app.register(fastifyStatic, {
+			root: dashboardDir,
+			prefix: "/dashboard/",
+			decorateReply: false,
+		});
+		// SPA fallback: React Router client-side routing needs index.html for
+		// any unmatched /dashboard/* path on page refresh.
+		app.get("/dashboard/*", (_req, reply) => {
+			void reply.sendFile("index.html", dashboardDir);
+		});
+	}
+
+	// Populate initial SSE snapshot so new clients get real data on connect.
+	eventHub.updateSnapshot({
+		health: {
+			uptimeSeconds: Math.floor(process.uptime()),
+			memoryMB: Math.round(process.memoryUsage().rss / 1_048_576),
+			version: process.env.npm_package_version ?? "0.0.0",
+		},
+		scheduler: scheduler.stats(),
+		metrics: metricsAggregator.snapshot(),
+	});
+
+	// Dashboard API: /api/status, /api/decisions, /api/metrics, /api/events (SSE).
+	await mountDashboardApi(app, {
+		scheduler,
+		decisionStore,
+		metricsAggregator,
+		eventHub,
+		version: process.env.npm_package_version ?? "0.0.0",
 	});
 
 	await mountWebhook(app, {
@@ -251,6 +321,7 @@ async function main(): Promise<void> {
 
 	const shutdown = async () => {
 		ttlSweep.stop();
+		eventHub.stop();
 		streamBot.stop();
 		routeStore.close();
 		decisionStore.close();

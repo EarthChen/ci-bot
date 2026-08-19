@@ -91,6 +91,8 @@ export interface SchedulerDeps {
 	 *  repair runs (deterministic failures like format checks stay out of the
 	 *  agent). Degrades to repair when failedStages is unknown/empty. */
 	readonly skipStages?: readonly string[];
+	/** Optional lifecycle event callback (dashboard integration). */
+	readonly onLifecycleEvent?: (type: string, data: Record<string, unknown>) => void;
 }
 
 export type EnqueueStatus = "queued" | "duplicate" | "skipped";
@@ -122,6 +124,8 @@ export class Scheduler {
 	private readonly inflight = new Set<string>();
 	/** serialKey values currently in-flight (enforces per-key serial). */
 	private readonly activeKeys = new Set<string>();
+	/** Running work keyed by serialKey (at most one runner per key). */
+	private readonly runningByKey = new Map<string, { pipelineId: number }>();
 	private crashCount = 0;
 	private readonly effectiveCap: number;
 	/** Per-key promise chains keeping same-project resumes FIFO (T05). */
@@ -156,6 +160,7 @@ export class Scheduler {
 		}
 		this.inflight.add(key);
 		this.queue.push({ event });
+		this.deps.onLifecycleEvent?.("pipeline_enqueued", { pipelineId: event.pipelineId, projectId: event.projectId, ref: event.ref });
 		void this.pump();
 		return "queued";
 	}
@@ -181,6 +186,7 @@ export class Scheduler {
 			const [item] = this.queue.splice(idx, 1);
 			const key = this.deps.policy.serialKey(item.event);
 			this.activeKeys.add(key);
+			this.runningByKey.set(key, { pipelineId: item.event.pipelineId });
 			this.running++;
 			// Detach: pump() must not await per-item work, or concurrency caps.
 			void this.runOne(item)
@@ -188,6 +194,7 @@ export class Scheduler {
 				.finally(() => {
 					this.running--;
 					this.activeKeys.delete(key);
+					this.runningByKey.delete(key);
 					void this.pump();
 				});
 		}
@@ -196,9 +203,13 @@ export class Scheduler {
 	private async runOne(item: QueueItem): Promise<void> {
 		const { event } = item;
 		const cwd = workerWorkDir(this.deps.workRoot, event);
+		const workerId = `${event.projectId}-${event.pipelineId}`;
+		this.deps.onLifecycleEvent?.("worker_started", { workerId, pipelineId: event.pipelineId, projectId: event.projectId });
+		const startedAt = Date.now();
 		try {
 			const outcome = await this.deps.workerManager.run(event, cwd);
 			this.crashCount = 0; // reset on success — transient crashes don't accumulate.
+			this.deps.onLifecycleEvent?.("worker_done", { workerId, outcome: outcome.kind, durationMs: Date.now() - startedAt });
 			logger.info({ event, outcome: outcome.kind }, "repair completed");
 			if (outcome.kind === "escalated") {
 				// Order (T04): register the decision FIRST so the routed notification
@@ -377,6 +388,7 @@ export class Scheduler {
 			await new Promise((r) => setTimeout(r, 10));
 		}
 		this.activeKeys.add(key);
+		this.runningByKey.set(key, { pipelineId: task.event.pipelineId });
 		this.running++;
 		try {
 			const outcome = await this.deps.workerManager.runResume!(task);
@@ -403,8 +415,34 @@ export class Scheduler {
 		} finally {
 			this.running--;
 			this.activeKeys.delete(key);
+			this.runningByKey.delete(key);
 			void this.pump();
 		}
+	}
+
+	/** Occupied serialKeys: running repairs/resumes plus queued items. */
+	queueDetails(): Array<{
+		serialKey: string;
+		pipelineId: number;
+		status: "running" | "queued";
+	}> {
+		const details: Array<{
+			serialKey: string;
+			pipelineId: number;
+			status: "running" | "queued";
+		}> = [];
+		for (const [serialKey, { pipelineId }] of this.runningByKey) {
+			details.push({ serialKey, pipelineId, status: "running" });
+		}
+		for (const item of this.queue) {
+			const serialKey = this.deps.policy.serialKey(item.event);
+			details.push({
+				serialKey,
+				pipelineId: item.event.pipelineId,
+				status: "queued",
+			});
+		}
+		return details;
 	}
 
 	/**
@@ -436,11 +474,21 @@ export class Scheduler {
 	}
 
 	/** Snapshot for tests/debug. */
-	stats(): { running: number; queued: number; inflight: number } {
+	stats(): {
+		running: number;
+		queued: number;
+		inflight: number;
+		serialKeys: string[];
+	} {
+		const serialKeys = new Set<string>(this.activeKeys);
+		for (const item of this.queue) {
+			serialKeys.add(this.deps.policy.serialKey(item.event));
+		}
 		return {
 			running: this.running,
 			queued: this.queue.length,
 			inflight: this.inflight.size,
+			serialKeys: [...serialKeys].sort(),
 		};
 	}
 }

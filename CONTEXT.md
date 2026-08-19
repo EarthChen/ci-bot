@@ -75,3 +75,25 @@ _Avoid_: manual invalidation, continuing repair on stale sha
 **Retained scene**:
 The preserved cwd + worktree + session + branch set that enables resume.
 _Avoid_: partial retention (session without worktree), permanent retention without TTL
+
+## Dashboard
+
+**EventHub**:
+An in-memory event aggregator in the main process that receives structured events from the scheduler and worker IPC, maintains a system snapshot, and broadcasts to SSE clients. It is the single fan-out point between internal state changes and browser consumers.
+_Avoid_: polling-only dashboards, direct database queries from the frontend, per-client state tracking
+
+**IPC event**:
+A typed JSON message sent from a worker subprocess to the main process via Node IPC (fd 3). It reports stage transitions, turn progress, and tool calls without coupling the worker to any notification transport.
+_Avoid_: log scraping for progress, DingTalk from the worker for dashboard updates
+
+**SSE (Server-Sent Events)**:
+The unidirectional push channel from EventHub to browser clients over HTTP. Clients receive an initial snapshot on connect and incremental events thereafter; reconnection is handled by the browser's native EventSource API.
+_Avoid_: WebSocket (unnecessary bidirectional complexity), polling-only dashboards
+
+**SystemSnapshot**:
+The current aggregate state (health, scheduler stats, active workers) maintained by the EventHub and pushed to each SSE client on connection.
+_Avoid_: computing aggregate state per request, stale cached snapshots
+
+**MetricsAggregator**:
+An in-memory accumulator that preloads historical metrics from audit JSONL files at startup and receives incremental updates from completed repairs. Exposes a snapshot of counts, rates, and costs via the /api/metrics endpoint.
+_Avoid_: real-time database queries for metrics, unbounded in-memory event history

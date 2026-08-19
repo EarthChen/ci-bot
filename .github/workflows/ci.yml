@@ -52,5 +52,8 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Build dashboard
+        run: pnpm --filter @ci-bot/dashboard build
+
       - name: Test
         run: pnpm test

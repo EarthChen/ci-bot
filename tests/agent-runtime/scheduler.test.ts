@@ -153,6 +153,92 @@ describe("Scheduler — per-key serial + cross-key parallel（候选 E）", () =
 	});
 });
 
+describe("Scheduler — stats()", () => {
+	it("includes occupied serialKeys from running and queued work", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => (release = r));
+		const policy: SchedulingPolicy = {
+			serialKey: (e) => `${e.projectId}:${e.mrIid ?? e.ref}`,
+			maxParallel: 1,
+		};
+		const scheduler = new Scheduler({
+			workerManager: {
+				async run(event) {
+					await gate;
+					return { kind: "escalated", summary: "x" };
+				},
+			},
+			workRoot: "/tmp/w",
+			policy,
+			maxWorkers: 1,
+		});
+		scheduler.enqueue(makeEvent("proj-A", 1, 10));
+		scheduler.enqueue(makeEvent("proj-A", 2, 20));
+		while (scheduler.stats().running === 0) {
+			await delay(5);
+		}
+
+		expect(scheduler.stats().serialKeys.sort()).toEqual(["proj-A:10", "proj-A:20"]);
+
+		release();
+		await scheduler.idle();
+		expect(scheduler.stats().serialKeys).toEqual([]);
+	});
+});
+
+describe("Scheduler — queueDetails()", () => {
+	it("returns running and queued serialKey occupancy", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => (release = r));
+		const policy: SchedulingPolicy = {
+			serialKey: (e) => `${e.projectId}:${e.mrIid ?? e.ref}`,
+			maxParallel: 1,
+		};
+		const scheduler = new Scheduler({
+			workerManager: {
+				async run(event) {
+					await gate;
+					return { kind: "escalated", summary: "x" };
+				},
+			},
+			workRoot: "/tmp/w",
+			policy,
+			maxWorkers: 1,
+		});
+		scheduler.enqueue(makeEvent("proj-A", 1, 10));
+		scheduler.enqueue(makeEvent("proj-A", 2, 20));
+		while (scheduler.stats().running === 0) {
+			await delay(5);
+		}
+
+		const details = scheduler.queueDetails();
+		expect(details).toContainEqual({
+			serialKey: "proj-A:10",
+			pipelineId: 1,
+			status: "running",
+		});
+		expect(details).toContainEqual({
+			serialKey: "proj-A:20",
+			pipelineId: 2,
+			status: "queued",
+		});
+
+		release();
+		await scheduler.idle();
+		expect(scheduler.queueDetails()).toEqual([]);
+	});
+
+	it("returns empty array when idle", async () => {
+		const scheduler = new Scheduler({
+			workerManager: fakeWorker().workerManager,
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+		});
+		expect(scheduler.queueDetails()).toEqual([]);
+	});
+});
+
 describe("Scheduler — 决策注册（decidable escalated）", () => {
 	function decisionWorker(outcome: RepairOutcome): ScheduledWorker {
 		return { run: async () => outcome };
@@ -259,7 +345,7 @@ describe("Scheduler — 决策注册（decidable escalated）", () => {
 		await scheduler.idle();
 		expect(create).toHaveBeenCalledTimes(1);
 		// 调度正常收尾（无 crash 计数、无挂起）
-		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0 });
+		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0, serialKeys: [] });
 	});
 });
 
@@ -336,7 +422,7 @@ describe("Scheduler — routed escalation 通知（T04）", () => {
 
 		expect(escalationNotifier.notifyEscalated).toHaveBeenCalledTimes(1);
 		expect(escalationNotifier.notifyEscalated.mock.calls[0][2]).toBeUndefined();
-		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0 });
+		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0, serialKeys: [] });
 	});
 
 	it("非 decidable escalated → 通知发出但无 decision，不注册", async () => {
@@ -399,7 +485,7 @@ describe("Scheduler — routed escalation 通知（T04）", () => {
 		scheduler.enqueue(makeEvent("A", 8));
 		await scheduler.idle();
 		expect(escalationNotifier.notifyEscalated).toHaveBeenCalledTimes(1);
-		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0 });
+		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0, serialKeys: [] });
 	});
 });
 
@@ -683,7 +769,7 @@ describe("Scheduler — resume 二次转交终局通知（T09）", () => {
 		await scheduler.enqueueResume(record);
 		await scheduler.idle();
 		expect(notifier.notifyResumeTerminal).toHaveBeenCalledTimes(1);
-		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0 });
+		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0, serialKeys: [] });
 	});
 });
 
@@ -712,7 +798,7 @@ describe("Scheduler — stage exclusion（CIHEAL_SKIP_STAGES）", () => {
 		expect(scheduler.enqueue(stagedEvent(["format"]))).toBe("skipped");
 		await scheduler.idle();
 		expect(runs()).toHaveLength(0);
-		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0 });
+		expect(scheduler.stats()).toEqual({ running: 0, queued: 0, inflight: 0, serialKeys: [] });
 	});
 
 	it("queues repair when ANY failed stage is not excluded", async () => {

@@ -47,6 +47,8 @@ export interface WorkerSpawnOptions {
 	timeoutMs?: number;
 	/** Keep the per-event cwd after the run (tests inspect sidecars). */
 	keepWork?: boolean;
+	/** Callback for IPC messages from the worker subprocess (dashboard events). */
+	onIpcMessage?: (event: PipelineEvent, msg: unknown) => void;
 }
 
 /**
@@ -120,6 +122,11 @@ export class SubprocessWorkerManager implements WorkerManager {
 			// Worker audit log dir — worker logs write here instead of
 			// stdout (so they don't mix into the bot log).
 			...(workerLogDir ? { CIHEAL_WORKER_LOG_DIR: workerLogDir } : {}),
+			// IPC 到 dashboard 的显式标志：仅当本 manager 实例接了 IPC 通道
+			//（onIpcMessage）时注入。sendIpc 门控此标志而非 process.send 存在性
+			//——vitest forks 的 process.send 指向 tinypool 自身通道，发错通道
+			//会破坏其协议（tests/worker/entry-dispatch OOM 根因）。
+			...(this.opts.onIpcMessage ? { CIHEAL_WORKER_IPC: "1" } : {}),
 			// glab self-managed host: agent runs `glab mr create` inside the
 			// worktree and inherits this env. Without GITLAB_HOST, glab
 			// defaults to gitlab.com → 401. Mirror realGlabRunner (entry.ts).
@@ -158,6 +165,9 @@ export class SubprocessWorkerManager implements WorkerManager {
 				cwd,
 				env: childEnv,
 				timeoutMs: this.opts.timeoutMs,
+				onIpcMessage: this.opts.onIpcMessage
+					? (msg) => this.opts.onIpcMessage!(event, msg)
+					: undefined,
 			});
 			const { code, signal } = child;
 			stdout = child.stdout;
@@ -341,19 +351,20 @@ interface ChildResult {
 	stderr: string;
 }
 
+interface RunChildOpts {
+	cwd: string;
+	env: Record<string, string>;
+	timeoutMs?: number;
+	onIpcMessage?: (msg: unknown) => void;
+}
+
 function runChild(
 	cmd: string,
 	args: string[],
-	opts: { cwd: string; env: Record<string, string>; timeoutMs?: number },
+	opts: RunChildOpts,
 ): Promise<ChildResult> {
 	return new Promise((resolve, reject) => {
-		// Use tsx to run TS when the entry ends in .ts; otherwise plain node.
 		const isTs = args[0]?.endsWith(".ts");
-		// For TS entries, use the repo's tsx binary directly so ESM resolution
-		// for the worker's TS imports finds the repo's node_modules (the worker's
-		// task.cwd is a temp dir with no node_modules). The worker's OWN file
-		// operations still target task.cwd (passed via env), preserving G4
-		// state isolation.
 		const repoRoot = process.cwd();
 		let realCmd: string;
 		let realArgs: string[];
@@ -368,15 +379,21 @@ function runChild(
 			realArgs = args;
 			childCwd = opts.cwd;
 		}
+		const useIpc = typeof opts.onIpcMessage === "function";
 		const child = spawn(realCmd, realArgs, {
 			cwd: childCwd,
 			env: opts.env,
-			stdio: ["ignore", "pipe", "pipe"],
+			stdio: useIpc
+				? ["ignore", "pipe", "pipe", "ipc"]
+				: ["ignore", "pipe", "pipe"],
 		});
+		if (useIpc) {
+			child.on("message", (msg) => opts.onIpcMessage!(msg));
+		}
 		let stdout = "";
 		let stderr = "";
-		child.stdout.on("data", (d) => (stdout += d.toString()));
-		child.stderr.on("data", (d) => (stderr += d.toString()));
+		child.stdout!.on("data", (d: Buffer) => (stdout += d.toString()));
+		child.stderr!.on("data", (d: Buffer) => (stderr += d.toString()));
 		const timer = opts.timeoutMs
 			? setTimeout(() => {
 					child.kill("SIGTERM");

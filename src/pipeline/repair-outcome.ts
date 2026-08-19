@@ -27,6 +27,7 @@ import { resolveAuditDir as resolveAuditDirPath } from "../config/paths.js";
 import { resolveRetentionPolicy } from "../config/retention.js";
 import { findSessionFile } from "../agent/real-runner.js";
 import { saveMrSession } from "./mr-session-store.js";
+import { sendIpc } from "../dashboard/ipc-types.js";
 
 /**
  * G5 audit record — persisted per repair so a bad fix can be traced back
@@ -358,6 +359,7 @@ export async function finishRepair(args: {
 		}
 		if (sessionFile) saveMrSession(event, sessionFile, result.kind);
 	}
+	const createdAt = new Date().toISOString();
 	writeAuditTrace(cwd, {
 		event: auditEvent(event),
 		outcome: result.kind,
@@ -372,9 +374,21 @@ export async function finishRepair(args: {
 		...(result.sceneChanges?.length
 			? { sceneChanges: result.sceneChanges }
 			: {}),
-		createdAt: new Date().toISOString(),
+		createdAt,
 		...metrics,
 		...(audit ?? {}),
+	});
+
+	sendIpc({
+		type: "metrics_record",
+		projectId: event.projectId,
+		pipelineId: event.pipelineId,
+		outcome: result.kind,
+		turns: metrics.turns,
+		tokens: metrics.tokens,
+		cost: metrics.cost,
+		durationMs: metrics.durationMs,
+		createdAt,
 	});
 
 	// Scene retention: a decidable escalation keeps the worktree + cwd so a

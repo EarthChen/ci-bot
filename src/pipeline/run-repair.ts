@@ -19,6 +19,7 @@ import { logger } from "../util/log.js";
 import type { Worktree } from "./worktree.js";
 import { finishRepair, repairCost } from "./repair-outcome.js";
 import { findMrSession } from "./mr-session-store.js";
+import { sendIpc } from "../dashboard/ipc-types.js";
 import { mkdirSync, copyFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 
@@ -87,6 +88,7 @@ export async function runRepair(
 ): Promise<RepairOutcome> {
 	const { agent, glab, dingtalk, worktree } = deps;
 	log("start", event);
+	sendIpc({ type: "stage_enter", stage: "fetch-ci-log", pipelineId: event.pipelineId, projectId: event.projectId });
 
 	// 1. Fetch CI log. (MR diff fetched only if a related MR exists; tracer
 	//    bullet has none, so we pass empty.)
@@ -106,6 +108,9 @@ export async function runRepair(
 			},
 		});
 	}
+
+	sendIpc({ type: "stage_exit", stage: "fetch-ci-log" });
+	sendIpc({ type: "stage_enter", stage: "early-filter", pipelineId: event.pipelineId, projectId: event.projectId });
 
 	// 1a. Class-5 early filter: scan CI log for dependency-resolution errors
 	//     BEFORE spawning the agent. Pure bot code (deterministic), saving
@@ -140,6 +145,9 @@ export async function runRepair(
 			result: { kind: "failed", summary: "worktree", error: errMessage(err) },
 		});
 	}
+
+	sendIpc({ type: "stage_exit", stage: "early-filter" });
+	sendIpc({ type: "stage_enter", stage: "agent-run", pipelineId: event.pipelineId, projectId: event.projectId });
 
 	// 2. Run the agent session (diagnosis → fix → doc sync).
 	//    The agent self-executes: edits files + runs tests via bash inside the
@@ -222,6 +230,8 @@ export async function runRepair(
 		cost: repairCost(agentTokens),
 		durationMs: Date.now() - agentStartedAt,
 	} as const;
+
+	sendIpc({ type: "stage_exit", stage: "agent-run" });
 
 	// 3. Branch on the structured agent result.
 	if (result.kind === "escalated") {

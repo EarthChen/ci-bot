@@ -98,7 +98,7 @@ describe("webhook pipeline-failure notification fan-out", () => {
 	async function injectWebhook(opts: {
 		enqueue: "queued" | "duplicate" | "skipped";
 		notifier?: PipelineFailureNotifier;
-		/** Query string appended to /webhook (defaults to the repair opt-in). */
+		/** Query string appended to /webhook/gitlab (defaults to the repair opt-in). */
 		query?: string;
 		onNewPipeline?: (event: PipelineEvent) => Promise<void>;
 		/** Override the default failedPipeline payload. */
@@ -117,7 +117,7 @@ describe("webhook pipeline-failure notification fan-out", () => {
 		const payload = (opts.payload ?? failedPipeline(12345)) as Record<string, unknown>;
 		const res = await app.inject({
 			method: "POST",
-			url: `/webhook${opts.query ?? "?repair=1"}`,
+			url: `/webhook/gitlab${opts.query ?? "?repair=1"}`,
 			headers: { "x-gitlab-token": "secret" },
 			payload,
 		});
@@ -332,7 +332,7 @@ describe("webhook bot-owned pipeline guard", () => {
 		});
 		const res = await app.inject({
 			method: "POST",
-			url: `/webhook${opts.query ?? "?repair=1"}`,
+			url: `/webhook/gitlab${opts.query ?? "?repair=1"}`,
 			headers: { "x-gitlab-token": "secret" },
 			payload: botOwnedPipeline() as Record<string, unknown>,
 		});

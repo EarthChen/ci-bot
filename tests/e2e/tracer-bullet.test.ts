@@ -117,7 +117,7 @@ async function postWebhook(body: unknown, token = WEBHOOK_SECRET): Promise<{
   status: number;
   json: unknown;
 }> {
-  const res = await fetch(`${baseUrl()}/webhook?repair=1`, {
+  const res = await fetch(`${baseUrl()}/webhook/gitlab?repair=1`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -293,7 +293,7 @@ describe("tracer bullet: webhook → MR → DingTalk (ticket 01)", () => {
     const g3Base = `http://127.0.0.1:${(addr as { port: number }).port}`;
 
     try {
-      const res = await fetch(`${g3Base}/webhook?repair=1`, {
+      const res = await fetch(`${g3Base}/webhook/gitlab?repair=1`, {
         method: "POST",
         headers: {
           "content-type": "application/json",

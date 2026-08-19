@@ -131,7 +131,7 @@ export async function mountWebhook(
 ): Promise<void> {
 	// Fastify route registration is synchronous; the Promise return type keeps
 	// the seam forward-compatible with future async setup (e.g. plugin hooks).
-	app.post("/webhook", async (req: FastifyRequest, reply: FastifyReply) => {
+	app.post("/webhook/gitlab", async (req: FastifyRequest, reply: FastifyReply) => {
 		// 1. IP allowlist (empty = skip; dev convenience).
 		if (deps.config.ipAllowlist.length > 0) {
 			const ip = req.ip;

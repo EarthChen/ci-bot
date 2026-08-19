@@ -33,7 +33,7 @@ chmod 600 .env
 pnpm dev
 
 # 2. 在 GitLab 项目设置里配置 pipeline 失败 webhook 指向
-#    http://<host>:<PORT>/webhook?repair=1
+#    http://<host>:<PORT>/webhook/gitlab?repair=1
 #    并设置 X-Gitlab-Token = GITLAB_WEBHOOK_SECRET
 #    （不带 repair 参数 = 纯失败播报，不触发修复）
 

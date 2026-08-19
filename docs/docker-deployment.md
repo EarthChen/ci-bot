@@ -73,7 +73,7 @@ docker compose logs -f                     # 看到 "ci-self-heal bot listening"
 HOST_PORT=18080 docker compose up -d
 ```
 
-最后在 GitLab 项目设置里把 pipeline webhook 指向 `http://<宿主机地址>:<HOST_PORT>/webhook?repair=1`，Secret Token 填 `.env` 的 `GITLAB_WEBHOOK_SECRET`（不带 `repair` 参数 = 纯失败播报）。
+最后在 GitLab 项目设置里把 pipeline webhook 指向 `http://<宿主机地址>:<HOST_PORT>/webhook/gitlab?repair=1`，Secret Token 填 `.env` 的 `GITLAB_WEBHOOK_SECRET`（不带 `repair` 参数 = 纯失败播报）。
 
 ## 4. 裸 docker run（不用 compose）
 
@@ -101,7 +101,7 @@ docker run -d --name ci-self-heal-bot \
 | 检查 | 命令 | 通过标准 |
 | --- | --- | --- |
 | 服务监听 | `curl -s -o /dev/null -w '%{http_code}' http://localhost:<HOST_PORT>/` | `404`（Fastify 无根路由，404 = 服务在线） |
-| webhook 验签 | `curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:<HOST_PORT>/webhook` | `401`（缺 `X-Gitlab-Token`） |
+| webhook 验签 | `curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:<HOST_PORT>/webhook/gitlab` | `401`（缺 `X-Gitlab-Token`） |
 | 容器内工具链 | `docker compose exec ci-self-heal-bot sh -c 'node -v; pnpm -v; glab --version; java -version; mvn -v'` | node v22.23.2 / pnpm 11.x / glab 1.113.0 / JDK 1.8 / Maven 3.9 |
 | healthcheck | `docker compose ps` | `Up ... (healthy)`（启动 ~10s 后，30s 间隔探活） |
 

@@ -53,10 +53,10 @@ NODE_ENV=production PORT=8091 BOT_WORKER_TIMEOUT_MS=3600000 pnpm dev
 
 MR 触发的 pipeline：`object_attributes.ref` 是合成 ref `refs/merge-requests/<iid>/head`，真实源分支在 `merge_request.source_branch`（**必填**，v1 只处理 MR 触发的 pipeline；修复 MR 的 target 取该分支）。
 
-**修复开关**：只有 URL query 带 `repair=1`（或 `repair=true`，大小写不敏感）才触发自动修复；不带参数的事件只走群播报（响应 `notify-only`），不入队。GitLab 侧按项目 opt-in：webhook URL 配成 `…/webhook?repair=1`。
+**修复开关**：只有 URL query 带 `repair=1`（或 `repair=true`，大小写不敏感）才触发自动修复；不带参数的事件只走群播报（响应 `notify-only`），不入队。GitLab 侧按项目 opt-in：webhook URL 配成 `…/webhook/gitlab?repair=1`。
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8091/webhook?repair=1" \
+curl -s -X POST "http://127.0.0.1:8091/webhook/gitlab?repair=1" \
   -H "X-Gitlab-Token: $GITLAB_WEBHOOK_SECRET" \
   -H 'Content-Type: application/json' \
   -d '{

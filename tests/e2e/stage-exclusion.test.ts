@@ -141,7 +141,7 @@ async function buildBot(): Promise<SkipBot> {
 		async inject(payload: Record<string, unknown>) {
 			const res = await app.inject({
 				method: "POST",
-				url: "/webhook?repair=1",
+				url: "/webhook/gitlab?repair=1",
 				headers: { "x-gitlab-token": "secret" },
 				payload,
 			});

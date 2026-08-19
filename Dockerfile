@@ -26,13 +26,16 @@ RUN npm install -g pnpm@${PNPM_VERSION} --registry=https://registry.npmmirror.co
 
 WORKDIR /app
 
-# 依赖层缓存：先复制 lockfile + package.json
+# 依赖层缓存：先复制 lockfile + 根/成员 package.json（workspace 成员的
+# package.json 必须在 install 前就位，否则成员依赖漏装）
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY packages/dashboard/package.json packages/dashboard/
 RUN pnpm install --frozen-lockfile
 
-# 源码 + 编译
+# 源码 + 编译（packages/ 是 dashboard 前端 workspace 成员）
 COPY tsconfig.json ./
 COPY src/ src/
+COPY packages/ packages/
 RUN pnpm build
 
 # 剔除 devDependencies（typescript/vitest/tsx/@types/*）

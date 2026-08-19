@@ -1,3 +1,6 @@
+import fastifyStatic from "@fastify/static";
+import { existsSync, statSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { DecisionRecord, DecisionStatus } from "../decision/store.js";
 import type { MetricsAggregator } from "./metrics-aggregator.js";
@@ -125,5 +128,41 @@ export async function mountDashboardApi(
 				return reply.send(agg.trendData());
 			});
 		}
+	});
+}
+
+/**
+ * Serve the built dashboard SPA (dist/dashboard) under /dashboard/.
+ *
+ * The static plugin's default wildcard route (wildcard: true) collides with
+ * the SPA fallback's GET /dashboard/* — FST_ERR_DUPLICATED_ROUTE crashed
+ * main.ts on startup (observed deploying 1717f52). Register wildcard: false
+ * and declare the wildcard route ourselves: serve the real file when it
+ * exists inside dashboardDir, else fall back to index.html (React Router
+ * client-side routing, e.g. refresh on /dashboard/decisions).
+ */
+export async function mountDashboardStatic(
+	app: FastifyInstance,
+	dashboardDir: string,
+): Promise<void> {
+	await app.register(fastifyStatic, {
+		root: dashboardDir,
+		prefix: "/dashboard/",
+		wildcard: false,
+	});
+	app.get("/dashboard/*", (req, reply) => {
+		const rel = (req.params as { "*": string })["*"] ?? "";
+		if (rel) {
+			const resolved = resolve(dashboardDir, rel);
+			if (
+				resolved.startsWith(dashboardDir + sep) &&
+				existsSync(resolved) &&
+				statSync(resolved).isFile()
+			) {
+				void reply.sendFile(rel);
+				return;
+			}
+		}
+		void reply.sendFile("index.html", dashboardDir);
 	});
 }

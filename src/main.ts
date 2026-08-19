@@ -8,7 +8,6 @@ import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
-import fastifyStatic from "@fastify/static";
 import { DWClient } from "dingtalk-stream";
 import { loadEnvFile, loadConfig } from "./config/index.js";
 import { Scheduler, parseSkipStages } from "./agent-runtime/scheduler.js";
@@ -42,7 +41,7 @@ import { DingTalkStreamBot } from "./notify/stream-bot.js";
 import { logger } from "./util/log.js";
 import { resolveAuditDir, resolveDecisionDbPath, resolveLogDir, resolveRouteDbPath, resolveWorkRoot } from "./config/paths.js";
 import { DecisionStore } from "./decision/store.js";
-import { mountDashboardApi, sanitizeDecision } from "./dashboard/routes.js";
+import { mountDashboardApi, mountDashboardStatic, sanitizeDecision } from "./dashboard/routes.js";
 import { EventHub } from "./dashboard/event-hub.js";
 import { MetricsAggregator } from "./dashboard/metrics-aggregator.js";
 import { dispatchIpcMessage } from "./dashboard/ipc-dispatch.js";
@@ -267,16 +266,7 @@ async function main(): Promise<void> {
 	const __mainDirname = dirname(fileURLToPath(import.meta.url));
 	const dashboardDir = join(__mainDirname, "dashboard");
 	if (existsSync(dashboardDir)) {
-		await app.register(fastifyStatic, {
-			root: dashboardDir,
-			prefix: "/dashboard/",
-			decorateReply: false,
-		});
-		// SPA fallback: React Router client-side routing needs index.html for
-		// any unmatched /dashboard/* path on page refresh.
-		app.get("/dashboard/*", (_req, reply) => {
-			void reply.sendFile("index.html", dashboardDir);
-		});
+		await mountDashboardStatic(app, dashboardDir);
 	}
 
 	// Populate initial SSE snapshot so new clients get real data on connect.

@@ -4,7 +4,19 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRepair, repairFixed, extractPatch, parseDiffFiles, buildDiffIndex, snapshotSceneChanges, widenableG3Paths, outsideDiffPaths } from "../../src/pipeline/run-repair.js";
+import {
+	runRepair,
+	repairFixed,
+	extractPatch,
+	parseDiffFiles,
+	parseDiffHunkRanges,
+	isStaticAnalysisStage,
+	validatePatchLineScope,
+	buildDiffIndex,
+	snapshotSceneChanges,
+	widenableG3Paths,
+	outsideDiffPaths,
+} from "../../src/pipeline/run-repair.js";
 import type { Worktree } from "../../src/pipeline/worktree.js";
 import { repairBranchName } from "../../src/pipeline/repair-branch.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
@@ -573,6 +585,244 @@ describe("runRepair — ADR-0007 跨 pipeline session 复用", () => {
 		const input = run.mock.calls[0][0];
 		expect(input.reuseSessionFile).toBeUndefined();
 		expect(input.reuseMeta).toBeUndefined();
+	});
+});
+
+describe("parseDiffHunkRanges", () => {
+	it("标准 diff --git 格式 → 正确提取 file + 行范围", () => {
+		const diff = [
+			"diff --git a/src/main/Foo.java b/src/main/Foo.java",
+			"--- a/src/main/Foo.java",
+			"+++ b/src/main/Foo.java",
+			"@@ -10,5 +10,8 @@ class Foo {",
+		].join("\n");
+		const ranges = parseDiffHunkRanges(diff);
+		expect(ranges.get("src/main/Foo.java")).toEqual([[10, 17]]);
+	});
+
+	it("多文件多 hunk → 每文件多个范围", () => {
+		const diff = [
+			"diff --git a/src/main/A.java b/src/main/A.java",
+			"@@ -1,2 +1,3 @@",
+			"diff --git a/src/main/B.java b/src/main/B.java",
+			"@@ -5,1 +5,2 @@",
+			"@@ -20,3 +20,4 @@",
+		].join("\n");
+		const ranges = parseDiffHunkRanges(diff);
+		expect(ranges.get("src/main/A.java")).toEqual([[1, 3]]);
+		expect(ranges.get("src/main/B.java")).toEqual([
+			[5, 6],
+			[20, 23],
+		]);
+	});
+
+	it("glab ---/+++ 格式（无 diff --git 头）→ 正确提取", () => {
+		const diff = [
+			"--- src/main/java/A.java",
+			"+++ src/main/java/A.java",
+			"@@ -1,2 +1,3 @@",
+			"--- src/main/java/B.java",
+			"+++ src/main/java/B.java",
+			"@@ -0,0 +1,2 @@",
+		].join("\n");
+		const ranges = parseDiffHunkRanges(diff);
+		expect(ranges.get("src/main/java/A.java")).toEqual([[1, 3]]);
+		expect(ranges.get("src/main/java/B.java")).toEqual([[1, 2]]);
+	});
+
+	it("空 diff → 空 Map", () => {
+		expect(parseDiffHunkRanges("")).toEqual(new Map());
+	});
+
+	it("@@ -a +b @@（无 count，默认 1）→ 行范围 [b, b]", () => {
+		const diff = "diff --git a/x.java b/x.java\n@@ -1 +2 @@\n";
+		expect(parseDiffHunkRanges(diff).get("x.java")).toEqual([[2, 2]]);
+	});
+});
+
+describe("isStaticAnalysisStage", () => {
+	it('["checkstyle"] → true', () => {
+		expect(isStaticAnalysisStage(["checkstyle"])).toBe(true);
+	});
+
+	it('["test", "spotbugs"] → true', () => {
+		expect(isStaticAnalysisStage(["test", "spotbugs"])).toBe(true);
+	});
+
+	it('["test"] → false', () => {
+		expect(isStaticAnalysisStage(["test"])).toBe(false);
+	});
+
+	it("undefined → false", () => {
+		expect(isStaticAnalysisStage(undefined)).toBe(false);
+	});
+});
+
+describe("validatePatchLineScope", () => {
+	const mrHunks = (): Map<string, Array<[number, number]>> =>
+		new Map([["src/main/Foo.java", [[10, 17]]]]);
+
+	it("agent 改动在 MR diff 行范围内 → null", () => {
+		const patch = "diff --git a/src/main/Foo.java b/src/main/Foo.java\n@@ -12,1 +12,1 @@\n";
+		expect(validatePatchLineScope(patch, mrHunks())).toBeNull();
+	});
+
+	it("agent 改动在容忍度内 → null", () => {
+		const patch = "diff --git a/src/main/Foo.java b/src/main/Foo.java\n@@ -22,1 +22,1 @@\n";
+		expect(validatePatchLineScope(patch, mrHunks(), 5)).toBeNull();
+	});
+
+	it("agent 改动超出容忍度 → 返回错误消息", () => {
+		const patch = "diff --git a/src/main/Foo.java b/src/main/Foo.java\n@@ -50,3 +50,3 @@\n";
+		const err = validatePatchLineScope(patch, mrHunks(), 5);
+		expect(err).toMatch(/src\/main\/Foo\.java:50-52/);
+		expect(err).toContain("outside MR diff line scope");
+	});
+
+	it("测试/文档文件不受限 → null（即使不在行范围）", () => {
+		const patch = "diff --git a/src/test/FooTest.java b/src/test/FooTest.java\n@@ -50,3 +50,3 @@\n";
+		expect(validatePatchLineScope(patch, mrHunks())).toBeNull();
+	});
+
+	it("MR diff 无该文件的 hunk → 返回错误", () => {
+		const patch = "diff --git a/src/main/Other.java b/src/main/Other.java\n@@ -1,1 +1,1 @@\n";
+		const err = validatePatchLineScope(patch, mrHunks());
+		expect(err).toContain("src/main/Other.java");
+		expect(err).toContain("outside MR diff line scope");
+	});
+});
+
+describe("repairFixed — static-analysis 行级 G3", () => {
+	const mrEvent: PipelineEvent = {
+		...event,
+		mrIid: 42,
+		mrSourceBranch: "feature/foo",
+	};
+
+	const fixedResult: AgentResult = {
+		kind: "fixed",
+		diagnosis: { failureClass: 4, summary: "checkstyle" },
+		summary: "fix checkstyle",
+	};
+
+	function git(args: readonly string[], cwd: string): void {
+		execFileSync("git", [...args], { cwd, stdio: "pipe" });
+	}
+
+	function seedMainJavaRepo(
+		dir: string,
+		opts: { modifyLine: number; lineContent: string },
+	): string {
+		const repoCwd = join(dir, "repo");
+		const javaPath = join(repoCwd, "src/main/java/com/example/Foo.java");
+		mkdirSync(join(repoCwd, "src/main/java/com/example"), { recursive: true });
+		const lines = Array.from({ length: 60 }, (_, i) => `// line ${i + 1}`);
+		writeFileSync(javaPath, lines.join("\n") + "\n");
+		git(["init", "--quiet"], repoCwd);
+		git(["config", "user.email", "ci-self-heal@bot"], repoCwd);
+		git(["config", "user.name", "ci-self-heal bot"], repoCwd);
+		git(["add", "-A"], repoCwd);
+		git(["commit", "--quiet", "-m", "baseline"], repoCwd);
+		git(["tag", event.sha, "HEAD"], repoCwd);
+		lines[opts.modifyLine - 1] = opts.lineContent;
+		writeFileSync(javaPath, lines.join("\n") + "\n");
+		return repoCwd;
+	}
+
+	const mrDiffHunk = [
+		"--- src/main/java/com/example/Foo.java",
+		"+++ src/main/java/com/example/Foo.java",
+		"@@ -10,5 +10,8 @@",
+	].join("\n");
+
+	function glabForLineG3(headSha = event.sha): GitLabClient {
+		return {
+			fetchCiLog: async () => "checkstyle failure",
+			fetchMrDiff: async () => mrDiffHunk,
+			findMrBySourceBranch: async () => null,
+			fetchBranchHeadSha: async () => headSha,
+			fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: null }),
+			createMr: async () => ({ url: "https://mr/line-g3" }),
+		};
+	}
+
+	let cwd: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "run-repair-line-g3-"));
+	});
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	async function runLineG3Repair(
+		repoCwd: string,
+		failedStages: readonly string[] | undefined,
+	) {
+		const remove = vi.fn(async () => {});
+		const worktree: Worktree = {
+			create: async () => repoCwd,
+			remove,
+			pushBranch: vi.fn(async () => {}),
+		};
+		const agentInput: AgentRunInput = {
+			projectId: mrEvent.projectId,
+			pipelineId: mrEvent.pipelineId,
+			ref: mrEvent.ref,
+			sha: mrEvent.sha,
+			ciLog: "",
+			mrDiff: mrDiffHunk,
+			cwd: repoCwd,
+			sourceBranch: repairBranchName(mrEvent),
+			targetBranch: mrEvent.mrSourceBranch!,
+		};
+		return repairFixed({
+			deps: {
+				agent: stubAgent(fixedResult),
+				glab: glabForLineG3(),
+				dingtalk: new InMemoryDingTalkNotifier(),
+				cwd,
+				worktree,
+			},
+			event: { ...mrEvent, failedStages },
+			repoCwd,
+			result: fixedResult,
+			diffFiles: ["src/main/java/com/example/Foo.java"],
+			mrDiff: mrDiffHunk,
+			agentInput,
+			agentMetrics: { turns: 1, tokens: 100, cost: 0, durationMs: 50 },
+		});
+	}
+
+	it("static-analysis stage + 行级违规 → escalated", async () => {
+		const repoCwd = seedMainJavaRepo(cwd, {
+			modifyLine: 50,
+			lineContent: "// agent fix far away",
+		});
+		const out = await runLineG3Repair(repoCwd, ["checkstyle"]);
+		expect(out.kind).toBe("escalated");
+		if (out.kind === "escalated") {
+			expect(out.summary).toContain("G3/line-scope");
+			expect(out.summary).toContain("outside MR diff line scope");
+		}
+	});
+
+	it("static-analysis stage + 行级通过 → 正常 MR", async () => {
+		const repoCwd = seedMainJavaRepo(cwd, {
+			modifyLine: 12,
+			lineContent: "// agent fix in hunk",
+		});
+		const out = await runLineG3Repair(repoCwd, ["checkstyle"]);
+		expect(out.kind).toBe("mr");
+	});
+
+	it("非 static-analysis stage → 跳过行级（文件级通过即可）", async () => {
+		const repoCwd = seedMainJavaRepo(cwd, {
+			modifyLine: 50,
+			lineContent: "// agent fix far away",
+		});
+		const out = await runLineG3Repair(repoCwd, ["test"]);
+		expect(out.kind).toBe("mr");
 	});
 });
 

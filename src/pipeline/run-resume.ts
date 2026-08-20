@@ -152,6 +152,7 @@ export async function runResumeRepair(
 			repoCwd,
 			result,
 			diffFiles,
+			mrDiff: agentInput.mrDiff,
 			agentInput,
 			agentMetrics,
 			audit,

@@ -5,6 +5,12 @@ import { join } from "node:path";
 import { createCiRepairDefinition } from "../../src/agent/ci-repair-definition.js";
 import type { AgentRunInput } from "../../src/agent/runner.js";
 
+const CHECKSTYLE_CI_LOG = `
+❌ 以下违规位于本次修改的行上（阻断）:
+  [ERROR] /builds/g/p/ultron-room-service/src/main/java/com/foo/Foo.java:46:52: Variable 'propCache' must be private. [VisibilityModifier]
+  [ERROR] /builds/g/p/ultron-room-api/src/main/java/com/bar/Bar.java:200:10: unused import. [UnusedImports]
+`;
+
 function makeInput(mrDiff: string): AgentRunInput {
 	return {
 		projectId: "31041",
@@ -80,5 +86,119 @@ describe("buildCiPrompt — session 复用声明（ADR-0007）", () => {
 	it("无 reuseMeta → 无复用声明", () => {
 		const prompt = createCiRepairDefinition("/tmp/x").buildPrompt(base);
 		expect(prompt).not.toContain("Session 复用");
+	});
+});
+
+describe("buildCiPrompt — failedStages 与 violations 预解析", () => {
+	let cwd: string;
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "ci-prompt-stages-"));
+	});
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	const baseInput = (): AgentRunInput => ({
+		projectId: "31041",
+		pipelineId: 100033426,
+		ref: "refs/merge-requests/281/head",
+		sha: "95fd03b89086827e5b343f18728484ec25af6762",
+		ciLog: CHECKSTYLE_CI_LOG,
+		mrDiff: "",
+		cwd: "",
+		sourceBranch: "ci-self-heal/x",
+		targetBranch: "dev",
+	});
+
+	it("有 failedStages → prompt 包含准确 stage 描述", () => {
+		const prompt = createCiRepairDefinition(cwd).buildPrompt({
+			...baseInput(),
+			failedStages: ["checkstyle-check", "spotbugs-check"],
+		});
+		expect(prompt).toContain("质量阶段 checkstyle-check, spotbugs-check 失败");
+		expect(prompt).not.toContain("pipeline 单测失败");
+	});
+
+	it("无 failedStages → 保持「单测失败」描述", () => {
+		const prompt = createCiRepairDefinition(cwd).buildPrompt(baseInput());
+		expect(prompt).toContain("pipeline 单测失败");
+		expect(prompt).not.toContain("质量阶段");
+	});
+
+	it("checkstyle 场景 → 写入 violations.json 并在 prompt 引用", () => {
+		const mrDiff = [
+			"--- ultron-room-service/src/main/java/com/foo/Foo.java",
+			"+++ ultron-room-service/src/main/java/com/foo/Foo.java",
+			"@@ -40,10 +40,12 @@",
+			"+changed",
+		].join("\n");
+		const prompt = createCiRepairDefinition(cwd).buildPrompt({
+			...baseInput(),
+			mrDiff,
+			failedStages: ["checkstyle-check"],
+		});
+
+		const violationsPath = join(cwd, "violations.json");
+		expect(existsSync(violationsPath)).toBe(true);
+		expect(prompt).toContain(violationsPath);
+
+		const violations = JSON.parse(readFileSync(violationsPath, "utf8"));
+		expect(violations.length).toBeGreaterThan(0);
+		expect(violations[0]).toMatchObject({
+			file: expect.any(String),
+			line: expect.any(Number),
+			inScope: expect.any(Boolean),
+		});
+	});
+
+	it("violations 标注 inScope：hunk 内可修，hunk 外不可修", () => {
+		const mrDiff = [
+			"--- ultron-room-service/src/main/java/com/foo/Foo.java",
+			"+++ ultron-room-service/src/main/java/com/foo/Foo.java",
+			"@@ -40,10 +40,12 @@",
+			"+changed",
+		].join("\n");
+		createCiRepairDefinition(cwd).buildPrompt({
+			...baseInput(),
+			mrDiff,
+			failedStages: ["checkstyle-check"],
+		});
+
+		const violations = JSON.parse(
+			readFileSync(join(cwd, "violations.json"), "utf8"),
+		);
+		const inScope = violations.find(
+			(v: { line: number; inScope: boolean }) => v.line === 46,
+		);
+		const outScope = violations.find(
+			(v: { line: number; inScope: boolean }) => v.line === 200,
+		);
+		expect(inScope?.inScope).toBe(true);
+		expect(outScope?.inScope).toBe(false);
+	});
+
+	it("checkstyle 场景 → prompt 含 CLI 快路径提示", () => {
+		const prompt = createCiRepairDefinition(cwd).buildPrompt({
+			...baseInput(),
+			failedStages: ["checkstyle-check"],
+		});
+		expect(prompt).toContain("checkstyle 验证可用 CLI 快路径");
+		expect(prompt).toContain("checkstyle-*.jar");
+	});
+
+	it("violations 可修数量 → prompt 告知 N/M 在 hunk 内", () => {
+		const mrDiff = [
+			"--- ultron-room-service/src/main/java/com/foo/Foo.java",
+			"+++ ultron-room-service/src/main/java/com/foo/Foo.java",
+			"@@ -40,10 +40,12 @@",
+			"+changed",
+		].join("\n");
+		const prompt = createCiRepairDefinition(cwd).buildPrompt({
+			...baseInput(),
+			mrDiff,
+			failedStages: ["checkstyle-check"],
+		});
+		expect(prompt).toMatch(/1\/2 个违规在 hunk 内可修/);
+		expect(prompt).toContain("其余超范围无需处理");
 	});
 });

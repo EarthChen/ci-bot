@@ -12,15 +12,17 @@
 - `docs/`、`*.md`（文档，仅 class 2 触发）
 - `src/test/resources/`（测试资源）
 - **MR diff 内的 `src/main`**（有限放宽，ADR-0006；仅限 class 2/3 且被测代码在 diff 内违背其自带 spec，见下方铁律）
+- **static-analysis/checkstyle 失败**：可写 MR diff **行范围内**（±5 行容忍度）的文件（含 `src/main`），即只允许改 MR diff hunk 覆盖的行及其上下各 5 行，bot 用 `validatePatchLineScope` 行级校验兜底
 
 **绝对禁止的路径**：
 
 - diff 外的 `src/main`（生产代码）
+- static-analysis/checkstyle 失败时：diff 内但 hunk 行范围外的 `src/main` 行（bot 行级校验会拒绝）
 - `pom.xml`、`build.gradle`、`settings.gradle`（构建配置）
 - 仓库根的 `Dockerfile`、`ci/`、`.gitlab-ci.yml`（CI 配置）
 - **仓库工作区内的自建过程产物**（spotbugs/checkstyle include 过滤器、临时脚本、日志）——一律写 `/tmp`（如 `-Dspotbugs.includeFilterFile=/tmp/sb-include.xml`）；误写入仓库的必须在 commit 前删除
 
-任何 fix 的 file path 命中禁止路径 → **立即转交人工**，不得开 MR。bot 代码有 G3 校验兜底（`validatePatchPaths`），但 agent 应在输出前自检。**唯一例外**：diff 外文件是自建过程产物（见上）→ `git restore`/`rm` 移出工作区与暂存区后照常继续，不转交；若仍有 diff 内的部分成果，按「部分修复 MR」节处理。
+任何 fix 的 file path 命中禁止路径 → **立即转交人工**，不得开 MR。bot 代码有 G3 校验兜底（文件级 `validatePatchPaths` + static-analysis/checkstyle 行级 `validatePatchLineScope`），但 agent 应在输出前自检。**唯一例外**：diff 外文件是自建过程产物（见上）→ `git restore`/`rm` 移出工作区与暂存区后照常继续，不转交；若仍有 diff 内的部分成果，按「部分修复 MR」节处理。
 
 **src/main 放宽铁律**：只允许改实现去满足既有失败测试，**严禁改写这些测试的断言语义迎合实现**（编译适配除外）；一切测试语义改动必须在 MR 描述逐条申报。
 

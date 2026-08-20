@@ -35,6 +35,8 @@ export interface AgentRunInput {
 	readonly reuseSessionFile?: string;
 	/** 存档元数据（旧 pipeline/sha）——prompt「新 commit」声明用。 */
 	readonly reuseMeta?: { readonly pipelineId: number; readonly sha: string };
+	/** Webhook 解析的失败 stage 名（可选，用于 prompt 精准描述）。 */
+	readonly failedStages?: readonly string[];
 }
 
 /** Human decision slice handed to a resume run (T06). */

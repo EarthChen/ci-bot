@@ -15,7 +15,112 @@ import type { AgentRunInput } from "./runner.js";
 import { join as joinPath } from "node:path";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { buildDiffIndex } from "../pipeline/run-repair.js";
+import {
+	buildDiffIndex,
+	parseDiffHunkRanges,
+	HUNK_SCOPE_TOLERANCE,
+} from "../pipeline/run-repair.js";
+import {
+	parseCheckstyleViolations,
+	parseSpotbugsViolations,
+} from "./ci-log-parser.js";
+
+function formatFailureDescription(
+	failedStages: readonly string[] | undefined,
+): string {
+	if (failedStages && failedStages.length > 0) {
+		return `质量阶段 ${failedStages.join(", ")} 失败`;
+	}
+	return "pipeline 单测失败";
+}
+
+function hasCheckstyleStage(stages: readonly string[] | undefined): boolean {
+	return (
+		stages?.some((s) => s.toLowerCase().includes("checkstyle")) ?? false
+	);
+}
+
+function hasSpotbugsStage(stages: readonly string[] | undefined): boolean {
+	return stages?.some((s) => s.toLowerCase().includes("spotbugs")) ?? false;
+}
+
+function shouldPreparseViolations(
+	stages: readonly string[] | undefined,
+): boolean {
+	return hasCheckstyleStage(stages) || hasSpotbugsStage(stages);
+}
+
+/** Match CI-reported paths to MR diff paths (suffix-aware). */
+function resolveDiffPath(
+	violationFile: string,
+	diffPaths: Iterable<string>,
+): string | null {
+	const paths = [...diffPaths];
+	if (paths.includes(violationFile)) return violationFile;
+	for (const p of paths) {
+		if (
+			p.endsWith(violationFile) ||
+			violationFile.endsWith(p) ||
+			p.endsWith("/" + violationFile) ||
+			violationFile.endsWith("/" + p)
+		) {
+			return p;
+		}
+	}
+	return null;
+}
+
+function isLineInMrDiffScope(
+	file: string,
+	line: number,
+	mrHunks: Map<string, Array<[number, number]>>,
+	tolerance = HUNK_SCOPE_TOLERANCE,
+): boolean {
+	const diffPath = resolveDiffPath(file, mrHunks.keys());
+	if (!diffPath) return false;
+	const ranges = mrHunks.get(diffPath);
+	if (!ranges || ranges.length === 0) return false;
+	return ranges.some(
+		([start, end]) => line >= start - tolerance && line <= end + tolerance,
+	);
+}
+
+interface ScopedViolation {
+	readonly file: string;
+	readonly line: number;
+	readonly message: string;
+	readonly inScope: boolean;
+	readonly rule?: string;
+	readonly bugType?: string;
+	readonly priority?: string;
+}
+
+function buildScopedViolations(
+	ciLog: string,
+	failedStages: readonly string[] | undefined,
+	mrDiff: string | undefined,
+): ScopedViolation[] {
+	const mrHunks = mrDiff ? parseDiffHunkRanges(mrDiff) : new Map();
+	const scoped: ScopedViolation[] = [];
+
+	if (hasCheckstyleStage(failedStages)) {
+		for (const v of parseCheckstyleViolations(ciLog)) {
+			scoped.push({
+				...v,
+				inScope: isLineInMrDiffScope(v.file, v.line, mrHunks),
+			});
+		}
+	}
+	if (hasSpotbugsStage(failedStages)) {
+		for (const v of parseSpotbugsViolations(ciLog)) {
+			scoped.push({
+				...v,
+				inScope: isLineInMrDiffScope(v.file, v.line, mrHunks),
+			});
+		}
+	}
+	return scoped;
+}
 
 /**
  * Resolve the CI Repair agent's resource directory (bundled with the bot release).
@@ -38,6 +143,50 @@ function buildCiPrompt(input: AgentRunInput, cwd: string): string {
 	const diffIndex = input.mrDiff ? buildDiffIndex(input.mrDiff) : "";
 	if (diffIndex) writeText(diffIndexPath, diffIndex);
 
+	const failureDesc = formatFailureDescription(input.failedStages);
+	const preparse = shouldPreparseViolations(input.failedStages);
+	const violations = preparse
+		? buildScopedViolations(input.ciLog, input.failedStages, input.mrDiff)
+		: [];
+	const violationsPath = joinPath(cwd, "violations.json");
+	if (violations.length > 0) {
+		writeText(violationsPath, JSON.stringify(violations, null, 2));
+	}
+	const fixableCount = violations.filter((v) => v.inScope).length;
+	const totalCount = violations.length;
+
+	const inputFiles: string[] = [
+		`- CI 日志：${ciLogPath}`,
+		input.mrDiff ? `- MR diff：${mrDiffPath}` : `- MR diff：无`,
+		...(diffIndex
+			? [
+					`- MR diff 文件索引：${diffIndexPath}（先读它掌握改动面，再按路径从 MR diff 精确截取；勿通读全量 diff）`,
+				]
+			: []),
+		...(violations.length > 0
+			? [
+					`- 预解析违规清单：${violationsPath}（含 file:line:rule 与 inScope 标记，优先读此文件定位违规）`,
+				]
+			: []),
+	];
+
+	const scopeHint =
+		violations.length > 0 && input.mrDiff
+			? [
+					``,
+					`# 行级范围闸（预筛选）`,
+					`${fixableCount}/${totalCount} 个违规在 hunk 内可修，其余超范围无需处理。仅修复 inScope=true 的条目。`,
+				]
+			: [];
+
+	const checkstyleHint = hasCheckstyleStage(input.failedStages)
+		? [
+				``,
+				`# checkstyle 验证快路径`,
+				`- checkstyle 验证可用 CLI 快路径：\`java -jar $(find ~/.m2/repository -name 'checkstyle-*.jar' -path '*/checkstyle/checkstyle/*' | head -1) -c <规则文件> <改动文件>\`（秒级反馈，优于 mvn 全模块构建）`,
+			]
+		: [];
+
 	return [
 		`/skill:ci-self-heal-playbook`,
 		``,
@@ -49,19 +198,15 @@ function buildCiPrompt(input: AgentRunInput, cwd: string): string {
 					`- 本次：pipeline ${input.pipelineId} @ commit ${input.sha.slice(0, 8)}——**MR 已更新到新 commit，代码已变化**。`,
 					`- 摘要中的结论仅适用于旧 commit。本次失败可能是新 commit 引入的新问题，也可能是上次修复的遗留：先基于新 CI 日志做意图判定，**不得直接沿用旧诊断**。`,
 					``,
-			  ]
+				]
 			: []),
 		`# 任务`,
-		`分支 ${input.ref} @ ${input.sha.slice(0, 8)} 的 pipeline 单测失败。`,
+		`分支 ${input.ref} @ ${input.sha.slice(0, 8)} 的 ${failureDesc}。`,
+		...scopeHint,
+		...checkstyleHint,
 		``,
 		`# 输入文件（用 read 工具读取，不要靠 prompt 里的内容）`,
-		`- CI 日志：${ciLogPath}`,
-		input.mrDiff ? `- MR diff：${mrDiffPath}` : `- MR diff：无`,
-		...(diffIndex
-			? [
-					`- MR diff 文件索引：${diffIndexPath}（先读它掌握改动面，再按路径从 MR diff 精确截取；勿通读全量 diff）`,
-			  ]
-			: []),
+		...inputFiles,
 		``,
 		`# MR 提交（你自己完成，勿依赖 bot）`,
 		`- 源分支（push 到此）：${input.sourceBranch}`,
@@ -88,6 +233,37 @@ export function buildContinuePrompt(
 ): string {
 	const ciLogPath = joinPath(input.cwd, "ci-log-retry.txt");
 	writeText(ciLogPath, newCiLog);
+
+	const preparse = shouldPreparseViolations(input.failedStages);
+	const violations = preparse
+		? buildScopedViolations(newCiLog, input.failedStages, input.mrDiff)
+		: [];
+	const violationsPath = joinPath(input.cwd, "violations-retry.json");
+	if (violations.length > 0) {
+		writeText(violationsPath, JSON.stringify(violations, null, 2));
+	}
+	const fixableCount = violations.filter((v) => v.inScope).length;
+	const totalCount = violations.length;
+
+	const scopeHint =
+		violations.length > 0 && input.mrDiff
+			? [
+					``,
+					`# 行级范围闸（预筛选）`,
+					`${fixableCount}/${totalCount} 个违规在 hunk 内可修，其余超范围无需处理。仅修复 inScope=true 的条目。`,
+				]
+			: [];
+
+	const checkstyleHint = hasCheckstyleStage(input.failedStages)
+		? [
+				``,
+				`# checkstyle 验证快路径`,
+				`- checkstyle 验证可用 CLI 快路径：\`java -jar $(find ~/.m2/repository -name 'checkstyle-*.jar' -path '*/checkstyle/checkstyle/*' | head -1) -c <规则文件> <改动文件>\`（秒级反馈，优于 mvn 全模块构建）`,
+			]
+		: [];
+
+	const failureDesc = formatFailureDescription(input.failedStages);
+
 	return [
 		`# CI 仍失败，继续修复（复用本次 session，勿新建 MR）`,
 		``,
@@ -98,11 +274,18 @@ export function buildContinuePrompt(
 		``,
 		`# 新的 CI 失败日志`,
 		`用 read 工具读取：${ciLogPath}`,
+		...(violations.length > 0
+			? [`- 预解析违规清单：${violationsPath}（含 file:line:rule 与 inScope 标记）`]
+			: []),
+		...scopeHint,
+		...checkstyleHint,
 		``,
-		`# 任务`,
-		`1. 读新 CI 日志，定位仍失败的根因。遵守范围闸：test 失败可改测试/文档与 diff 内 src/main（铁律：优先满足既有失败测试，严禁改写其断言语义）；static-analysis/Checkstyle 可改 diff 内文件；超出 diff 转交。`,
-		`2. 修复后 git add → git commit → git push origin ${input.sourceBranch}（更新同一 MR，勿新建 MR）。`,
-		`3. 末条消息输出结构化 JSON：fixed 填同一 mrUrl，或 escalated 说明转交原因。`,
+		`# 任务（增量修复，仅修本次 CI 仍报的违规）`,
+		`1. 先 \`git diff origin/${input.sourceBranch} --stat\` 对齐已有修复，只修**本次 CI 仍报的** \`file:line:rule\`；已绿项不得重改。`,
+		`2. 读新 CI 日志，定位仍失败的根因。遵守范围闸：test 失败可改测试/文档与 diff 内 src/main（铁律：优先满足既有失败测试，严禁改写其断言语义）；static-analysis/Checkstyle 可改 diff **行范围内**（±5 行容忍度）的文件；超出行范围转交。`,
+		`3. ${failureDesc}。`,
+		`4. 修复后 git add → git commit → git push origin ${input.sourceBranch}（更新同一 MR，勿新建 MR）。`,
+		`5. 末条消息输出结构化 JSON：fixed 填同一 mrUrl，或 escalated 说明转交原因。`,
 	].join("\n");
 }
 

@@ -2,7 +2,7 @@
 
 ## Project
 
-CI 单测自愈 bot：headless 长驻 TS 服务，监听 GitLab pipeline 失败 webhook → 共享 Pi Agent Runtime 驱动 agent 诊断失败根因 → 修复测试/文档（单测失败绝不碰 `src/main`；static-analysis/Checkstyle 可修 MR diff 内文件，ADR-0004）→ 开 MR 供人工 review → 钉钉推送结果。可决策的转交（agent 诊断不确定）会冻干现场，人工在群内 `/heal` 决策后 bot 跨进程恢复原 session 继续修复；确定性失败 stage（如 format）经 `CIHEAL_SKIP_STAGES` 排除，不进修复。
+CI 单测自愈 bot：headless 长驻 TS 服务，监听 GitLab pipeline 失败 webhook → 共享 Pi Agent Runtime 驱动 agent 诊断失败根因 → 修复测试/文档（单测失败绝不碰 `src/main`；static-analysis/Checkstyle 可修 MR diff 行范围内文件，ADR-0004）→ 开 MR 供人工 review → 钉钉推送结果。可决策的转交（agent 诊断不确定）会冻干现场，人工在群内 `/heal` 决策后 bot 跨进程恢复原 session 继续修复；确定性失败 stage（如 format）经 `CIHEAL_SKIP_STAGES` 排除，不进修复。
 
 > [推断] "CI 自愈" 是当前唯一 vertical agent；架构已抽离出共享 Agent Runtime（`src/agent-runtime`），后续 vertical agent 复用同一运行时。
 
@@ -111,7 +111,7 @@ tests/                     # agent-runtime / agent / config / dashboard / decisi
 
 ## Rules
 
-- **G3 diff 白名单（ADR-0004/0006/0009）**：单测失败可改测试/文档与 **MR diff 内**的 `src/main`（有限放宽：铁律是优先满足既有失败测试，严禁改写其断言语义）；static-analysis/Checkstyle 失败可修 **MR diff 内**文件（含 src/main）；禁压制式修复（`@SuppressWarnings`/删规则）；改动绑定报告的 file:line:rule；diff 外一律转交，**例外：违规全为 diff 外测试/文档时可决策**——冻干现场 + 清单随决策卡片展示，`/heal <id> widen` 批准后白名单扩为「MR diff + 清单」继续修复（ADR-0009）。转交但有部分修复成果 → 开部分修复 MR（描述说明已修/未修/根因，`mrUrl` 随转交通知与决策上下文）。`validatePatchPaths` 在 createMR 前兜底校验
+- **G3 diff 白名单（ADR-0004/0006/0009）**：单测失败可改测试/文档与 **MR diff 内**的 `src/main`（有限放宽：铁律是优先满足既有失败测试，严禁改写其断言语义）；static-analysis/Checkstyle 失败可修 **MR diff 行范围内**（±5 行容忍度）的文件（含 src/main 生产代码，行级校验由 `validatePatchLineScope` 在 createMR 前兜底）；禁压制式修复（`@SuppressWarnings`/删规则）；改动绑定报告的 file:line:rule；行范围外的生产代码一律转交，**例外：违规全为 diff 外测试/文档时可决策**——冻干现场 + 清单随决策卡片展示，`/heal <id> widen` 批准后白名单扩为「MR diff + 清单」继续修复（ADR-0009）。转交但有部分修复成果 → 开部分修复 MR（描述说明已修/未修/根因，`mrUrl` 随转交通知与决策上下文）。`validatePatchPaths` 在 createMR 前兜底校验
 - **绝不自动 merge**：所有 MR 强制人工 review
 - **人工决策边界**：`/heal` 决策（test/prod/drop/widen）只消除不确定性，不授予清单外新权限；widen 仅确认转交时冻入的 diff 外测试/文档清单（master 既有失败测试），批准范围随本次 MR；**一轮介入**——恢复后再次转交即终局，不产生新决策；决策仅群聊可发，decider 入审计
 - **现场保留**：可决策转交（agent 主动 escalated 且带 diagnosis）冻干现场（cwd + worktree + session + branch），注册 awaiting_decision；TTL 默认 24h（`CIHEAL_DECISION_TTL_MS`）到期清扫；新 pipeline 到达（含被排除的）作废同 MR 待决策并清现场（无 mrIid 时回退 project 维度）；class 5 转交（bot 早筛或 agent 判定）/bot 故障类转交不保留现场

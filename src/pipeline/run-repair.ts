@@ -205,6 +205,7 @@ export async function runRepair(
 		cwd: repoCwd,
 		sourceBranch,
 		targetBranch,
+		failedStages: event.failedStages,
 		...(reuseSessionFile ? { reuseSessionFile, reuseMeta } : {}),
 	};
 	let result;
@@ -282,6 +283,7 @@ export async function runRepair(
 			repoCwd,
 			result,
 			diffFiles,
+			mrDiff: agentInput.mrDiff,
 			agentInput,
 			agentMetrics,
 			...(reuseMeta
@@ -329,12 +331,13 @@ export async function repairFixed(args: {
 	repoCwd: string;
 	result: Extract<AgentResult, { kind: "fixed" }>;
 	diffFiles: readonly string[];
+	mrDiff?: string;
 	agentInput: AgentRunInput;
 	agentMetrics: { turns: number; tokens: number; cost: number; durationMs: number };
 	/** T06: resume-run audit context (decision chain) threaded into every trace. */
 	audit?: { readonly decisionId?: string; readonly chainDepth?: number; readonly reusedFromPipeline?: number };
 }): Promise<RepairOutcome> {
-	const { deps, event, repoCwd, result, diffFiles, agentInput, audit } = args;
+	const { deps, event, repoCwd, result, diffFiles, mrDiff, agentInput, audit } = args;
 	const { glab, dingtalk, worktree } = deps;
 
 	const patch = await extractPatch(repoCwd, result.summary, event.sha);
@@ -375,6 +378,28 @@ export async function repairFixed(args: {
 				metrics: args.agentMetrics,
 				model: result.model,
 				...(oosPaths ? { decidable: true, oosPaths } : {}),
+			},
+		});
+	}
+	const lineScope = validateStaticAnalysisLineScope(
+		patch,
+		mrDiff ?? agentInput.mrDiff,
+		event.failedStages,
+	);
+	if (lineScope) {
+		return finishRepair({
+			dingtalk,
+			cwd: deps.cwd,
+			event,
+			removeWorktree: worktree.remove,
+			audit,
+			result: {
+				kind: "escalated",
+				summary: `G3/line-scope 违规：${lineScope}`,
+				diagnosis: result.diagnosis,
+				diff: patch.diff,
+				metrics: args.agentMetrics,
+				model: result.model,
 			},
 		});
 	}
@@ -528,7 +553,12 @@ export async function repairFixed(args: {
 			}
 			const p2 = await extractPatch(repoCwd, cont.summary, event.sha);
 			const g3b = validatePatchPaths(p2, diffFiles);
-			if (p2.paths.length === 0 || g3b) {
+			const lineScopeB = validateStaticAnalysisLineScope(
+				p2,
+				mrDiff ?? agentInput.mrDiff,
+				event.failedStages,
+			);
+			if (p2.paths.length === 0 || g3b || lineScopeB) {
 				return finishRepair({
 					dingtalk,
 					cwd: deps.cwd,
@@ -540,7 +570,9 @@ export async function repairFixed(args: {
 						summary:
 							p2.paths.length === 0
 								? "retry produced empty patch"
-								: `retry G3/diff 违规：${g3b}`,
+								: g3b
+									? `retry G3/diff 违规：${g3b}`
+									: `retry G3/line-scope 违规：${lineScopeB}`,
 						diagnosis: cont.diagnosis,
 						diff: p2.diff,
 						mrUrl: cont.mrUrl ?? mrUrl,
@@ -739,6 +771,124 @@ export function parseDiffFiles(diff: string): string[] {
 		}
 	}
 	return [...new Set(files)];
+}
+
+/** Parse unified-diff hunk headers and return new-side line ranges per file. */
+export function parseDiffHunkRanges(
+	diff: string,
+): Map<string, Array<[number, number]>> {
+	const result = new Map<string, Array<[number, number]>>();
+	let curPath: string | null = null;
+	let minusPath: string | null = null;
+	let minusDevNull = false;
+
+	const addRange = (path: string, start: number, count: number) => {
+		if (count <= 0) return;
+		const end = start + count - 1;
+		const ranges = result.get(path) ?? [];
+		ranges.push([start, end]);
+		result.set(path, ranges);
+	};
+
+	for (const line of diff.split("\n")) {
+		const gitHeader = line.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/);
+		if (gitHeader) {
+			curPath = gitHeader[2];
+			minusPath = null;
+			minusDevNull = false;
+			continue;
+		}
+		const minus = line.match(/^--- (.+?)\s*$/);
+		if (minus) {
+			minusDevNull = minus[1] === "/dev/null";
+			minusPath = minusDevNull ? null : minus[1];
+			continue;
+		}
+		const plus = line.match(/^\+\+\+ (.+?)\s*$/);
+		if (plus) {
+			if (plus[1] === "/dev/null") {
+				curPath = minusPath;
+			} else {
+				let path = plus[1];
+				if (
+					minusPath != null &&
+					path.startsWith("b/") &&
+					minusPath.startsWith("a/") &&
+					minusPath.slice(2) === path.slice(2)
+				) {
+					path = path.slice(2);
+				} else if (minusDevNull && path.startsWith("b/")) {
+					path = path.slice(2);
+				}
+				curPath = path;
+			}
+			continue;
+		}
+		const hunk = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+		if (hunk && curPath) {
+			const newStart = Number.parseInt(hunk[3], 10);
+			const newCount =
+				hunk[4] != null ? Number.parseInt(hunk[4], 10) : 1;
+			addRange(curPath, newStart, newCount);
+		}
+	}
+	return result;
+}
+
+/** True when failedStages includes static-analysis-related stage names. */
+export function isStaticAnalysisStage(
+	stages: readonly string[] | undefined,
+): boolean {
+	if (!stages || stages.length === 0) return false;
+	return stages.some((stage) => {
+		const lower = stage.toLowerCase();
+		if (lower === "lint") return true;
+		if (lower.includes("checkstyle")) return true;
+		if (lower.includes("spotbugs")) return true;
+		if (lower.includes("static-analysis") || lower.includes("static_analysis")) {
+			return true;
+		}
+		if (lower.includes("pmd")) return true;
+		return false;
+	});
+}
+
+/** ±N lines tolerance for line-scope G3 validation. */
+export const HUNK_SCOPE_TOLERANCE = 5;
+
+/** Line-scope G3: production paths in patch must overlap MR diff hunks (± tolerance). */
+export function validatePatchLineScope(
+	patchDiff: string,
+	mrHunks: Map<string, Array<[number, number]>>,
+	tolerance = HUNK_SCOPE_TOLERANCE,
+): string | null {
+	const agentHunks = parseDiffHunkRanges(patchDiff);
+	for (const [file, ranges] of agentHunks) {
+		if (!isProductionPath(file)) continue;
+		const mrRanges = mrHunks.get(file);
+		if (!mrRanges || mrRanges.length === 0) {
+			return `patch modifies ${file} outside MR diff line scope`;
+		}
+		for (const [a, b] of ranges) {
+			const inScope = mrRanges.some(
+				([c, d]) => a <= d + tolerance && b >= c - tolerance,
+			);
+			if (!inScope) {
+				return `patch modifies ${file}:${a}-${b} outside MR diff line scope`;
+			}
+		}
+	}
+	return null;
+}
+
+function validateStaticAnalysisLineScope(
+	patch: Patch,
+	mrDiff: string | undefined,
+	failedStages: readonly string[] | undefined,
+): string | null {
+	if (!isStaticAnalysisStage(failedStages)) return null;
+	const mrHunks = parseDiffHunkRanges(mrDiff ?? "");
+	return validatePatchLineScope(patch.diff, mrHunks);
 }
 
 /**

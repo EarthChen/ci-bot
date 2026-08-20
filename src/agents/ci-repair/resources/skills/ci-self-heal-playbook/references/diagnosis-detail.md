@@ -88,9 +88,9 @@
 
 **处理**：转交人工。v1 不处理 flaky。
 
-## class 5 — 非单测失败（编译/依赖）
+## class 5 — 非单测失败（编译/依赖，**不含** checkstyle/spotbugs）
 
-**定义**：失败不在 test phase，或编译/依赖解析阶段就挂了。
+**定义**：失败不在 test phase，或编译/依赖解析阶段就挂了。**注意**：checkstyle/spotbugs（quality 阶段）失败不归 class 5——它们走 G0 的 static-analysis/checkstyle 分支处理，按批量修复指引修复。failureClass 5 仅用于真正的 compile/dependency 失败。
 
 **信号**：
 

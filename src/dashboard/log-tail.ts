@@ -61,7 +61,11 @@ export function readWorkerLogTail(auditDir: string, pipelineId: string, maxLines
 		return [];
 	}
 	if (candidates.length === 0) return [];
-	candidates.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+	// Deterministic tie-break by name: tied mtimes (same-quantum retries) must
+	// not degrade to filesystem readdir order.
+	candidates.sort(
+		(a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs || b.localeCompare(a),
+	);
 
 	const out: WorkerLogLine[] = [];
 	for (const line of readTailChunk(candidates[0]).split("\n").filter(Boolean).slice(-maxLines)) {

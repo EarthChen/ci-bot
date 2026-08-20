@@ -26,7 +26,12 @@ describe("readWorkerLogTail", () => {
 				"not-json-line",
 			].join("\n") + "\n",
 		);
-		utimesSync(newDir, new Date(), new Date());
+		// Explicit, well-separated mtimes ON THE LOG FILES (the impl sorts by
+		// file mtime). Relying on write-order granularity is filesystem-dependent:
+		// tied mtimes degrade the sort to readdir order — that race failed CI.
+		const nowSec = Math.floor(Date.now() / 1000);
+		utimesSync(join(oldDir, "worker.log"), nowSec - 3600, nowSec - 3600);
+		utimesSync(join(newDir, "worker.log"), nowSec, nowSec);
 
 		const lines = readWorkerLogTail(auditDir, "42");
 

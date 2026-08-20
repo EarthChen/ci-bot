@@ -18,6 +18,7 @@ import type { AgentRunInput } from "../agent/runner.js";
 import type { WorkerDeps } from "./run-repair.js";
 import { repairFixed, parseDiffFiles } from "./run-repair.js";
 import { finishRepair, repairCost } from "./repair-outcome.js";
+import { emptyTokenUsage } from "../util/cost.js";
 import { logger } from "../util/log.js";
 
 /** Decision slice delivered with a resume task (scheduler envelope, T05). */
@@ -105,10 +106,12 @@ export async function runResumeRepair(
 		});
 	}
 	const agentTokens = result.metrics?.tokens ?? 0;
+	const agentUsage = result.metrics?.usage ?? emptyTokenUsage();
 	const agentMetrics = {
 		turns: result.metrics?.turns ?? 0,
 		tokens: agentTokens,
-		cost: repairCost(agentTokens),
+		usage: agentUsage,
+		cost: repairCost(agentUsage),
 		durationMs: Date.now() - agentStartedAt,
 	} as const;
 

@@ -108,6 +108,14 @@ export interface AgentMetrics {
 	readonly turns: number;
 	/** Total tokens consumed across all turns. */
 	readonly tokens: number;
+	/** 分量 usage（成本计价口径；形状同 util/cost.ts TokenUsageComponents）。 */
+	readonly usage?: {
+		readonly input: number;
+		readonly output: number;
+		readonly cacheRead: number;
+		readonly cacheWrite: number;
+		readonly reasoning: number;
+	};
 }
 
 /** 实际选中的模型（selected candidate）。 */

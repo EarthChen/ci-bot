@@ -28,7 +28,7 @@ import { resolveRetentionPolicy } from "../config/retention.js";
 import { findSessionFile } from "../agent/real-runner.js";
 import { saveMrSession } from "./mr-session-store.js";
 import { sendIpc } from "../dashboard/ipc-types.js";
-import { estimateTokenCost } from "../util/cost.js";
+import { estimateUsageCost, type TokenUsageComponents } from "../util/cost.js";
 
 /**
  * G5 audit record — persisted per repair so a bad fix can be traced back
@@ -87,13 +87,15 @@ export interface AuditTrace {
 export interface RepairMetrics {
 	readonly turns: number;
 	readonly tokens: number;
+	/** 分量 usage（计价口径）；降级路径可缺省，cost 已按分量折算。 */
+	readonly usage?: TokenUsageComponents;
 	readonly cost: number;
 	readonly durationMs: number;
 }
 
-/** Compute the estimated cost for a token count. */
-export function repairCost(tokens: number): number {
-	return estimateTokenCost(tokens);
+/** Compute the estimated cost for a usage breakdown (分量计价, see util/cost). */
+export function repairCost(usage: TokenUsageComponents): number {
+	return estimateUsageCost(usage);
 }
 
 /** Zero metrics (for paths that never run the agent, e.g. class-5 early filter). */

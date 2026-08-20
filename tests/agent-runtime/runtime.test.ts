@@ -9,7 +9,7 @@ import {
 interface FakeMessage {
 	readonly role: "assistant";
 	readonly content: readonly [{ readonly type: "text"; readonly text: string }];
-	readonly usage: { readonly totalTokens: number };
+	readonly usage: Record<string, number>;
 }
 
 function createSession(
@@ -65,6 +65,10 @@ const definition: AgentDefinition<{ readonly task: string }> = {
 	id: "test-coding-agent",
 	modelPolicy: "default",
 	capabilityProfile: "workspace-coding",
+	schedulingPolicy: {
+		serialKey: (event: { readonly projectId: string }) => event.projectId,
+		maxParallel: 1,
+	},
 	resources: {
 		appendSystemPromptPath: ".pi/APPEND_SYSTEM.md",
 		skillPaths: [".agents/skills/test-coding"],
@@ -97,7 +101,7 @@ describe("SharedAgentRuntime", () => {
 		expect(result).toEqual({
 			status: "completed",
 			finalText: "completed",
-			metrics: { turns: 1, tokens: 100 },
+			metrics: { turns: 1, tokens: 100, usage: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 } },
 		});
 		expect(captured).toBeDefined();
 	});
@@ -156,12 +160,21 @@ describe("SharedAgentRuntime IPC progress", () => {
 	});
 
 	/** prompt() 时按序发出 turn_start → tool_execution_start → turn_end 的假 session。 */
-	function createEventSession(totalTokens: number): { readonly session: AgentSession } {
+	function createEventSession(
+		totalTokens: number,
+		components?: {
+			readonly input: number;
+			readonly output: number;
+			readonly cacheRead: number;
+			readonly cacheWrite: number;
+			readonly reasoning: number;
+		},
+	): { readonly session: AgentSession } {
 		const listeners: Array<(event: unknown) => void> = [];
 		const message: FakeMessage = {
 			role: "assistant",
 			content: [{ type: "text", text: "done" }],
-			usage: { totalTokens },
+			usage: components ? { ...components, totalTokens } : { totalTokens },
 		};
 		return {
 			session: {
@@ -216,6 +229,35 @@ describe("SharedAgentRuntime IPC progress", () => {
 			turn: 1,
 			tokens: 100,
 			cost: 0.0001,
+		});
+	});
+
+	it("turn_end cost 按 usage 分量计价（cache 重读低价，不再按总量平价）", async () => {
+		const send = vi.fn();
+		(process as { send?: unknown }).send = send;
+		process.env.CIHEAL_WORKER_IPC = "1";
+
+		const runtime = new SharedAgentRuntime({
+			sessionFactory: async () => ({
+				session: createEventSession(1160, {
+					input: 100,
+					output: 50,
+					cacheRead: 1000,
+					cacheWrite: 0,
+					reasoning: 10,
+				}).session,
+				dispose() {},
+			}),
+		});
+		await runtime.run({ definition, input: { task: "x" }, cwd: "/tmp/x" });
+
+		// 100 input + (50+10)×4 output/reasoning + 1000×0.1 cacheRead = 440
+		// → 440/1000 × 0.001 = 0.00044（旧平价公式会算出 0.00116，虚高 2.6 倍）
+		expect(send).toHaveBeenCalledWith({
+			type: "turn_end",
+			turn: 1,
+			tokens: 1160,
+			cost: 0.00044,
 		});
 	});
 

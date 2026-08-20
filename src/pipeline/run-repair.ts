@@ -18,6 +18,7 @@ import type { PipelineEvent, RepairOutcome, Patch, AgentResult } from "../types.
 import { logger } from "../util/log.js";
 import type { Worktree } from "./worktree.js";
 import { finishRepair, repairCost } from "./repair-outcome.js";
+import { emptyTokenUsage } from "../util/cost.js";
 import { findMrSession } from "./mr-session-store.js";
 import { sendIpc } from "../dashboard/ipc-types.js";
 import { mkdirSync, copyFileSync } from "node:fs";
@@ -224,10 +225,12 @@ export async function runRepair(
 	// (no result.metrics to read), which writes a zero-metrics trace.
 	const agentTokens = result.metrics?.tokens ?? 0;
 	const agentTurns = result.metrics?.turns ?? 0;
+	const agentUsage = result.metrics?.usage ?? emptyTokenUsage();
 	const agentMetrics = {
 		turns: agentTurns,
 		tokens: agentTokens,
-		cost: repairCost(agentTokens),
+		usage: agentUsage,
+		cost: repairCost(agentUsage),
 		durationMs: Date.now() - agentStartedAt,
 	} as const;
 

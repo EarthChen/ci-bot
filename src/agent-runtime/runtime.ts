@@ -1,7 +1,13 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { logger } from "../util/log.js";
 import { sendIpc } from "../dashboard/ipc-types.js";
-import { estimateTokenCost } from "../util/cost.js";
+import {
+	addTokenUsage,
+	emptyTokenUsage,
+	estimateUsageCost,
+	usageTotalTokens,
+	type TokenUsageComponents,
+} from "../util/cost.js";
 import type { SchedulingPolicy } from "./scheduler.js";
 
 export interface BudgetConfig {
@@ -70,6 +76,8 @@ export interface RuntimeRunRequest<Input> {
 export interface RuntimeMetrics {
 	readonly turns: number;
 	readonly tokens: number;
+	/** 分量 usage（计价口径）；失败/零值路径可缺省。 */
+	readonly usage?: TokenUsageComponents;
 }
 
 export type RuntimeRunResult =
@@ -290,6 +298,7 @@ function subscribeBudget(
 ): BudgetMonitor {
 	let turns = 0;
 	let tokens = 0;
+	let usage = emptyTokenUsage();
 	let reason: string | undefined;
 	const unsubscribe = session.subscribe((event) => {
 		if (event.type === "turn_start") {
@@ -308,17 +317,20 @@ function subscribeBudget(
 		}
 		if (event.type !== "turn_end") return;
 		turns++;
-		const turnTokens = readTurnTokens(event.message);
-		if (turnTokens !== undefined) tokens += turnTokens;
+		const turnUsage = readTurnUsage(event.message);
+		if (turnUsage !== undefined) {
+			tokens += turnUsage.totalTokens;
+			usage = addTokenUsage(usage, turnUsage.components);
+		}
 		sendIpc({
 			type: "turn_end",
 			turn: turns,
 			tokens,
-			cost: estimateTokenCost(tokens),
+			cost: estimateUsageCost(usage),
 		});
-		if (turnTokens === undefined) return;
-		if (turnTokens > budget.perTurnTokenLimit) {
-			reason = `single turn token ${turnTokens} exceeded ${budget.perTurnTokenLimit}`;
+		if (turnUsage === undefined) return;
+		if (turnUsage.totalTokens > budget.perTurnTokenLimit) {
+			reason = `single turn token ${turnUsage.totalTokens} exceeded ${budget.perTurnTokenLimit}`;
 			abortForBudget(session);
 			return;
 		}
@@ -329,7 +341,7 @@ function subscribeBudget(
 	});
 	return {
 		unsubscribe,
-		metrics: () => ({ turns, tokens }),
+		metrics: () => ({ turns, tokens, usage }),
 		breachReason: () => reason,
 	};
 }
@@ -343,12 +355,40 @@ function summarizeToolArgs(args: unknown): string {
 	return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
-function readTurnTokens(message: unknown): number | undefined {
+/** 单 turn usage：totalTokens（预算口径）+ 分量（计价口径）。
+ * 降级：usage 只有 totalTokens（stub/旧形状）时全量视为 fresh input，
+ * 成本保守估高，预算口径不变。 */
+interface TurnUsage {
+	readonly totalTokens: number;
+	readonly components: TokenUsageComponents;
+}
+
+function readTurnUsage(message: unknown): TurnUsage | undefined {
 	if (!message || typeof message !== "object") return undefined;
 	const usage = (message as { usage?: unknown }).usage;
 	if (!usage || typeof usage !== "object") return undefined;
-	const totalTokens = (usage as { totalTokens?: unknown }).totalTokens;
-	return typeof totalTokens === "number" ? totalTokens : undefined;
+	const record = usage as Record<string, unknown>;
+	const num = (key: string): number =>
+		typeof record[key] === "number" ? (record[key] as number) : 0;
+	const hasComponents = ["input", "output", "cacheRead", "cacheWrite", "reasoning"].some(
+		(key) => typeof record[key] === "number",
+	);
+	if (hasComponents) {
+		const components: TokenUsageComponents = {
+			input: num("input"),
+			output: num("output"),
+			cacheRead: num("cacheRead"),
+			cacheWrite: num("cacheWrite"),
+			reasoning: num("reasoning"),
+		};
+		const totalTokens = typeof record.totalTokens === "number"
+			? (record.totalTokens as number)
+			: usageTotalTokens(components);
+		return { totalTokens, components };
+	}
+	const totalTokens = record.totalTokens;
+	if (typeof totalTokens !== "number") return undefined;
+	return { totalTokens, components: { ...emptyTokenUsage(), input: totalTokens } };
 }
 
 function abortForBudget(session: AgentSession): void {

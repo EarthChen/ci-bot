@@ -185,27 +185,25 @@ describe("finishRepair — 统一终态 handler", () => {
 		expect(trace.outcome).toBe("escalated");
 	});
 });
-describe("repairCost — token cost computation", () => {
-	it("returns 0 for 0 tokens", () => {
-		expect(repairCost(0)).toBe(0);
+describe("repairCost — token cost computation（分量计价）", () => {
+	const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+	it("returns 0 for empty usage", () => {
+		expect(repairCost(empty)).toBe(0);
 	});
-	it("scales linearly with tokens", () => {
-		// default BOT_TOKEN_UNIT_COST_PER_1K = 0.001
-		// 1000 tokens = 0.001
-		expect(repairCost(1000)).toBe(0.001);
-		expect(repairCost(50000)).toBe(0.05);
+	it("prices components: output 4×, cacheRead 0.1× (default base 0.001/1k)", () => {
+		// 1k input(0.001) + 1k output(0.004) + 10k cacheRead(0.001) = 0.006
+		expect(repairCost({ input: 1000, output: 1000, cacheRead: 10000, cacheWrite: 0, reasoning: 0 })).toBe(0.006);
+		expect(repairCost({ input: 50000, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 })).toBe(0.05);
 	});
 	it("respects BOT_TOKEN_UNIT_COST_PER_1K env override", async () => {
 		const orig = process.env.BOT_TOKEN_UNIT_COST_PER_1K;
 		process.env.BOT_TOKEN_UNIT_COST_PER_1K = "0.002";
-		// COST_PER_1K_TOKENS is captured at module load; re-import with a
-		// cache-busting query so the env override is observed (ESM has no
-		// require.cache).
+		// env 在函数调用时读取；re-import + cache-bust 保持与旧测试同一隔离姿势。
 		const fresh = await import(
 			"../../src/pipeline/repair-outcome.js?override=" + Date.now()
 		);
 		const { repairCost: rc } = fresh as typeof import("../../src/pipeline/repair-outcome.js");
-		expect(rc(1000)).toBe(0.002);
+		expect(rc({ input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 })).toBe(0.002);
 		if (orig === undefined) delete process.env.BOT_TOKEN_UNIT_COST_PER_1K; else process.env.BOT_TOKEN_UNIT_COST_PER_1K = orig;
 	});
 });

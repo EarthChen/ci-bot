@@ -26,7 +26,7 @@ describe("applySupersedeSteer", () => {
 			steer: vi.fn(async (text: string) => {
 				steered.push(text);
 			}),
-			clearQueue: vi.fn(async () => ({ steering: [] as string[], followUp: [] as string[] })),
+			clearQueue: vi.fn(() => ({ steering: [] as string[], followUp: [] as string[] })),
 			subscribe: vi.fn(() => () => {}),
 		};
 		registerSteerSession(session);
@@ -50,8 +50,8 @@ describe("applySupersedeSteer", () => {
 
 	it("未送达窗口内第二次 supersede → clearQueue 后 steer 最新", async () => {
 		const session = {
-			steer: vi.fn(async () => {}),
-			clearQueue: vi.fn(async () => ({
+			steer: vi.fn(async (_text: string) => {}),
+			clearQueue: vi.fn(() => ({
 				steering: ["stale"],
 				followUp: [] as string[],
 			})),
@@ -77,8 +77,8 @@ describe("applySupersedeSteer", () => {
 
 	it("session 未就绪时缓存 payload，register 后送达", async () => {
 		const session = {
-			steer: vi.fn(async () => {}),
-			clearQueue: vi.fn(async () => ({ steering: [] as string[], followUp: [] as string[] })),
+			steer: vi.fn(async (_text: string) => {}),
+			clearQueue: vi.fn(() => ({ steering: [] as string[], followUp: [] as string[] })),
 			subscribe: vi.fn(() => () => {}),
 		};
 

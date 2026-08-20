@@ -1,13 +1,9 @@
-import { spawn, fork } from "node:child_process";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { dispatchIpcMessage } from "../../src/dashboard/ipc-dispatch.js";
 import { EventHub } from "../../src/dashboard/event-hub.js";
 import { MetricsAggregator } from "../../src/dashboard/metrics-aggregator.js";
 import { isWorkerIpcMessage, sendIpc, type WorkerIpcMessage } from "../../src/dashboard/ipc-types.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe("isWorkerIpcMessage", () => {
 	it("accepts valid stage_enter", () => {

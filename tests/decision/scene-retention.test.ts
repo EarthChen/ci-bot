@@ -17,7 +17,7 @@ const event: PipelineEvent = {
 };
 
 /** Minimal canned-outcome entry (same seam as tests/worker/scene-retention). */
-function writeCannedEntry(dir: string, outcome: RepairOutcome): string {
+function writeCannedEntry(dir: string, _outcome: RepairOutcome): string {
 	const entry = join(dir, "canned-entry.mjs");
 	writeFileSync(
 		entry,

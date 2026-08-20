@@ -14,6 +14,8 @@ const input = {
 	ciLog: "no model available",
 	mrDiff: "",
 	cwd: "/tmp/ci-heal-test",
+	sourceBranch: "main",
+	targetBranch: "master",
 };
 
 describe("RealAgentRunner", () => {

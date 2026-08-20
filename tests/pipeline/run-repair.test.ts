@@ -218,6 +218,7 @@ describe("runRepair — 编排 + worktree seam", () => {
 				throw new Error("clone failed");
 			},
 			remove,
+			pushBranch: async () => {},
 		};
 		const dt = new InMemoryDingTalkNotifier();
 		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
@@ -699,7 +700,7 @@ describe("repairFixed — static-analysis 行级 G3", () => {
 		mrSourceBranch: "feature/foo",
 	};
 
-	const fixedResult: AgentResult = {
+	const fixedResult: Extract<AgentResult, { kind: "fixed" }> = {
 		kind: "fixed",
 		diagnosis: { failureClass: 4, summary: "checkstyle" },
 		summary: "fix checkstyle",
@@ -877,7 +878,7 @@ describe("runRepair — 终局新鲜度闸门（ticket 07）", () => {
 		mrSourceBranch: "feature/foo",
 	};
 
-	const fixedWithMr: AgentResult = {
+	const fixedWithMr: Extract<AgentResult, { kind: "fixed" }> = {
 		kind: "fixed",
 		diagnosis: { failureClass: 1, summary: "断言错误" },
 		summary: "修正断言",
@@ -916,10 +917,9 @@ describe("runRepair — 终局新鲜度闸门（ticket 07）", () => {
 		const createMr =
 			opts.createMr ??
 			(vi.fn(async () => ({ url: "https://mr/bot-created" })) as GitLabClient["createMr"]);
+		const headSha = opts.headSha;
 		const fetchBranchHeadSha =
-			typeof opts.headSha === "function"
-				? opts.headSha
-				: async () => opts.headSha;
+			typeof headSha === "function" ? headSha : async () => headSha;
 		return {
 			fetchCiLog: async () => "test failure",
 			fetchMrDiff: async () =>
@@ -1046,7 +1046,7 @@ describe("runRepair — 修复 MR 恒一（ticket 08）", () => {
 		mrSourceBranch: "feature/foo",
 	};
 
-	const fixedWithMr: AgentResult = {
+	const fixedWithMr: Extract<AgentResult, { kind: "fixed" }> = {
 		kind: "fixed",
 		diagnosis: { failureClass: 1, summary: "断言错误" },
 		summary: "修正断言",
@@ -1204,7 +1204,7 @@ describe("runRepair — 修复 MR 恒一（ticket 08）", () => {
 
 	it("merged 或不存在 → 正常新开 MR", async () => {
 		const dt = new InMemoryDingTalkNotifier();
-		const createMr = vi.fn(async () => ({
+		const createMr = vi.fn(async (_params: Parameters<GitLabClient["createMr"]>[0]) => ({
 			url: "https://gitlab.example.com/g/p/-/merge_requests/101",
 		}));
 		const mergedMr = {

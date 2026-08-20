@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DecisionStore } from "../../src/decision/store.js";
 import type { DecisionRecord, DecisionStatus } from "../../src/decision/store.js";
 import { sanitizeDecision } from "../../src/dashboard/routes.js";
+import type { DecisionSummary } from "../../src/dashboard/shared-types.js";
 
 function makeEvent(projectId = "proj-1", pipelineId = "pipe-1", mrIid?: number) {
 	return { projectId, pipelineId, sha: "abc123", ref: "main", ...(mrIid !== undefined ? { mrIid } : {}) };
@@ -140,9 +141,9 @@ describe("DecisionStore", () => {
 
 		it("update → decision_resolved SSE event when wired like main.ts", () => {
 			store.create(makeCreateParams({ decision_id: "D-sse-2" }));
-			const emitted: Array<{ type: string; data: Record<string, unknown> }> = [];
+			const emitted: Array<{ type: string; data: DecisionSummary }> = [];
 			const hub = {
-				emit: (event: { type: string; data: Record<string, unknown> }) => {
+				emit: (event: { type: string; data: DecisionSummary }) => {
 					emitted.push(event);
 				},
 			};
@@ -163,9 +164,9 @@ describe("DecisionStore", () => {
 		});
 
 		it("create → decision_created SSE event when wired like main.ts", () => {
-			const emitted: Array<{ type: string; data: Record<string, unknown> }> = [];
+			const emitted: Array<{ type: string; data: DecisionSummary }> = [];
 			const hub = {
-				emit: (event: { type: string; data: Record<string, unknown> }) => {
+				emit: (event: { type: string; data: DecisionSummary }) => {
 					emitted.push(event);
 				},
 			};

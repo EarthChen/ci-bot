@@ -14,7 +14,6 @@ import { join } from "node:path";
 import { Scheduler, type ScheduledWorker } from "../../src/agent-runtime/scheduler.js";
 import { CI_REPAIR_SCHEDULING_POLICY } from "../../src/agent/ci-repair-definition.js";
 import { SubprocessWorkerManager } from "../../src/worker/manager.js";
-import { ProjectRouter } from "../../src/notify/project-router.js";
 import { SidecarGroupSender } from "../../src/notify/sidecar-sender.js";
 import { mountWebhook, type WebhookConfig } from "../../src/webhook/receiver.js";
 import type { PipelineEvent } from "../../src/types.js";
@@ -84,7 +83,6 @@ async function buildBot(opts: {
 	mkdirSync(workRoot, { recursive: true });
 
 	const notifications = new SidecarGroupSender(join(dataRoot, "logs", "dingtalk-fake.jsonl"));
-	const router = new ProjectRouter({ [PROJECT]: CONV }, "");
 	const lifecycle: Array<{ type: string; data: Record<string, unknown> }> = [];
 
 	const manager: ScheduledWorker =

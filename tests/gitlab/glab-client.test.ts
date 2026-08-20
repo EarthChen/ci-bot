@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { GlabGitLabClient } from "../../src/gitlab/glab-client";
-import type { Diagnosis, Patch } from "../../src/types";
+import { GlabGitLabClient } from "../../src/gitlab/glab-client.js";
+import type { Diagnosis, Patch } from "../../src/types.js";
 
 /** Recording fake runner: canned replies matched against the joined args. */
 function recordingRunner(

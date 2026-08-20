@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { PipelineEvent, RepairOutcome } from "../../src/types.js";
-import type { SupersedePayload } from "../../src/worker/control-types.js";
+import type { SupersedePayload, WorkerControlMessage } from "../../src/worker/control-types.js";
 import { DecisionStore } from "../../src/decision/store.js";
 import type { DecisionRecord } from "../../src/decision/store.js";
 
@@ -84,7 +84,7 @@ describe("Scheduler — per-key serial + cross-key parallel（候选 E）", () =
 	});
 
 	it("同 project 不同 MR → 并行（多服务并发）；同 MR 仍串行", async () => {
-		const { workerManager, runs, maxLive, maxPerKeyLive } = fakeWorker();
+		const { workerManager, runs, maxLive } = fakeWorker();
 		const scheduler = new Scheduler({
 			workerManager,
 			workRoot: "/tmp/w",
@@ -164,7 +164,7 @@ describe("Scheduler — stats()", () => {
 		};
 		const scheduler = new Scheduler({
 			workerManager: {
-				async run(event) {
+				async run(_event) {
 					await gate;
 					return { kind: "escalated", summary: "x" };
 				},
@@ -197,7 +197,7 @@ describe("Scheduler — queueDetails()", () => {
 		};
 		const scheduler = new Scheduler({
 			workerManager: {
-				async run(event) {
+				async run(_event) {
 					await gate;
 					return { kind: "escalated", summary: "x" };
 				},
@@ -872,7 +872,7 @@ describe("Scheduler — 队列合并 + 绿灯短路（Ticket 03）", () => {
 	it("同 serialKey 连续 enqueue：队列只保留最新 pipeline", async () => {
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => (release = r));
-		const run = vi.fn(async () => {
+		const run = vi.fn(async (_event: PipelineEvent) => {
 			await gate;
 			return { kind: "escalated" as const, summary: "x" };
 		});
@@ -908,7 +908,9 @@ describe("Scheduler — 队列合并 + 绿灯短路（Ticket 03）", () => {
 	it("被挤掉事件触发 coalescence 通知与审计", async () => {
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => (release = r));
-		const coalescenceNotifier = vi.fn(async () => {});
+		const coalescenceNotifier = vi.fn(
+			async (_superseded: PipelineEvent, _superseding: PipelineEvent) => {},
+		);
 		const lifecycle: Array<{ type: string; data: Record<string, unknown> }> = [];
 		const scheduler = new Scheduler({
 			workerManager: {
@@ -950,7 +952,7 @@ describe("Scheduler — 队列合并 + 绿灯短路（Ticket 03）", () => {
 	it("出队前 greenChecker 返回 true → 跳过 repair，不起 worker", async () => {
 		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
 		const greenChecker = vi.fn(async () => true);
-		const greenSkipNotifier = vi.fn(async () => {});
+		const greenSkipNotifier = vi.fn(async (_event: PipelineEvent) => {});
 		const lifecycle: Array<{ type: string; data: Record<string, unknown> }> = [];
 		const scheduler = new Scheduler({
 			workerManager: { run },
@@ -1049,7 +1051,7 @@ describe("Scheduler — 运行中 supersede steer（Ticket 06）", () => {
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => (release = r));
 		let runs = 0;
-		const sendControl = vi.fn(() => true);
+		const sendControl = vi.fn((_event: PipelineEvent, _msg: WorkerControlMessage) => true);
 		const lifecycle: Array<{ type: string; data: Record<string, unknown> }> = [];
 		const scheduler = new Scheduler({
 			workerManager: {
@@ -1121,7 +1123,7 @@ describe("Scheduler — 运行中 supersede steer（Ticket 06）", () => {
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => (release = r));
 		let runs = 0;
-		const sendControl = vi.fn(() => true);
+		const sendControl = vi.fn((_event: PipelineEvent, _msg: WorkerControlMessage) => true);
 		const lifecycle: Array<{ type: string; data: Record<string, unknown> }> = [];
 		const scheduler = new Scheduler({
 			workerManager: {
@@ -1166,7 +1168,7 @@ describe("Scheduler — 运行中 supersede steer（Ticket 06）", () => {
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => (release = r));
 		let runs = 0;
-		const sendControl = vi.fn(() => true);
+		const sendControl = vi.fn((_event: PipelineEvent, _msg: WorkerControlMessage) => true);
 		const scheduler = new Scheduler({
 			workerManager: {
 				run: async () => {

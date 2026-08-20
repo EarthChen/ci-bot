@@ -52,6 +52,9 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Typecheck tests
+        run: ./node_modules/.bin/tsc -p tsconfig.test.json --noEmit
+
       - name: Build dashboard
         run: pnpm --filter @ci-bot/dashboard build
 

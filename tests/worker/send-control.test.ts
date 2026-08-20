@@ -94,7 +94,10 @@ describe("SubprocessWorkerManager.sendControl", () => {
 		const runPromise = manager.run(event, cwd);
 		await waitForReady(cwd);
 
-		const msg = { type: "supersede" as const, payload: { reason: "test" } };
+		const msg = {
+			type: "supersede" as const,
+			payload: { oldSha: "old", newSha: "new", newPipelineId: 9 },
+		};
 		expect(manager.sendControl!(event, msg)).toBe(true);
 
 		await runPromise;
@@ -117,8 +120,16 @@ describe("SubprocessWorkerManager.sendControl", () => {
 		await manager.run(endedEvent, cwd);
 
 		expect(() =>
-			manager.sendControl!(endedEvent, { type: "supersede", payload: null }),
+			manager.sendControl!(endedEvent, {
+				type: "supersede",
+				payload: { oldSha: "old", newSha: "new", newPipelineId: 9 },
+			}),
 		).not.toThrow();
-		expect(manager.sendControl!(endedEvent, { type: "supersede", payload: null })).toBe(false);
+		expect(
+			manager.sendControl!(endedEvent, {
+				type: "supersede",
+				payload: { oldSha: "old", newSha: "new", newPipelineId: 9 },
+			}),
+		).toBe(false);
 	});
 });

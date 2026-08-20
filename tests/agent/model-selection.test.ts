@@ -7,7 +7,7 @@ import {
 	selectModelCandidate,
 	type ModelCandidate,
 	type ModelRuntimeForSelection,
-} from "../../src/agent/model-selection";
+} from "../../src/agent/model-selection.js";
 
 interface FakeModel {
 	readonly id: string;
@@ -18,7 +18,7 @@ function fakeRuntime(opts: {
 	readonly available: readonly string[];
 }): ModelRuntimeForSelection<FakeModel> {
 	return {
-		getModel(provider, modelId) {
+		getModel(provider: string, modelId: string) {
 			return opts.models[`${provider}/${modelId}`];
 		},
 		async getAvailable() {

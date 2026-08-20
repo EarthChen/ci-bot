@@ -425,6 +425,12 @@ describe("createDecisionLifecycle — startTtlSweep", () => {
 	});
 
 	it("interval precedence opts > env > default 60s, and the timer is unref'd", () => {
+		// Real timers on purpose: spying on globalThis.setInterval while it is
+		// faked leaks a dead interval function into later test files (singleFork
+		// shares one process) — vi's post-test spy restore reinstalls the captured
+		// fake AFTER afterEach's useRealTimers. Under real timers the spy captures
+		// and restores the genuine function, so nothing leaks.
+		vi.useRealTimers();
 		const spy = vi.spyOn(globalThis, "setInterval");
 		try {
 			let handle = lifecycle.startTtlSweep();

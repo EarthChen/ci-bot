@@ -15,7 +15,7 @@
  * at a time when called). Ticket 05 lifts concurrency above 1.
  */
 
-import { spawn, execFile } from "node:child_process";
+import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { existsSync, type Stats } from "node:fs";
 import { chmod, copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -24,7 +24,9 @@ import { fileURLToPath } from "node:url";
 import { logger } from "../util/log.js";
 import type { PipelineEvent, RepairOutcome } from "../types.js";
 import type { ResumeTask } from "../agent-runtime/scheduler.js";
+import type { WorkerControlMessage } from "./control-types.js";
 import { bareRoot } from "../pipeline/worktree.js";
+import { repairBranchName } from "../pipeline/repair-branch.js";
 import { resolveAuditDir } from "../pipeline/repair-outcome.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -34,6 +36,13 @@ export interface WorkerManager {
 	run(event: PipelineEvent, cwd: string): Promise<RepairOutcome>;
 	/** Resume a retained scene in place (T05; scheduler-driven). */
 	runResume?(task: ResumeTask): Promise<RepairOutcome>;
+	/** 向运行中的 worker 发送控制消息（反向 IPC）。*/
+	sendControl?(event: PipelineEvent, msg: WorkerControlMessage): boolean;
+}
+
+/** Stable key for an in-flight worker subprocess. */
+export function workerEventKey(event: PipelineEvent): string {
+	return `${event.projectId}-${event.pipelineId}`;
 }
 
 export interface WorkerSpawnOptions {
@@ -59,7 +68,38 @@ export interface WorkerSpawnOptions {
  * build step. Both modes pass CIHEAL_WORKER_TASK + CIHEAL_RESULT_FILE via env.
  */
 export class SubprocessWorkerManager implements WorkerManager {
+	private readonly activeWorkers = new Map<string, ChildProcess>();
+
 	constructor(private readonly opts: WorkerSpawnOptions = {}) {}
+
+	sendControl(event: PipelineEvent, msg: WorkerControlMessage): boolean {
+		const key = workerEventKey(event);
+		const child = this.activeWorkers.get(key);
+		if (!child || child.exitCode !== null || child.killed) {
+			logger.info(
+				{ key, controlType: msg.type },
+				"control message dropped: worker not running",
+			);
+			return false;
+		}
+		try {
+			const ok = child.send(msg);
+			if (!ok) {
+				logger.info(
+					{ key, controlType: msg.type },
+					"control message dropped: channel unavailable",
+				);
+				return false;
+			}
+			return true;
+		} catch (err) {
+			logger.info(
+				{ err, key, controlType: msg.type },
+				"control message dropped: send failed",
+			);
+			return false;
+		}
+	}
 
 	async run(event: PipelineEvent, cwd: string): Promise<RepairOutcome> {
 		return this.spawnWorker(event, cwd, { event, cwd }, true);
@@ -160,13 +200,21 @@ export class SubprocessWorkerManager implements WorkerManager {
 		let stderr = "";
 		/** The worker's parsed outcome (set before return; read in finally). */
 		let outcome: RepairOutcome | undefined;
+		const ipcWired = typeof this.opts.onIpcMessage === "function";
+		const activeKey = workerEventKey(event);
 		try {
 			const child = await runChild(nodeBin, [entryScript], {
 				cwd,
 				env: childEnv,
 				timeoutMs: this.opts.timeoutMs,
-				onIpcMessage: this.opts.onIpcMessage
+				onIpcMessage: ipcWired
 					? (msg) => this.opts.onIpcMessage!(event, msg)
+					: undefined,
+				onChild: ipcWired
+					? (proc) => {
+							this.activeWorkers.set(activeKey, proc);
+							proc.once("exit", () => this.activeWorkers.delete(activeKey));
+						}
 					: undefined,
 			});
 			const { code, signal } = child;
@@ -247,7 +295,7 @@ export async function cleanupScene(
 	// last resort that prevents residue across re-runs.
 	try {
 		const barePath = join(bareRoot(), event.projectId.replace(/[/:]/g, "-"));
-		const branch = `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`;
+		const branch = repairBranchName(event);
 		const runGit = (args: string[]) =>
 			new Promise<void>((resolve) => {
 				execFile("git", args, (err) => {
@@ -356,6 +404,7 @@ interface RunChildOpts {
 	env: Record<string, string>;
 	timeoutMs?: number;
 	onIpcMessage?: (msg: unknown) => void;
+	onChild?: (child: ChildProcess) => void;
 }
 
 function runChild(
@@ -387,6 +436,7 @@ function runChild(
 				? ["ignore", "pipe", "pipe", "ipc"]
 				: ["ignore", "pipe", "pipe"],
 		});
+		opts.onChild?.(child);
 		if (useIpc) {
 			child.on("message", (msg) => opts.onIpcMessage!(msg));
 		}

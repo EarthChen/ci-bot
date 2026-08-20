@@ -14,7 +14,7 @@ import { Scheduler, parseSkipStages } from "./agent-runtime/scheduler.js";
 import { CI_REPAIR_SCHEDULING_POLICY } from "./agent/ci-repair-definition.js";
 import { SubprocessWorkerManager } from "./worker/manager.js";
 import { mountWebhook } from "./webhook/receiver.js";
-import { removeMrSession } from "./pipeline/mr-session-store.js";
+import { removeMrSession, saveMrSession } from "./pipeline/mr-session-store.js";
 import { StreamDingTalkNotifier } from "./notify/stream-dingtalk.js";
 import {
 	type DingTalkMessage,
@@ -46,6 +46,7 @@ import { EventHub } from "./dashboard/event-hub.js";
 import { MetricsAggregator } from "./dashboard/metrics-aggregator.js";
 import { dispatchIpcMessage } from "./dashboard/ipc-dispatch.js";
 import { isWorkerIpcMessage } from "./dashboard/ipc-types.js";
+import { GlabGitLabClient } from "./gitlab/glab-client.js";
 
 async function main(): Promise<void> {
 	loadEnvFile(".env");
@@ -144,6 +145,7 @@ async function main(): Promise<void> {
 		store: decisionStore,
 		router: projectRouter,
 		sender: groupSender,
+		saveMrSession,
 	});
 
 	// TTL sweep (T08): expired awaiting decisions are swept, their scenes
@@ -222,6 +224,19 @@ async function main(): Promise<void> {
 
 	// Per-event worker cwd root — derived from CIHEAL_DATA_ROOT (work/).
 	const workRoot = resolveWorkRoot();
+
+	const mainGlab = new GlabGitLabClient(async (args) => {
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const execFileP = promisify(execFile);
+		const { stdout } = await execFileP("glab", args as string[], {
+			env: { ...process.env, GITLAB_HOST: process.env.GITLAB_URL ?? "" },
+			maxBuffer: 128 * 1024 * 1024,
+		});
+		return stdout;
+	});
+
+	let scheduler!: Scheduler;
 	const workerManager = new SubprocessWorkerManager({
 		timeoutMs: Number(process.env.BOT_WORKER_TIMEOUT_MS ?? 300_000) || 300_000,
 		env: {
@@ -239,6 +254,9 @@ async function main(): Promise<void> {
 		},
 		onIpcMessage: (event, msg) => {
 			if (!isWorkerIpcMessage(msg)) return;
+			if (msg.type === "steer_delivered") {
+				scheduler.onSteerDelivered(CI_REPAIR_SCHEDULING_POLICY.serialKey(event));
+			}
 			dispatchIpcMessage(
 				{
 					eventHub,
@@ -249,7 +267,7 @@ async function main(): Promise<void> {
 			);
 		},
 	});
-	const scheduler = new Scheduler({
+	scheduler = new Scheduler({
 		workerManager,
 		workRoot,
 		policy: CI_REPAIR_SCHEDULING_POLICY,
@@ -259,6 +277,77 @@ async function main(): Promise<void> {
 		decisionStore,
 		escalationNotifier,
 		skipStages: parseSkipStages(process.env.CIHEAL_SKIP_STAGES),
+		coalescenceNotifier: async (superseded, superseding) => {
+			const conversationId = projectRouter.resolve(superseded.projectId);
+			if (!conversationId) {
+				logger.warn(
+					{ projectId: superseded.projectId, pipelineId: superseded.pipelineId },
+					"coalescence notification skipped: no group route",
+				);
+				return;
+			}
+			await groupSender.sendTo(conversationId, {
+				title: "CI 自愈排队合并",
+				text: `项目 ${superseded.projectId} pipeline ${superseded.pipelineId}（sha ${superseded.sha.slice(0, 8)}）已被新 pipeline ${superseding.pipelineId}（sha ${superseding.sha.slice(0, 8)}）取代，跳过修复。`,
+			});
+		},
+		greenChecker: async (event) => {
+			if (event.mrIid == null) return false;
+			try {
+				const status = await mainGlab.fetchMrPipelineStatus(
+					event.projectId,
+					event.mrIid,
+				);
+				return status.status === "success";
+			} catch (err) {
+				logger.warn(
+					{ err, event: { projectId: event.projectId, mrIid: event.mrIid } },
+					"green check failed",
+				);
+				return false;
+			}
+		},
+		greenSkipNotifier: async (event) => {
+			const conversationId = projectRouter.resolve(event.projectId);
+			if (!conversationId) {
+				logger.warn(
+					{ projectId: event.projectId, pipelineId: event.pipelineId },
+					"green skip notification skipped: no group route",
+				);
+				return;
+			}
+			await groupSender.sendTo(conversationId, {
+				title: "CI 自愈绿灯跳过",
+				text: `项目 ${event.projectId} pipeline ${event.pipelineId}（MR !${event.mrIid}）最新 CI 已通过，跳过修复。`,
+			});
+		},
+		supersedeProvider: {
+			async getChangedFiles(_running, incoming) {
+				if (!incoming.mrIid) return undefined;
+				try {
+					const diff = await mainGlab.fetchMrDiff(
+						incoming.projectId,
+						incoming.mrIid,
+					);
+					if (!diff) return undefined;
+					const files = [
+						...new Set(
+							diff
+								.split("\n")
+								.filter((l) => l.startsWith("diff --git"))
+								.map((l) => {
+									const match = l.match(/b\/(.+)$/);
+									return match?.[1];
+								})
+								.filter((f): f is string => !!f),
+						),
+					];
+					return files.length > 0 ? files : undefined;
+				} catch {
+					return undefined;
+				}
+			},
+		},
 		onLifecycleEvent: (type, data) => {
 			// worker 注册表 + snapshot 刷新：SSE 事件 fire-and-forget，迟到客户端
 			// 只能看 snapshot，故每个生命周期节点都把权威状态推进 snapshot。

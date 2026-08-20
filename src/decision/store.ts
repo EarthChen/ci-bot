@@ -123,6 +123,15 @@ function rowToRecord(row: DecisionRow): DecisionRecord {
 	};
 }
 
+function mrIidFromEventJson(eventJson: string): number | undefined {
+	try {
+		const event = JSON.parse(eventJson) as { mrIid?: number };
+		return event.mrIid;
+	} catch {
+		return undefined;
+	}
+}
+
 export class DecisionStore {
 	private readonly db: Database.Database;
 	private onChange?: DecisionChangeCallback;
@@ -262,6 +271,39 @@ export class DecisionStore {
 			return rows.map(rowToRecord);
 		});
 		return invalidate(projectId);
+	}
+
+	/**
+	 * Invalidate awaiting decisions tied to a specific MR (Ticket 04) —
+	 * same project + event_json.mrIid match. Cross-MR decisions are left
+	 * intact. Atomic single transaction; terminal rows never change.
+	 */
+	invalidateByMr(projectId: string, mrIid: number): DecisionRecord[] {
+		const invalidate = this.db.transaction((pid: string, mr: number) => {
+			const rows = this.db
+				.prepare(
+					"SELECT * FROM decisions WHERE project_id = ? AND status = 'awaiting_decision' ORDER BY created_at",
+				)
+				.all(pid) as DecisionRow[];
+			const matching = rows.filter((row) => mrIidFromEventJson(row.event_json) === mr);
+			if (matching.length === 0) {
+				return [];
+			}
+			const now = new Date().toISOString();
+			const ids = matching.map((r) => r.decision_id);
+			const placeholders = ids.map(() => "?").join(", ");
+			this.db
+				.prepare(
+					`UPDATE decisions SET
+						status = 'invalidated',
+						decided_by = 'system:new-pipeline',
+						decided_at = ?
+					WHERE decision_id IN (${placeholders}) AND status = 'awaiting_decision'`,
+				)
+				.run(now, ...ids);
+			return matching.map(rowToRecord);
+		});
+		return invalidate(projectId, mrIid);
 	}
 
 	/**

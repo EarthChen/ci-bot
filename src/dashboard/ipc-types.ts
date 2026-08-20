@@ -4,6 +4,9 @@ export type WorkerIpcMessage =
 	| { type: "turn_start"; turn: number }
 	| { type: "turn_end"; turn: number; tokens: number; cost: number }
 	| { type: "tool_call"; name: string; summary: string }
+	| { type: "control_ack"; controlType: string }
+	| { type: "steer_queued"; newSha: string; newPipelineId: number }
+	| { type: "steer_delivered" }
 	| { type: "metrics_record"; projectId: string; pipelineId: number; outcome: string; turns: number; tokens: number; cost: number; durationMs: number; createdAt: string };
 
 export function isWorkerIpcMessage(msg: unknown): msg is WorkerIpcMessage {
@@ -20,6 +23,12 @@ export function isWorkerIpcMessage(msg: unknown): msg is WorkerIpcMessage {
 			return typeof m.turn === "number" && typeof m.tokens === "number" && typeof m.cost === "number";
 		case "tool_call":
 			return typeof m.name === "string" && typeof m.summary === "string";
+		case "control_ack":
+			return typeof m.controlType === "string";
+		case "steer_queued":
+			return typeof m.newSha === "string" && typeof m.newPipelineId === "number";
+		case "steer_delivered":
+			return true;
 		case "metrics_record":
 			return (
 				typeof m.projectId === "string" &&

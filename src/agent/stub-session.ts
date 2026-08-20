@@ -31,7 +31,13 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join as joinPath } from "node:path";
 
-/** A minimal assistant message shape the runner's parseResult + budget read. */
+/** Sidecar for e2e: records steer() calls (ticket 06). */
+function writeSteerSidecar(cwd: string, steers: readonly string[]): void {
+	const path = joinPath(cwd, "steers.json");
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, JSON.stringify(steers, null, 2), "utf8");
+}
+
 interface FakeAssistantMessage {
 	role: "assistant";
 	content: Array<{ type: string; text?: string }>;
@@ -44,13 +50,19 @@ interface FakeTurnEndEvent {
 	message: FakeAssistantMessage;
 }
 
+/** A minimal event the runner's subscriber inspects. */
+type FakeSessionEvent =
+	| FakeTurnEndEvent
+	| { type: "queue_update"; steering: string[]; followUp: string[] };
+
 /** A fake session satisfying the AgentSession subset RealAgentRunner uses. */
 class StubSession {
 	private _messages: FakeAssistantMessage[] = [];
-	private listeners: Array<(event: FakeTurnEndEvent) => void> = [];
+	private listeners: Array<(event: FakeSessionEvent) => void> = [];
 	private readonly cannedResult: AgentResult;
 	private readonly turnTokens: number;
 	private readonly cwd: string;
+	private steeringQueue: string[] = [];
 
 	constructor(cannedResult: AgentResult, turnTokens: number, cwd: string) {
 		this.cannedResult = cannedResult;
@@ -58,14 +70,46 @@ class StubSession {
 		this.cwd = cwd;
 	}
 
-	subscribe(listener: (event: FakeTurnEndEvent) => void): () => void {
+	subscribe(listener: (event: FakeSessionEvent) => void): () => void {
 		this.listeners.push(listener);
 		return () => {
 			this.listeners = this.listeners.filter((l) => l !== listener);
 		};
 	}
 
+	private emitQueueUpdate(): void {
+		const event = {
+			type: "queue_update" as const,
+			steering: [...this.steeringQueue],
+			followUp: [] as string[],
+		};
+		for (const l of this.listeners) {
+			l(event);
+		}
+	}
+
+	async steer(text: string): Promise<void> {
+		this.steeringQueue.push(text);
+		writeSteerSidecar(this.cwd, this.steeringQueue);
+		this.emitQueueUpdate();
+	}
+
+	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+		const cleared = { steering: [...this.steeringQueue], followUp: [] as string[] };
+		this.steeringQueue = [];
+		this.emitQueueUpdate();
+		return cleared;
+	}
+
+	getSteeringMessages(): string[] {
+		return [...this.steeringQueue];
+	}
+
 	async prompt(_text: string): Promise<void> {
+		const delayMs = Number(process.env.CIHEAL_STUB_DELAY_MS ?? "0") || 0;
+		if (delayMs > 0) {
+			await new Promise((r) => setTimeout(r, delayMs));
+		}
 		// Simulate the agent self-executing: write canned edits to the working
 		// tree so `git diff` in run-repair sees real changes (no diff in prompt).
 		applyStubEdits(this.cwd, this.cannedResult);
@@ -79,6 +123,11 @@ class StubSession {
 		this._messages.push(message);
 		for (const l of this.listeners) {
 			l({ type: "turn_end", message });
+		}
+		// Turn-boundary steer delivery (ticket 06 test seam).
+		if (this.steeringQueue.length > 0) {
+			this.steeringQueue = [];
+			this.emitQueueUpdate();
 		}
 	}
 

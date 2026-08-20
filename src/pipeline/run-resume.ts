@@ -17,6 +17,7 @@ import type { PipelineEvent, RepairOutcome, AgentResult } from "../types.js";
 import type { AgentRunInput } from "../agent/runner.js";
 import type { WorkerDeps } from "./run-repair.js";
 import { repairFixed, parseDiffFiles } from "./run-repair.js";
+import { repairBranchName } from "./repair-branch.js";
 import { finishRepair, repairCost } from "./repair-outcome.js";
 import { emptyTokenUsage } from "../util/cost.js";
 import { logger } from "../util/log.js";
@@ -83,7 +84,7 @@ export async function runResumeRepair(
 		ciLog: "",
 		mrDiff: "",
 		cwd: repoCwd,
-		sourceBranch: `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`,
+		sourceBranch: repairBranchName(event),
 		targetBranch: event.mrSourceBranch ?? event.ref,
 	};
 

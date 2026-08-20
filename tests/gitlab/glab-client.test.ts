@@ -137,6 +137,87 @@ describe("GlabGitLabClient.createMr", () => {
 	});
 });
 
+describe("GlabGitLabClient.findMrBySourceBranch", () => {
+	it("returns MR status, iid, and web_url when a repair branch exists", async () => {
+		const branch = "ci-self-heal/fix-42";
+		const webUrl = "https://gitlab.example.com/g/p/-/merge_requests/17";
+		const { calls, run } = recordingRunner([
+			{
+				match: new RegExp(
+					`merge_requests\\?source_branch=${encodeURIComponent(branch).replace("/", "\\/")}`,
+				),
+				reply: JSON.stringify([
+					{ iid: 17, state: "opened", web_url: webUrl },
+				]),
+			},
+		]);
+		const client = new GlabGitLabClient(run);
+
+		const mr = await client.findMrBySourceBranch("31041", branch);
+
+		expect(mr).toEqual({
+			status: "opened",
+			iid: 17,
+			url: webUrl,
+		});
+		expect(calls[0]).toEqual([
+			"api",
+			`/projects/31041/merge_requests?source_branch=${encodeURIComponent(branch)}&state=all&per_page=1&order_by=updated_at&sort=desc`,
+		]);
+	});
+
+	it("returns null when no MR matches the source branch", async () => {
+		const { run } = recordingRunner([
+			{ match: /merge_requests\?source_branch=/, reply: "[]" },
+		]);
+		const client = new GlabGitLabClient(run);
+
+		const mr = await client.findMrBySourceBranch(
+			"31041",
+			"ci-self-heal/nonexistent",
+		);
+
+		expect(mr).toBeNull();
+	});
+});
+
+describe("GlabGitLabClient.fetchBranchHeadSha", () => {
+	it("returns the latest commit sha for the branch", async () => {
+		const branch = "ci-self-heal/fix-42";
+		const sha = "abc123def4567890abcdef1234567890abcdef12";
+		const { calls, run } = recordingRunner([
+			{
+				match: new RegExp(
+					`repository/branches/${encodeURIComponent(branch).replace("/", "\\/")}$`,
+				),
+				reply: JSON.stringify({ commit: { id: sha } }),
+			},
+		]);
+		const client = new GlabGitLabClient(run);
+
+		const head = await client.fetchBranchHeadSha("31041", branch);
+
+		expect(head).toBe(sha);
+		expect(calls[0]).toEqual([
+			"api",
+			`/projects/31041/repository/branches/${encodeURIComponent(branch)}`,
+		]);
+	});
+
+	it("fails loudly when the branch head cannot be resolved", async () => {
+		const { run } = recordingRunner([
+			{ match: /repository\/branches\//, reply: "{}" },
+		]);
+		const client = new GlabGitLabClient(run);
+
+		await expect(
+			client.fetchBranchHeadSha("31041", "ci-self-heal/missing"),
+		).rejects.toThrow(
+			"cannot resolve branch head for ci-self-heal/missing in project 31041",
+		);
+	});
+});
+
 describe("GlabGitLabClient.fetchCiLog", () => {
 	const jobsReply = (jobs: ReadonlyArray<Record<string, unknown>>) =>
 		JSON.stringify(jobs);

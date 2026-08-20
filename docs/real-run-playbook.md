@@ -106,9 +106,38 @@ worker 结束后看 `$CIHEAL_DATA_ROOT/audit/<pipelineId>/<workId>-audit-trace.j
 - 停服务：`kill` 掉 tsx 子进程（只杀 pnpm wrapper 不会级联）；`lsof -nP -i :<PORT>` 确认释放。
 - `$CIHEAL_DATA_ROOT` 下 `bare/` 建议保留（复用）；`work/` 由 worker manager 自动清理；`audit/` 是持久审计记录。
 
+## 8. Supersede 与 Session 延续（ADR-0011）
+
+同一 MR 在用户持续提交时的 bot 行为（真实演练时需关注）：
+
+### 排队合并
+
+同 MR 连推多次失败 pipeline 时，scheduler 按 serialKey 合并排队事件，**只保留最新一个**；被挤掉的事件记审计并在群里留「已被更新的 pipeline 取代」通知。不会串行对着旧 sha 跑 N 遍完整修复。
+
+### 运行中 steer
+
+修复 worker 运行期间，同 MR 新提交到达 → 主进程通过 IPC 反向通道向 worker 注入 steer 通知（turn 边界：当前 assistant turn 全部 tool 执行完毕后）。steer 携带 old sha→new sha、变更文件清单与处置指令；连续连推合并为一条（只保留最终 sha）。若新 pipeline 已绿，steer 附「可收尾」指令。
+
+### 绿灯短路
+
+出队执行前 bot 复查该 MR 最新 pipeline 状态；**已绿则跳过修复**（审计 + 群通知尾注），避免用户自修后仍起 agent。
+
+### 终局新鲜度闸门
+
+createMR 前 bot 校验工作基线 vs MR 最新 HEAD——被取代则丢弃成果、不开 MR、发通知、记审计。转交类终局不受影响。
+
+### Session 复用
+
+session 存档条件：**所有终局**（mr / 部分修复转交 / 纯转交 / failed）**+ 决策作废时**均存档 Pi session jsonl 到 `$CIHEAL_DATA_ROOT/mr-sessions/<projectId>-<mrIid>.jsonl`（latest-wins，LRU 上限 32）。同 MR 后续 pipeline 命中则 reopen + compact + continue，prompt 强制声明「MR 已更新到新 commit、不得沿用旧诊断」。MR merge/close 清理存档（ADR-0008）。复用任何环节失败均降级为全新 session。
+
+### 修复 MR 分支
+
+修复分支名格式：`ci-self-heal/<mrSourceBranch>`（按源 MR 分支收敛，**不含 sha**）。同一源 MR 至多一个 open 的 bot 修复 MR；已有 open MR 时 push 原地更新，merged/closed/不存在时新开 MR。close 后重开时 MR 描述与群通知注明「上一个修复 MR 被关闭，本次为新尝试」。
+
 ## 已知注意点
 
 - scheduler 去重为内存态：同 pipeline 重投 = 重启服务（见第 4 节）。
+- 同 MR 连推不同 pipeline 时 supersede 合并/steer 生效，不会对着旧 sha 重复跑完整修复（见第 8 节）。
 - 预算软上限 `BOT_BUDGET_TOKENS` / `BOT_BUDGET_PER_TURN_TOKENS` 在 `turn_end` 结算，单 turn 内可能超支。
 - `worktree remove -f <cwd>` 传参是 cwd 而非 `<cwd>/repo`，escalated/failed 路径会打一条 "not a working tree" warn（仅噪音，不影响结果）。
 - secret 只走 `.env`（chmod 600）；服务日志以 `NODE_ENV=production` 启动防止 SDK debug 泄漏。

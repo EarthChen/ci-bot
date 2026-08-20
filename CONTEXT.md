@@ -69,8 +69,12 @@ Cross-process session recovery that carries decision context into a continued re
 _Avoid_: in-process session reuse (same worker), starting a fresh session without history
 
 **Decision invalidation**:
-Automatic voiding of an awaiting decision when a new pipeline arrives for the same project.
+Automatic voiding of an awaiting decision when a new pipeline arrives for the same MR (MR-scoped invalidation; falls back to project scope when mrIid is absent).
 _Avoid_: manual invalidation, continuing repair on stale sha
+
+**Supersede**:
+The semantics by which a new commit on the same MR replaces bot work on an older sha. Three layers: queue coalescing (keep only the latest), in-flight steer (inject update notification at turn boundary into the live session), and terminal freshness gate (validate HEAD before createMR). Session continuity spans the entire lifecycle — session lifetime equals MR lifetime.
+_Avoid_: treating supersede as discard-and-restart, per-sha repair MR branches
 
 **Retained scene**:
 The preserved cwd + worktree + session + branch set that enables resume.

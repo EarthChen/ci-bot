@@ -24,6 +24,7 @@ import type {
 import { SharedAgentRuntime } from "../agent-runtime/runtime.js";
 import { createCiRepairDefinition, createCiResumeDefinition, buildContinuePrompt } from "./ci-repair-definition.js";
 import { tryParseAgentJson } from "../agents/ci-repair/result-parser.js";
+import { registerSteerSession, clearSteerSession } from "../worker/steer-session.js";
 
 // Re-export for backward compatibility
 export type { BudgetConfig };
@@ -51,6 +52,7 @@ export class RealAgentRunner implements AgentRunner {
 	private activeDispose: (() => void) | undefined;
 	/** 当前 session 选中的模型（continue 复用同一 session → 同一模型）。 */
 	private activeModelInfo: AgentModelRef | undefined;
+	private steerUnregister: (() => void) | undefined;
 
 	constructor(opts: {
 		sessionFactory?: SessionFactory;
@@ -65,20 +67,23 @@ export class RealAgentRunner implements AgentRunner {
 	async run(input: AgentRunInput): Promise<AgentResult> {
 		const ciFactory = this.sessionFactory;
 		const runtime = new SharedAgentRuntime({
-			sessionFactory: async () =>
-				ciFactory(
+			sessionFactory: async () => {
+				const bundle = await ciFactory(
 					input,
 					input.reuseSessionFile
 						? { sessionFile: input.reuseSessionFile, compactForReuse: true }
 						: undefined,
-				),
+				);
+				this.activeSession = bundle.session;
+				this.activeDispose = bundle.dispose;
+				this.attachSteer(bundle.session);
+				return bundle;
+			},
 			budget: this.budget,
 		});
 
 		const definition = createCiRepairDefinition(input.cwd);
 		const opened = await runtime.runSession({ definition, input, cwd: input.cwd });
-		this.activeSession = opened.session;
-		this.activeDispose = opened.dispose;
 		this.activeModelInfo = opened.modelInfo;
 
 		let agentResult: AgentResult;
@@ -162,10 +167,18 @@ export class RealAgentRunner implements AgentRunner {
 	}
 
 	close(): void {
+		this.steerUnregister?.();
+		this.steerUnregister = undefined;
+		clearSteerSession();
 		this.activeDispose?.();
 		this.activeSession = undefined;
 		this.activeDispose = undefined;
 		this.activeModelInfo = undefined;
+	}
+
+	private attachSteer(session: AgentSession): void {
+		this.steerUnregister?.();
+		this.steerUnregister = registerSteerSession(session);
 	}
 
 	/**
@@ -186,7 +199,13 @@ export class RealAgentRunner implements AgentRunner {
 		}
 		const ciFactory = this.sessionFactory;
 		const runtime = new SharedAgentRuntime({
-			sessionFactory: async () => ciFactory(input, { sessionFile }),
+			sessionFactory: async () => {
+				const bundle = await ciFactory(input, { sessionFile });
+				this.activeSession = bundle.session;
+				this.activeDispose = bundle.dispose;
+				this.attachSteer(bundle.session);
+				return bundle;
+			},
 			budget: this.budget,
 		});
 		const definition = createCiResumeDefinition(input.cwd, decision);
@@ -195,8 +214,6 @@ export class RealAgentRunner implements AgentRunner {
 			input,
 			cwd: input.cwd,
 		});
-		this.activeSession = opened.session;
-		this.activeDispose = opened.dispose;
 		this.activeModelInfo = opened.modelInfo;
 
 		let agentResult: AgentResult;

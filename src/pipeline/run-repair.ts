@@ -14,9 +14,10 @@ import type { AgentRunner, AgentRunInput } from "../agent/runner.js";
 import { parseMrIid } from "../agent/runner.js";
 import type { GitLabClient, MrPipelineStatus } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
-import type { PipelineEvent, RepairOutcome, Patch, AgentResult } from "../types.js";
+import type { PipelineEvent, RepairOutcome, Patch, AgentResult, Diagnosis } from "../types.js";
 import { logger } from "../util/log.js";
 import type { Worktree } from "./worktree.js";
+import { repairBranchName } from "./repair-branch.js";
 import { finishRepair, repairCost } from "./repair-outcome.js";
 import { emptyTokenUsage } from "../util/cost.js";
 import { findMrSession } from "./mr-session-store.js";
@@ -155,7 +156,7 @@ export async function runRepair(
 	//    session, all within the worktree (repoCwd). It returns a structured
 	//    result, NOT file contents.
 	const agentStartedAt = Date.now();
-	const sourceBranch = `ci-self-heal/${event.ref}-${shortSha(event.sha)}`;
+	const sourceBranch = repairBranchName(event);
 	// MR-triggered pipelines: target the MR's real source_branch (e.g.
 	// guild-policy-outreach) so merging the fix MR updates the source MR's CI.
 	// Push pipelines: target the pipeline's ref directly.
@@ -377,10 +378,89 @@ export async function repairFixed(args: {
 			},
 		});
 	}
+	// Ticket 07: terminal freshness gate — work baseline must still match MR
+	// source branch HEAD before we accept an MR outcome. Escalated paths never
+	// reach here; non-MR events skip (backward compatible).
+	if (event.mrIid != null && event.mrSourceBranch) {
+		try {
+			const currentHead = await glab.fetchBranchHeadSha(
+				event.projectId,
+				event.mrSourceBranch,
+			);
+			if (currentHead !== event.sha) {
+				logger.info(
+					{
+						projectId: event.projectId,
+						pipelineId: event.pipelineId,
+						baseline: event.sha,
+						currentHead,
+						mrSourceBranch: event.mrSourceBranch,
+					},
+					"freshness gate: baseline superseded, discarding repair",
+				);
+				return finishRepair({
+					dingtalk,
+					cwd: deps.cwd,
+					event,
+					removeWorktree: worktree.remove,
+					audit,
+					result: {
+						kind: "failed",
+						summary: "修复基线已被新提交取代，丢弃成果",
+						error: "baseline_superseded",
+						diagnosis: result.diagnosis,
+						diff: patch.diff,
+						metrics: args.agentMetrics,
+						model: result.model,
+					},
+				});
+			}
+		} catch (err) {
+			logger.warn(
+				{
+					err: errMessage(err),
+					projectId: event.projectId,
+					mrSourceBranch: event.mrSourceBranch,
+				},
+				"freshness gate: fetchBranchHeadSha failed — degrading to pass-through",
+			);
+		}
+	}
 	// 两层测试验证（verifyTwoLayer）v1 仍禁用：MR-CI 重跑即为 re-verify；
 	// 其 Mvn/Gradle 硬编码对非 Java 项目误杀，故靠 CI 重跑兜底。
 	void verifyTwoLayer;
-	if (!result.mrUrl) {
+	// Ticket 08: resolve repair MR — GitLab 为事实源，open → push 更新；
+	// closed → 新开并注明；merged / 不存在 → 正常新开。
+	let mrUrl: string;
+	let mrReopenedNote: string | undefined;
+	try {
+		const resolved = await resolveRepairMr({
+			deps,
+			event,
+			repoCwd,
+			patch,
+			diagnosis: result.diagnosis,
+		});
+		if (!resolved.ok) {
+			return finishRepair({
+				dingtalk,
+				cwd: deps.cwd,
+				event,
+				removeWorktree: worktree.remove,
+				audit,
+				result: {
+					kind: "escalated",
+					summary: resolved.summary,
+					diagnosis: result.diagnosis,
+					diff: patch.diff,
+					metrics: args.agentMetrics,
+					model: result.model,
+				},
+			});
+		}
+		mrUrl = resolved.mrUrl;
+		mrReopenedNote = resolved.reopenedNote;
+	} catch (err) {
 		return finishRepair({
 			dingtalk,
 			cwd: deps.cwd,
@@ -388,8 +468,9 @@ export async function repairFixed(args: {
 			removeWorktree: worktree.remove,
 			audit,
 			result: {
-				kind: "escalated",
-				summary: "agent reported fixed but did not create MR (no mrUrl)",
+				kind: "failed",
+				summary: "repair-mr",
+				error: errMessage(err),
 				diagnosis: result.diagnosis,
 				diff: patch.diff,
 				metrics: args.agentMetrics,
@@ -399,7 +480,7 @@ export async function repairFixed(args: {
 	}
 
 	// Monitor the MR's CI + retry by reusing the agent session.
-	const mrIid = parseMrIid(result.mrUrl);
+	const mrIid = parseMrIid(mrUrl);
 	let currentResult = result;
 	let currentPatch = patch;
 	let lastStatus: MrPipelineStatus["status"] | "unmonitored" =
@@ -424,7 +505,7 @@ export async function repairFixed(args: {
 			const newCiLog = await glab.fetchCiLog(event.projectId, st.pipelineId);
 			const cont = await deps.agent.continue(
 				agentInput,
-				result.mrUrl,
+				mrUrl,
 				newCiLog,
 			);
 			if (cont.kind === "escalated") {
@@ -439,7 +520,7 @@ export async function repairFixed(args: {
 						summary: cont.reason,
 						diagnosis: cont.diagnosis,
 						diff: currentPatch.diff,
-						mrUrl: cont.mrUrl ?? result.mrUrl,
+						mrUrl: cont.mrUrl ?? mrUrl,
 						metrics: args.agentMetrics,
 						model: result.model,
 					},
@@ -462,7 +543,7 @@ export async function repairFixed(args: {
 								: `retry G3/diff 违规：${g3b}`,
 						diagnosis: cont.diagnosis,
 						diff: p2.diff,
-						mrUrl: cont.mrUrl ?? result.mrUrl,
+						mrUrl: cont.mrUrl ?? mrUrl,
 						metrics: args.agentMetrics,
 						model: result.model,
 					},
@@ -486,9 +567,10 @@ export async function repairFixed(args: {
 				summary: currentResult.diagnosis.summary,
 				diagnosis: currentResult.diagnosis,
 				diff: currentPatch.diff,
-				mrUrl: currentResult.mrUrl ?? result.mrUrl,
+				mrUrl,
 				metrics: args.agentMetrics,
 				model: result.model,
+				...(mrReopenedNote ? { mrReopenedNote } : {}),
 			},
 		});
 	}
@@ -503,11 +585,59 @@ export async function repairFixed(args: {
 		summary: `MR CI 仍红，重试 ${attempt} 次后转交人工`,
 		diagnosis: currentResult.diagnosis,
 		diff: currentPatch.diff,
-		mrUrl: currentResult.mrUrl ?? result.mrUrl,
+		mrUrl,
 		metrics: args.agentMetrics,
 		model: result.model,
 		},
 	});
+}
+
+/** Ticket 08: GitLab 为事实源，决定原地更新还是新开修复 MR。 */
+export async function resolveRepairMr(args: {
+	deps: WorkerDeps;
+	event: PipelineEvent;
+	repoCwd: string;
+	patch: Patch;
+	diagnosis: Diagnosis;
+}): Promise<
+	| { readonly ok: true; readonly mrUrl: string; readonly reopenedNote?: string }
+	| { readonly ok: false; readonly summary: string }
+> {
+	const { deps, event, repoCwd, patch, diagnosis } = args;
+	const { glab, worktree } = deps;
+	const repairBranch = repairBranchName(event);
+	const targetBranch = event.mrSourceBranch ?? event.ref;
+	const existingMr = await glab.findMrBySourceBranch(event.projectId, repairBranch);
+
+	await worktree.pushBranch(repoCwd, repairBranch);
+
+	if (existingMr?.status === "opened") {
+		if (!existingMr.url) {
+			return { ok: false, summary: "open repair MR missing web_url" };
+		}
+		return { ok: true, mrUrl: existingMr.url };
+	}
+
+	let descriptionPrefix: string | undefined;
+	let reopenedNote: string | undefined;
+	if (existingMr?.status === "closed") {
+		descriptionPrefix = `> 上一个修复 MR !${existingMr.iid} 被关闭，本次为新尝试。\n\n`;
+		reopenedNote = `上一个修复 MR !${existingMr.iid} 被关闭，本次为新尝试。`;
+	}
+
+	const created = await glab.createMr({
+		projectId: event.projectId,
+		sourceBranch: repairBranch,
+		targetBranch,
+		title: `fix(ci): ${diagnosis.summary.slice(0, 80)}`,
+		diagnosis,
+		patch,
+		...(descriptionPrefix ? { descriptionPrefix } : {}),
+	});
+	if (!created.url) {
+		return { ok: false, summary: "createMr returned empty url" };
+	}
+	return { ok: true, mrUrl: created.url, ...(reopenedNote ? { reopenedNote } : {}) };
 }
 
 /** Spill files (CI log / MR diff / diff index) the bot writes into the

@@ -1,11 +1,10 @@
 /**
  * Decision lifecycle hooks.
  *
- * onNewPipeline (T07): when a NEW pipeline event for a project is accepted
- * by the webhook, every awaiting decision of that project is invalidated —
- * humans must never decide on a stale sha. The store transitions the rows in
- * one transaction, each retained scene is cleaned (best-effort), and ONE
- * routed group notification summarizes what was invalidated.
+ * onNewPipeline (T07 / Ticket 04): when a NEW pipeline event is accepted
+ * by the webhook, awaiting decisions are invalidated — by MR when the event
+ * carries mrIid, otherwise by project (non-MR pipeline fallback). Each
+ * invalidated record's session is archived (best-effort) before scene cleanup.
  *
  * startTtlSweep (T08): main-process timer that sweeps expired decisions —
  * delete + scene cleanup + ONE routed notification per project per tick.
@@ -14,15 +13,24 @@
 import type { DingTalkMessage } from "../notify/dingtalk.js";
 import type { GroupMessageSender } from "../notify/pipeline-notification.js";
 import type { ProjectRouter } from "../notify/project-router.js";
+import type { StoredMrSession } from "../pipeline/mr-session-store.js";
 import type { MrTerminalEvent, PipelineEvent } from "../types.js";
 import { logger } from "../util/log.js";
 import { cleanupScene } from "../worker/manager.js";
 import type { DecisionRecord, DecisionStore } from "./store.js";
 
+export type SaveMrSessionFn = (
+	event: PipelineEvent,
+	sourceSessionPath: string,
+	outcome: string,
+) => StoredMrSession | null;
+
 export interface DecisionLifecycleDeps {
 	readonly store: DecisionStore;
 	readonly router: ProjectRouter;
 	readonly sender: GroupMessageSender;
+	/** Archive Pi session before invalidating awaiting decisions (Ticket 04). */
+	readonly saveMrSession?: SaveMrSessionFn;
 }
 
 /** Stop handle for the TTL sweep timer. */
@@ -48,10 +56,14 @@ export function createDecisionLifecycle(
 ): DecisionLifecycle {
 	return {
 		async onNewPipeline(event) {
-			const invalidated = deps.store.invalidateByProject(event.projectId);
+			const invalidated =
+				event.mrIid !== undefined
+					? deps.store.invalidateByMr(event.projectId, event.mrIid)
+					: deps.store.invalidateByProject(event.projectId);
 			if (invalidated.length === 0) return;
 
 			for (const record of invalidated) {
+				archiveSessionBeforeInvalidation(deps, record);
 				await cleanupRecordScene(record);
 			}
 
@@ -118,6 +130,26 @@ export function createDecisionLifecycle(
 			};
 		},
 	};
+}
+
+/** Best-effort session archive before invalidation — never throws. */
+function archiveSessionBeforeInvalidation(
+	deps: DecisionLifecycleDeps,
+	record: DecisionRecord,
+): void {
+	if (!deps.saveMrSession) return;
+	try {
+		const event = JSON.parse(record.event_json) as PipelineEvent;
+		deps.saveMrSession(event, record.session_path, "invalidated");
+	} catch (err) {
+		logger.warn(
+			{
+				err: err instanceof Error ? err.message : String(err),
+				decisionId: record.decision_id,
+			},
+			"mr session archive before invalidation failed (non-fatal)",
+		);
+	}
 }
 
 /** Best-effort scene cleanup for one terminal decision — never throws. */

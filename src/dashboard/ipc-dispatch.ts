@@ -60,6 +60,16 @@ const IPC_DISPATCH: Record<WorkerIpcMessage["type"], IpcHandler> = {
 		});
 		ctx.eventHub.workerProgress(ctx.workerId, { toolCall: msg.name });
 	},
+	control_ack(_ctx, msg) {
+		// Ticket 05: observability ack only; no dashboard state change yet.
+		if (msg.type !== "control_ack") return;
+	},
+	steer_queued(_ctx, msg) {
+		if (msg.type !== "steer_queued") return;
+	},
+	steer_delivered(_ctx, msg) {
+		if (msg.type !== "steer_delivered") return;
+	},
 	metrics_record(ctx, msg) {
 		if (msg.type !== "metrics_record") return;
 		ctx.metricsAggregator.record({

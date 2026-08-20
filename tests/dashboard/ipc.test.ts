@@ -22,6 +22,12 @@ describe("isWorkerIpcMessage", () => {
 		).toBe(true);
 	});
 
+	it("accepts valid control_ack", () => {
+		expect(isWorkerIpcMessage({ type: "control_ack", controlType: "supersede" })).toBe(
+			true,
+		);
+	});
+
 	it("rejects non-object", () => {
 		expect(isWorkerIpcMessage("hello")).toBe(false);
 		expect(isWorkerIpcMessage(null)).toBe(false);

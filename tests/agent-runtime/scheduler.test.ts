@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { PipelineEvent, RepairOutcome } from "../../src/types.js";
+import type { SupersedePayload } from "../../src/worker/control-types.js";
 import { DecisionStore } from "../../src/decision/store.js";
 import type { DecisionRecord } from "../../src/decision/store.js";
 
@@ -859,6 +860,341 @@ describe("parseSkipStages（CIHEAL_SKIP_STAGES env 解析）", () => {
 		expect(parseSkipStages(undefined)).toBeUndefined();
 		expect(parseSkipStages("")).toBeUndefined();
 		expect(parseSkipStages("  ,  ")).toBeUndefined();
+	});
+});
+
+describe("Scheduler — 队列合并 + 绿灯短路（Ticket 03）", () => {
+	const mrSerialPolicy: SchedulingPolicy = {
+		serialKey: (e) => `${e.projectId}:${e.mrIid ?? e.ref}`,
+		maxParallel: 1,
+	};
+
+	it("同 serialKey 连续 enqueue：队列只保留最新 pipeline", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => (release = r));
+		const run = vi.fn(async () => {
+			await gate;
+			return { kind: "escalated" as const, summary: "x" };
+		});
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: mrSerialPolicy,
+			maxWorkers: 1,
+		});
+		scheduler.enqueue(makeEvent("proj-A", 1, 10));
+		while (scheduler.stats().running === 0) {
+			await delay(5);
+		}
+		scheduler.enqueue(makeEvent("proj-A", 2, 10));
+		scheduler.enqueue(makeEvent("proj-A", 3, 10));
+
+		expect(scheduler.stats().queued).toBe(1);
+		expect(scheduler.queueDetails()).toContainEqual({
+			serialKey: "proj-A:10",
+			pipelineId: 3,
+			status: "queued",
+		});
+		expect(scheduler.queueDetails()).not.toContainEqual(
+			expect.objectContaining({ pipelineId: 2, status: "queued" }),
+		);
+
+		release();
+		await scheduler.idle();
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(run.mock.calls.map((c) => c[0].pipelineId).sort()).toEqual([1, 3]);
+	});
+
+	it("被挤掉事件触发 coalescence 通知与审计", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => (release = r));
+		const coalescenceNotifier = vi.fn(async () => {});
+		const lifecycle: Array<{ type: string; data: Record<string, unknown> }> = [];
+		const scheduler = new Scheduler({
+			workerManager: {
+				run: async () => {
+					await gate;
+					return { kind: "escalated" as const, summary: "x" };
+				},
+			},
+			workRoot: "/tmp/w",
+			policy: mrSerialPolicy,
+			maxWorkers: 1,
+			coalescenceNotifier,
+			onLifecycleEvent: (type, data) => lifecycle.push({ type, data }),
+		});
+		scheduler.enqueue(makeEvent("proj-A", 1, 10));
+		while (scheduler.stats().running === 0) {
+			await delay(5);
+		}
+		scheduler.enqueue(makeEvent("proj-A", 2, 10));
+		scheduler.enqueue(makeEvent("proj-A", 3, 10));
+
+		expect(coalescenceNotifier).toHaveBeenCalledOnce();
+		expect(coalescenceNotifier.mock.calls[0][0].pipelineId).toBe(2);
+		expect(coalescenceNotifier.mock.calls[0][1].pipelineId).toBe(3);
+		expect(lifecycle).toContainEqual({
+			type: "pipeline_superseded",
+			data: {
+				supersededPipelineId: 2,
+				supersedingPipelineId: 3,
+				projectId: "proj-A",
+				mrIid: 10,
+			},
+		});
+
+		release();
+		await scheduler.idle();
+	});
+
+	it("出队前 greenChecker 返回 true → 跳过 repair，不起 worker", async () => {
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const greenChecker = vi.fn(async () => true);
+		const greenSkipNotifier = vi.fn(async () => {});
+		const lifecycle: Array<{ type: string; data: Record<string, unknown> }> = [];
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: mrSerialPolicy,
+			maxWorkers: 1,
+			greenChecker,
+			greenSkipNotifier,
+			onLifecycleEvent: (type, data) => lifecycle.push({ type, data }),
+		});
+		scheduler.enqueue(makeEvent("proj-A", 42, 10));
+		await scheduler.idle();
+
+		expect(greenChecker).toHaveBeenCalledOnce();
+		expect(run).not.toHaveBeenCalled();
+		expect(greenSkipNotifier).toHaveBeenCalledOnce();
+		expect(greenSkipNotifier.mock.calls[0][0].pipelineId).toBe(42);
+		expect(lifecycle).toContainEqual({
+			type: "pipeline_green_skipped",
+			data: {
+				pipelineId: 42,
+				projectId: "proj-A",
+				mrIid: 10,
+				sha: "abc1234567890",
+			},
+		});
+		expect(scheduler.stats()).toEqual({
+			running: 0,
+			queued: 0,
+			inflight: 0,
+			serialKeys: [],
+		});
+	});
+
+	it("greenChecker 返回 false → 正常起 worker（无回归）", async () => {
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const greenChecker = vi.fn(async () => false);
+		const greenSkipNotifier = vi.fn(async () => {});
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: mrSerialPolicy,
+			maxWorkers: 1,
+			greenChecker,
+			greenSkipNotifier,
+		});
+		scheduler.enqueue(makeEvent("proj-A", 55, 10));
+		await scheduler.idle();
+
+		expect(greenChecker).toHaveBeenCalledOnce();
+		expect(run).toHaveBeenCalledOnce();
+		expect(greenSkipNotifier).not.toHaveBeenCalled();
+	});
+
+	it("无 mrIid 的事件不走 greenChecker", async () => {
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const greenChecker = vi.fn(async () => true);
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: mrSerialPolicy,
+			maxWorkers: 1,
+			greenChecker,
+		});
+		scheduler.enqueue(makeEvent("proj-A", 66));
+		await scheduler.idle();
+
+		expect(greenChecker).not.toHaveBeenCalled();
+		expect(run).toHaveBeenCalledOnce();
+	});
+});
+
+function makeMrEvent(
+	projectId: string,
+	pipelineId: number,
+	mrIid: number,
+	sha: string,
+): PipelineEvent {
+	return {
+		projectId,
+		pipelineId,
+		ref: `refs/merge-requests/${mrIid}/head`,
+		sha,
+		projectUrl: "https://git.example.com/g/p",
+		mrIid,
+	};
+}
+
+describe("Scheduler — 运行中 supersede steer（Ticket 06）", () => {
+	const mrSerialPolicy: SchedulingPolicy = {
+		serialKey: (e) => `${e.projectId}:${e.mrIid ?? e.ref}`,
+		maxParallel: 1,
+	};
+
+	it("同 serialKey 运行中 enqueue 新 pipeline → sendControl(supersede) 被调用", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => (release = r));
+		let runs = 0;
+		const sendControl = vi.fn(() => true);
+		const lifecycle: Array<{ type: string; data: Record<string, unknown> }> = [];
+		const scheduler = new Scheduler({
+			workerManager: {
+				run: async () => {
+					runs++;
+					if (runs === 1) await gate;
+					return { kind: "escalated" as const, summary: "x" };
+				},
+				sendControl,
+			},
+			workRoot: "/tmp/w",
+			policy: mrSerialPolicy,
+			maxWorkers: 1,
+			onLifecycleEvent: (type, data) => lifecycle.push({ type, data }),
+		});
+
+		const running = makeMrEvent("proj-A", 100, 10, "sha0000000001");
+		scheduler.enqueue(running);
+		while (scheduler.stats().running === 0) {
+			await delay(5);
+		}
+
+		const incoming = makeMrEvent("proj-A", 200, 10, "sha0000000002");
+		scheduler.enqueue(incoming);
+
+		await delay(30);
+
+		expect(sendControl).toHaveBeenCalledOnce();
+		const [eventArg, msgArg] = sendControl.mock.calls[0]!;
+		expect(eventArg.pipelineId).toBe(100);
+		expect(msgArg).toEqual({
+			type: "supersede",
+			payload: {
+				oldSha: "sha0000000001",
+				newSha: "sha0000000002",
+				newPipelineId: 200,
+			} satisfies SupersedePayload,
+		});
+		expect(lifecycle.some(
+			(e) =>
+				e.type === "pipeline_supersede_steer" &&
+				e.data.runningPipelineId === 100 &&
+				e.data.supersedingPipelineId === 200 &&
+				e.data.oldSha === "sha0000000001" &&
+				e.data.newSha === "sha0000000002",
+		)).toBe(true);
+
+		release();
+		await scheduler.idle();
+	});
+
+	it("无运行 worker 时 enqueue 不调用 sendControl", async () => {
+		const sendControl = vi.fn(() => true);
+		const scheduler = new Scheduler({
+			workerManager: {
+				run: async () => ({ kind: "escalated" as const, summary: "x" }),
+				sendControl,
+			},
+			workRoot: "/tmp/w",
+			policy: mrSerialPolicy,
+			maxWorkers: 1,
+		});
+		scheduler.enqueue(makeMrEvent("proj-A", 1, 10, "sha1"));
+		await scheduler.idle();
+		expect(sendControl).not.toHaveBeenCalled();
+	});
+
+	it("未送达窗口内连续 supersede → pending 只保留最新 sha，第二次 sendControl 带合并链", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => (release = r));
+		let runs = 0;
+		const sendControl = vi.fn(() => true);
+		const lifecycle: Array<{ type: string; data: Record<string, unknown> }> = [];
+		const scheduler = new Scheduler({
+			workerManager: {
+				run: async () => {
+					runs++;
+					if (runs === 1) await gate;
+					return { kind: "escalated" as const, summary: "x" };
+				},
+				sendControl,
+			},
+			workRoot: "/tmp/w",
+			policy: mrSerialPolicy,
+			maxWorkers: 1,
+			onLifecycleEvent: (type, data) => lifecycle.push({ type, data }),
+		});
+
+		scheduler.enqueue(makeMrEvent("proj-A", 100, 10, "sha0000000001"));
+		while (scheduler.stats().running === 0) await delay(5);
+
+		scheduler.enqueue(makeMrEvent("proj-A", 200, 10, "sha0000000002"));
+		scheduler.enqueue(makeMrEvent("proj-A", 300, 10, "sha0000000003"));
+
+		expect(sendControl).toHaveBeenCalledTimes(2);
+		const lastMsg = sendControl.mock.calls[1]![1];
+		expect(lastMsg.payload.newSha).toBe("sha0000000003");
+		expect(lastMsg.payload.newPipelineId).toBe(300);
+		expect(lifecycle).toContainEqual(
+			expect.objectContaining({
+				type: "steer_merged",
+				data: expect.objectContaining({
+					newSha: "sha0000000003",
+					supersededChain: [200, 300],
+				}),
+			}),
+		);
+
+		release();
+		await scheduler.idle();
+	});
+
+	it("onSteerDelivered 后再次 supersede 开新 pending 窗口", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => (release = r));
+		let runs = 0;
+		const sendControl = vi.fn(() => true);
+		const scheduler = new Scheduler({
+			workerManager: {
+				run: async () => {
+					runs++;
+					if (runs === 1) await gate;
+					return { kind: "escalated" as const, summary: "x" };
+				},
+				sendControl,
+			},
+			workRoot: "/tmp/w",
+			policy: mrSerialPolicy,
+			maxWorkers: 1,
+		});
+
+		const serialKey = "proj-A:10";
+		scheduler.enqueue(makeMrEvent("proj-A", 100, 10, "sha0000000001"));
+		while (scheduler.stats().running === 0) await delay(5);
+
+		scheduler.enqueue(makeMrEvent("proj-A", 200, 10, "sha0000000002"));
+		scheduler.onSteerDelivered(serialKey);
+		scheduler.enqueue(makeMrEvent("proj-A", 300, 10, "sha0000000003"));
+
+		expect(sendControl).toHaveBeenCalledTimes(2);
+		expect(sendControl.mock.calls[1]![1].payload.newSha).toBe("sha0000000003");
+		expect(sendControl.mock.calls[1]![1].payload.newPipelineId).toBe(300);
+
+		release();
+		await scheduler.idle();
 	});
 });
 

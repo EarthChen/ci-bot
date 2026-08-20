@@ -66,6 +66,7 @@ function retainedWorktree(repoCwd: string): {
 		remove: async (cwd: string) => {
 			removeCalls.push(cwd);
 		},
+		pushBranch: async () => {},
 	};
 	void repoCwd;
 	return { worktree, removeCalls };
@@ -75,6 +76,8 @@ function stubGlab(): GitLabClient {
 	return {
 		fetchCiLog: async () => "test failure",
 		fetchMrDiff: async () => "",
+		findMrBySourceBranch: async () => null,
+		fetchBranchHeadSha: async () => "deadbeef",
 		fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: 999 }),
 		createMr: async () => ({ url: "https://mr/x" }),
 	};
@@ -152,9 +155,7 @@ describe("runResumeRepair — 恢复编排（T06）", () => {
 		});
 		expect(out.kind).toBe("mr");
 		if (out.kind === "mr") {
-			expect(out.mrUrl).toBe(
-				"https://gitlab.example.com/g/p/-/merge_requests/9",
-			);
+			expect(out.mrUrl).toBe("https://mr/x");
 		}
 	});
 
@@ -275,6 +276,8 @@ describe("runResumeRepair — widen 扩围（ADR-0009）", () => {
 			fetchCiLog: async () => "test failure",
 			fetchMrDiff: async () =>
 				"diff --git a/src/main/java/com/example/Calculator.java b/src/main/java/com/example/Calculator.java",
+			findMrBySourceBranch: async () => null,
+			fetchBranchHeadSha: async () => "deadbeef",
 			fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: 999 }),
 			createMr: async () => ({ url: "https://mr/x" }),
 		};

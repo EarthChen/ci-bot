@@ -80,7 +80,7 @@
    - awaiting_decision → 存档 session → 作废决策、清现场 → 新 pipeline 走 reopen
    - 已归档 → `SessionManager.open` + `compact()` + continue（ADR-0007 机制，存档条件放宽）
    - 无历史 → 全新 session
-2. **Steer 机制**：主进程→worker 信号复用现有 IPC 管道（`CIHEAL_WORKER_IPC`）的反向通道；worker 收到后对自己的活 session 调 `AgentSession.steer(text)`。steer 消息内容：old sha→new sha、变更文件清单/diff 摘要、处置指令（fetch→比对→patch 迁移或 reset，agent 自裁）；若新 pipeline 已绿，附「可收尾」。合并语义：仅当前一条 steer 未送达时，新事件不叠加、把待送达内容更新为最新 sha；送达信号以 SDK `queue_update` 事件判定。**不变式：agent 看到的 sha 序列单调收敛到真实最新，可跳过中间态，永不落后、永不静默丢失。**
+2. **Steer 机制**（spike-01 定论，2026-08-20）：主进程→worker 信号复用现有 IPC 管道（`CIHEAL_WORKER_IPC`）的反向通道；worker 收到后对自己的活 session 调 `AgentSession.steer(text)`。**注入时点 = 当前 assistant turn 的全部 tool 执行完毕之后、下一次 LLM 调用之前**（非立即打断长时 bash/mvn；RPC 文档 "mid-run" 措辞与实现不符，以 agent-loop 为准）。steer 消息内容：old sha→new sha、变更文件清单/diff 摘要、处置指令（fetch→比对→patch 迁移或 reset，agent 自裁）；若新 pipeline 已绿，附「可收尾」。**未送达合并**：SDK 无 replace API；bot 维护 `pendingSteerPayload`，未送达窗口内新事件 → `clearQueue()` + `steer(latest)`（不叠加多条）。**送达判定**：`queue_update.steering` 由非空变空，或匹配 `message_start`（user）；入队时 `queue_update` 可靠，session dispose/abort 未送达则丢失（bot 重置 pending + 审计 `steerLost`）。不变式：agent 看到的 sha 序列单调收敛到真实最新，可跳过中间态，永不落后、永不静默丢失；终局新鲜度闸门兜底 steer 延迟。
 3. **Session 寿命 = MR 寿命**：存档触发条件从「带 MR 成果的终局」放宽为**所有终局 + 决策作废时**；存档键、LRU（上限 32）、latest-wins 不变；清理挂 onMrTerminal + LRU。复用入口统一为 open + compact + continue，prompt 强制声明「MR 已更新到新 commit、不得沿用旧诊断」；任何环节失败降级全新 session，不阻断修复。
 4. **修复 MR 恒一**：修复分支名改为按源 MR 稳定（`ci-self-heal/<sourceBranch>`，去掉 sha 钉死）。修复时按 `source_branch` 查询 GitLab：open → push 原地更新（force-push/rebase 后 diff 自动按最新 target 重算）；merged / closed / 不存在 → 新开 MR。不建本地状态机。close 后重开在 MR 描述与群通知注明「上一个修复 MR !N 被关闭，本次为新尝试」。
 5. **终局新鲜度闸门**：createMR 前校验工作基线对照 MR 最新 HEAD——被取代则丢弃成果、不开 MR、发通知、记审计。确定性闸门，与 agent 自律两层独立；转交类终局不受影响。
@@ -89,8 +89,8 @@
 8. **分层不动**：event : worker 进程 : session = 1:1:1，per-event 子进程隔离（G4）不变。明确否决两个替代方案：长驻 per-MR worker（隔离模型崩塌、空闲驻留占资源、并发槽位计数复杂化）；一个 worker 持有多个并发 session（预算/IPC/审计粒度语义模糊）。session 复用指 jsonl 文件寿命，不是进程寿命。
 9. **词汇表同步**：CONTEXT.md 的 *Decision invalidation* 词条「same project」改为「same MR」；新增 *Supersede* 词条（新提交对同 MR 旧 sha 上 bot 工作的取代语义）。
 10. **实现前 spike（两项，结果可能微调实现但不改不变式）**：
-    - steer 打断长时工具调用（如 mvn 跑到一半）的精确时点——若 SDK 实际为「turn 边界注入」，实现退化为边界注入，不变式仍成立；
-    - 待送达 steer 的内容替换/合并姿势（`queue_update` 事件作送达信号是否可靠）。
+    - ~~steer 打断长时工具调用的精确时点~~ → **已定论**（`.scratch/mr-supersede/spike-01-steer-findings.md`）：turn 边界注入，实现退化为边界注入，不变式仍成立；
+    - ~~待送达 steer 的内容替换/合并姿势~~ → **已定论**：`clearQueue()` + `steer(latest)`，bot 维护 pending 状态；送达双信号（queue 空转 + message_start）。
 
 ## Testing Decisions
 

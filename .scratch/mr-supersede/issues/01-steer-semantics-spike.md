@@ -4,9 +4,12 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] steer 打断长时工具调用的时点有定论（立即打断 / 当前工具完成后 / turn 边界），附可复现的验证证据
-- [ ] `queue_update` 事件作为 steer 送达信号的可靠性有定论，覆盖 session 在送达前终止的边界
-- [ ] 未送达 steer 的内容替换/合并姿势有定论（SDK 原生支持与否、bot 侧需要维护什么状态）
-- [ ] spike 结论落 feature 目录报告，并据此更新 spec 中对 06 的实现预期
+- [x] steer 打断长时工具调用的时点有定论（立即打断 / 当前工具完成后 / turn 边界），附可复现的验证证据
+- [x] `queue_update` 事件作为 steer 送达信号的可靠性有定论，覆盖 session 在送达前终止的边界
+- [x] 未送达 steer 的内容替换/合并姿势有定论（SDK 原生支持与否、bot 侧需要维护什么状态）
+- [x] spike 结论落 feature 目录报告，并据此更新 spec 中对 06 的实现预期
+
+**Report:** `.scratch/mr-supersede/spike-01-steer-findings.md`  
+**Tests:** `tests/spike/steer-semantics.test.ts`

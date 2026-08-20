@@ -8,13 +8,14 @@ import { DecisionStore } from "../../src/decision/store.js";
 import { createDecisionLifecycle } from "../../src/decision/lifecycle.js";
 import type { PipelineEvent } from "../../src/types.js";
 
-function makeEvent(projectId: string, pipelineId: number): PipelineEvent {
+function makeEvent(projectId: string, pipelineId: number, mrIid?: number): PipelineEvent {
 	return {
 		projectId,
 		pipelineId,
 		ref: "main",
 		sha: "abcdef1234567890",
 		projectUrl: `https://git.example.com/${projectId}`,
+		...(mrIid !== undefined ? { mrIid } : {}),
 	};
 }
 
@@ -178,6 +179,119 @@ describe("createDecisionLifecycle — onNewPipeline", () => {
 		expect(sender.sentGroups).toHaveLength(1);
 		expect(sender.sentGroups[0].message.text).toContain("D-47-good");
 		expect(sender.sentGroups[0].message.text).toContain("D-48-corrupt");
+	});
+
+	it("with mrIid: invalidates only awaiting decisions for that MR, not other MRs", async () => {
+		const mrEventJson = (mrIid: number) =>
+			JSON.stringify(makeEvent("proj-A", 42, mrIid));
+		const cwd281a = makeScene("work-mr281-a");
+		const cwd281b = makeScene("work-mr281-b");
+		const cwd282 = makeScene("work-mr282");
+		seedAwaiting("D-mr281-a", "proj-A", cwd281a, mrEventJson(281));
+		seedAwaiting("D-mr281-b", "proj-A", cwd281b, mrEventJson(281));
+		seedAwaiting("D-mr282", "proj-A", cwd282, mrEventJson(282));
+		const lifecycle = createDecisionLifecycle({ store, router: router(), sender });
+
+		await lifecycle.onNewPipeline(makeEvent("proj-A", 999, 281));
+
+		expect(store.get("D-mr281-a")!.status).toBe("invalidated");
+		expect(store.get("D-mr281-b")!.status).toBe("invalidated");
+		expect(existsSync(cwd281a)).toBe(false);
+		expect(existsSync(cwd281b)).toBe(false);
+		expect(store.get("D-mr282")!.status).toBe("awaiting_decision");
+		expect(existsSync(cwd282)).toBe(true);
+
+		expect(sender.sentGroups).toHaveLength(1);
+		expect(sender.sentGroups[0].message.text).toContain("D-mr281-a");
+		expect(sender.sentGroups[0].message.text).toContain("D-mr281-b");
+		expect(sender.sentGroups[0].message.text).not.toContain("D-mr282");
+	});
+
+	it("without mrIid: falls back to invalidateByProject (all awaiting in project)", async () => {
+		const mrEventJson = (mrIid: number) =>
+			JSON.stringify(makeEvent("proj-A", 42, mrIid));
+		const cwd281 = makeScene("work-fallback-281");
+		const cwd282 = makeScene("work-fallback-282");
+		seedAwaiting("D-fb-281", "proj-A", cwd281, mrEventJson(281));
+		seedAwaiting("D-fb-282", "proj-A", cwd282, mrEventJson(282));
+		const lifecycle = createDecisionLifecycle({ store, router: router(), sender });
+
+		await lifecycle.onNewPipeline(makeEvent("proj-A", 999));
+
+		expect(store.get("D-fb-281")!.status).toBe("invalidated");
+		expect(store.get("D-fb-282")!.status).toBe("invalidated");
+		expect(existsSync(cwd281)).toBe(false);
+		expect(existsSync(cwd282)).toBe(false);
+	});
+
+	it("archives session with outcome invalidated before cleaning each scene", async () => {
+		const mrEventJson = (mrIid: number) =>
+			JSON.stringify(makeEvent("proj-A", 42, mrIid));
+		const cwd = makeScene("work-archive");
+		const sessionFile = join(cwd, "session.jsonl");
+		writeFileSync(sessionFile, '{"type":"header"}\n');
+		store.create({
+			decision_id: "D-archive",
+			pipeline_id: "42",
+			project_id: "proj-A",
+			event_json: mrEventJson(281),
+			cwd_path: cwd,
+			session_path: sessionFile,
+			branch: "ci-self-heal/main-abcdef12",
+			expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+		});
+		const saveMrSession = vi.fn(() => null);
+		const lifecycle = createDecisionLifecycle({
+			store,
+			router: router(),
+			sender,
+			saveMrSession,
+		});
+
+		await lifecycle.onNewPipeline(makeEvent("proj-A", 999, 281));
+
+		expect(saveMrSession).toHaveBeenCalledOnce();
+		expect(saveMrSession).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "proj-A", mrIid: 281, pipelineId: 42 }),
+			sessionFile,
+			"invalidated",
+		);
+		expect(store.get("D-archive")!.status).toBe("invalidated");
+	});
+
+	it("saveMrSession failure does not block invalidation or cleanup", async () => {
+		const mrEventJson = (mrIid: number) =>
+			JSON.stringify(makeEvent("proj-A", 42, mrIid));
+		const cwd = makeScene("work-save-fail");
+		const sessionFile = join(cwd, "session.jsonl");
+		writeFileSync(sessionFile, '{"type":"header"}\n');
+		store.create({
+			decision_id: "D-save-fail",
+			pipeline_id: "42",
+			project_id: "proj-A",
+			event_json: mrEventJson(281),
+			cwd_path: cwd,
+			session_path: sessionFile,
+			branch: "ci-self-heal/main-abcdef12",
+			expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+		});
+		const saveMrSession = vi.fn(() => {
+			throw new Error("disk full");
+		});
+		const lifecycle = createDecisionLifecycle({
+			store,
+			router: router(),
+			sender,
+			saveMrSession,
+		});
+
+		await expect(
+			lifecycle.onNewPipeline(makeEvent("proj-A", 999, 281)),
+		).resolves.toBeUndefined();
+
+		expect(store.get("D-save-fail")!.status).toBe("invalidated");
+		expect(sender.sentGroups).toHaveLength(1);
+		expect(sender.sentGroups[0].message.text).toContain("D-save-fail");
 	});
 });
 

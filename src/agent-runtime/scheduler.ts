@@ -24,6 +24,8 @@ import type {
 	EscalationDecision,
 	EscalationNotifier,
 } from "../notify/escalation-notifier.js";
+import type { SupersedePayload, WorkerControlMessage } from "../worker/control-types.js";
+import { repairBranchName } from "../pipeline/repair-branch.js";
 
 /** Default decision TTL: 24h (overridable via CIHEAL_DECISION_TTL_MS). */
 const DEFAULT_DECISION_TTL_MS = 86_400_000;
@@ -35,6 +37,16 @@ export interface ScheduledWorker {
 	 *  resume branch is T06). Optional so repair-only workers still conform;
 	 *  enqueueResume rejects loud when it is missing. */
 	runResume?(task: ResumeTask): Promise<RepairOutcome>;
+	/** 向运行中的 worker 发送控制消息（T05/T06 reverse IPC）。 */
+	sendControl?(event: PipelineEvent, msg: WorkerControlMessage): boolean;
+}
+
+/** Optional metadata for supersede steer (changed files from glab diff). */
+export interface SupersedeProvider {
+	getChangedFiles?(
+		running: PipelineEvent,
+		incoming: PipelineEvent,
+	): Promise<readonly string[] | undefined>;
 }
 
 /**
@@ -93,12 +105,31 @@ export interface SchedulerDeps {
 	readonly skipStages?: readonly string[];
 	/** Optional lifecycle event callback (dashboard integration). */
 	readonly onLifecycleEvent?: (type: string, data: Record<string, unknown>) => void;
+	/** Notifies when a queued pipeline is superseded by a newer same-key event. */
+	readonly coalescenceNotifier?: (
+		superseded: PipelineEvent,
+		superseding: PipelineEvent,
+	) => Promise<void>;
+	/** Checks whether the MR's latest pipeline is already green before repair. */
+	readonly greenChecker?: (event: PipelineEvent) => Promise<boolean>;
+	/** Notifies when a dequeued repair is skipped because the MR is already green. */
+	readonly greenSkipNotifier?: (event: PipelineEvent) => Promise<void>;
+	/** Optional changed-files provider for running-worker supersede steer. */
+	readonly supersedeProvider?: SupersedeProvider;
 }
 
 export type EnqueueStatus = "queued" | "duplicate" | "skipped";
 
 interface QueueItem {
 	readonly event: PipelineEvent;
+}
+
+interface PendingSteerState {
+	payload: SupersedePayload;
+	queuedAt: string;
+	delivered: boolean;
+	supersededChain: number[];
+	runningPipelineId: number;
 }
 
 /** Fresh per-event work dir (the runtime owns the work-root layout). */
@@ -126,6 +157,10 @@ export class Scheduler {
 	private readonly activeKeys = new Set<string>();
 	/** Running work keyed by serialKey (at most one runner per key). */
 	private readonly runningByKey = new Map<string, { pipelineId: number }>();
+	/** Full running event per serialKey (for supersede oldSha). */
+	private readonly runningEventByKey = new Map<string, PipelineEvent>();
+	/** Undelivered steer merge window per serialKey (ticket 06). */
+	private readonly pendingSteerByKey = new Map<string, PendingSteerState>();
 	private crashCount = 0;
 	private readonly effectiveCap: number;
 	/** Per-key promise chains keeping same-project resumes FIFO (T05). */
@@ -158,16 +193,170 @@ export class Scheduler {
 			);
 			return "skipped";
 		}
+		const serialKey = this.deps.policy.serialKey(event);
+		const queuedIdx = this.queue.findIndex(
+			(item) => this.deps.policy.serialKey(item.event) === serialKey,
+		);
+		if (queuedIdx >= 0) {
+			const superseded = this.queue[queuedIdx]!.event;
+			this.inflight.delete(dedupKey(superseded));
+			this.queue[queuedIdx] = { event };
+			this.inflight.add(key);
+			this.emitSuperseded(superseded, event);
+			void this.maybeSteerRunningWorker(event);
+			void this.pump();
+			return "queued";
+		}
 		this.inflight.add(key);
 		this.queue.push({ event });
 		this.deps.onLifecycleEvent?.("pipeline_enqueued", { pipelineId: event.pipelineId, projectId: event.projectId, ref: event.ref });
+		void this.maybeSteerRunningWorker(event);
 		void this.pump();
 		return "queued";
 	}
 
-	/** True when every failed stage is in the exclusion list. Degrades to
-	 *  false (repair as usual) when nothing is known about the failure stages
-	 *  or no exclusion is configured. */
+	/**
+	 * Worker IPC: steer was injected into the live session (ticket 06).
+	 * Resets the undelivered merge window for this serial key.
+	 */
+	onSteerDelivered(serialKey: string): void {
+		const pending = this.pendingSteerByKey.get(serialKey);
+		if (!pending) return;
+		pending.delivered = true;
+		this.deps.onLifecycleEvent?.("steer_delivered", {
+			serialKey,
+			newSha: pending.payload.newSha,
+			newPipelineId: pending.payload.newPipelineId,
+			runningPipelineId: pending.runningPipelineId,
+			steerQueuedAt: pending.queuedAt,
+			steerDeliveredAt: new Date().toISOString(),
+			supersededChain: pending.supersededChain,
+		});
+		this.pendingSteerByKey.delete(serialKey);
+	}
+
+	/** Worker ended with undelivered steer — audit steerLost (ticket 06). */
+	onSteerLost(serialKey: string): void {
+		const pending = this.pendingSteerByKey.get(serialKey);
+		if (!pending || pending.delivered) return;
+		this.deps.onLifecycleEvent?.("steer_lost", {
+			serialKey,
+			newSha: pending.payload.newSha,
+			newPipelineId: pending.payload.newPipelineId,
+			runningPipelineId: pending.runningPipelineId,
+			steerQueuedAt: pending.queuedAt,
+			supersededChain: pending.supersededChain,
+		});
+		this.pendingSteerByKey.delete(serialKey);
+	}
+
+	private async maybeSteerRunningWorker(incoming: PipelineEvent): Promise<void> {
+		const serialKey = this.deps.policy.serialKey(incoming);
+		if (!this.activeKeys.has(serialKey)) return;
+		const running = this.runningEventByKey.get(serialKey);
+		const workerManager = this.deps.workerManager;
+		if (!running || !workerManager.sendControl) return;
+
+		let changedFiles: readonly string[] | undefined;
+		const provider = this.deps.supersedeProvider?.getChangedFiles;
+		if (provider) {
+			try {
+				changedFiles = await provider(running, incoming);
+			} catch (err) {
+				logger.warn({ err, running, incoming }, "supersede changed-files lookup failed");
+			}
+		}
+
+		let greenStatus: boolean | undefined;
+		if (incoming.mrIid != null && this.deps.greenChecker) {
+			try {
+				greenStatus = await this.deps.greenChecker(incoming);
+			} catch (err) {
+				logger.warn({ err, incoming }, "supersede green check failed");
+			}
+		}
+
+		const basePayload: SupersedePayload = {
+			oldSha: running.sha,
+			newSha: incoming.sha,
+			newPipelineId: incoming.pipelineId,
+			...(changedFiles?.length ? { changedFiles } : {}),
+			...(greenStatus === true ? { greenStatus: true } : {}),
+		};
+
+		const existing = this.pendingSteerByKey.get(serialKey);
+		const queuedAt = new Date().toISOString();
+		let merged = false;
+		let payload = basePayload;
+		let supersededChain: number[];
+
+		if (existing && !existing.delivered) {
+			merged = true;
+			payload = basePayload;
+			supersededChain = [...existing.supersededChain, incoming.pipelineId];
+			existing.payload = payload;
+			existing.supersededChain = supersededChain;
+			this.deps.onLifecycleEvent?.("steer_merged", {
+				serialKey,
+				runningPipelineId: running.pipelineId,
+				supersedingPipelineId: incoming.pipelineId,
+				oldSha: payload.oldSha,
+				newSha: payload.newSha,
+				supersededChain,
+				steerQueuedAt: existing.queuedAt,
+			});
+		} else {
+			supersededChain = [incoming.pipelineId];
+			this.pendingSteerByKey.set(serialKey, {
+				payload,
+				queuedAt,
+				delivered: false,
+				supersededChain,
+				runningPipelineId: running.pipelineId,
+			});
+		}
+
+		const sent = await this.sendSupersedeControl(running, payload);
+		if (!sent) {
+			logger.info(
+				{ serialKey, incoming: incoming.pipelineId },
+				"supersede steer dropped: sendControl failed",
+			);
+			return;
+		}
+
+		this.deps.onLifecycleEvent?.("pipeline_supersede_steer", {
+			projectId: incoming.projectId,
+			mrIid: incoming.mrIid,
+			serialKey,
+			runningPipelineId: running.pipelineId,
+			supersedingPipelineId: incoming.pipelineId,
+			oldSha: payload.oldSha,
+			newSha: payload.newSha,
+			newPipelineId: incoming.pipelineId,
+			steerQueuedAt: existing?.queuedAt ?? queuedAt,
+			merged,
+			supersededChain,
+			...(greenStatus === true ? { greenStatus: true } : {}),
+		});
+	}
+
+	/** Retry sendControl briefly — worker IPC registers right after spawn. */
+	private async sendSupersedeControl(
+		running: PipelineEvent,
+		payload: SupersedePayload,
+	): Promise<boolean> {
+		const send = this.deps.workerManager.sendControl;
+		if (!send) return false;
+		for (let attempt = 0; attempt < 20; attempt++) {
+			if (send.call(this.deps.workerManager, running, { type: "supersede", payload })) {
+				return true;
+			}
+			await new Promise((r) => setTimeout(r, 50));
+		}
+		return false;
+	}
+
 	private stageExcluded(event: PipelineEvent): boolean {
 		const skip = this.deps.skipStages;
 		if (!skip || skip.length === 0) return false;
@@ -187,6 +376,7 @@ export class Scheduler {
 			const key = this.deps.policy.serialKey(item.event);
 			this.activeKeys.add(key);
 			this.runningByKey.set(key, { pipelineId: item.event.pipelineId });
+			this.runningEventByKey.set(key, item.event);
 			this.running++;
 			// Detach: pump() must not await per-item work, or concurrency caps.
 			void this.runOne(item)
@@ -195,18 +385,82 @@ export class Scheduler {
 					this.running--;
 					this.activeKeys.delete(key);
 					this.runningByKey.delete(key);
+					this.onSteerLost(key);
+					this.runningEventByKey.delete(key);
 					void this.pump();
 				});
 		}
 	}
 
+	private async shouldSkipGreen(event: PipelineEvent): Promise<boolean> {
+		const checker = this.deps.greenChecker;
+		if (!checker) return false;
+		try {
+			return await checker(event);
+		} catch (err) {
+			logger.warn({ err, event }, "green check failed — proceeding with repair");
+			return false;
+		}
+	}
+
+	private async handleGreenSkip(event: PipelineEvent): Promise<void> {
+		logger.info(
+			{ projectId: event.projectId, pipelineId: event.pipelineId, mrIid: event.mrIid },
+			"scheduler green skip",
+		);
+		this.deps.onLifecycleEvent?.("pipeline_green_skipped", {
+			pipelineId: event.pipelineId,
+			projectId: event.projectId,
+			mrIid: event.mrIid,
+			sha: event.sha,
+		});
+		const notifier = this.deps.greenSkipNotifier;
+		if (!notifier) return;
+		try {
+			await notifier(event);
+		} catch (err) {
+			logger.error({ err, event }, "green skip notification failed");
+		}
+	}
+
+	private emitSuperseded(
+		superseded: PipelineEvent,
+		superseding: PipelineEvent,
+	): void {
+		logger.info(
+			{
+				supersededPipelineId: superseded.pipelineId,
+				supersedingPipelineId: superseding.pipelineId,
+				projectId: superseded.projectId,
+			},
+			"scheduler queue coalescence",
+		);
+		this.deps.onLifecycleEvent?.("pipeline_superseded", {
+			supersededPipelineId: superseded.pipelineId,
+			supersedingPipelineId: superseding.pipelineId,
+			projectId: superseded.projectId,
+			mrIid: superseded.mrIid,
+		});
+		const notifier = this.deps.coalescenceNotifier;
+		if (!notifier) return;
+		void notifier(superseded, superseding).catch((err) =>
+			logger.error({ err, superseded, superseding }, "coalescence notification failed"),
+		);
+	}
+
 	private async runOne(item: QueueItem): Promise<void> {
 		const { event } = item;
-		const cwd = workerWorkDir(this.deps.workRoot, event);
-		const workerId = `${event.projectId}-${event.pipelineId}`;
-		this.deps.onLifecycleEvent?.("worker_started", { workerId, pipelineId: event.pipelineId, projectId: event.projectId, cwd });
-		const startedAt = Date.now();
 		try {
+			if (event.mrIid != null && this.deps.greenChecker) {
+				if (await this.shouldSkipGreen(event)) {
+					await this.handleGreenSkip(event);
+					return;
+				}
+			}
+			const cwd = workerWorkDir(this.deps.workRoot, event);
+			const workerId = `${event.projectId}-${event.pipelineId}`;
+			this.deps.onLifecycleEvent?.("worker_started", { workerId, pipelineId: event.pipelineId, projectId: event.projectId, cwd });
+			const startedAt = Date.now();
 			const outcome = await this.deps.workerManager.run(event, cwd);
 			this.crashCount = 0; // reset on success — transient crashes don't accumulate.
 			this.deps.onLifecycleEvent?.("worker_done", { workerId, outcome: outcome.kind, durationMs: Date.now() - startedAt });
@@ -271,7 +525,7 @@ export class Scheduler {
 			cwd_path: cwd,
 			// The exact session jsonl is discovered at resume time (T06).
 			session_path: join(cwd, ".pi-agent"),
-			branch: `ci-self-heal/${event.ref}-${event.sha.slice(0, 8)}`,
+			branch: repairBranchName(event),
 			expires_at: new Date(Date.now() + ttlMs).toISOString(),
 			// G3 扩围（ADR-0009）：widenable 转交冻入清单，/heal widen 依赖它。
 			...(oosPaths?.length ? { oos_paths: JSON.stringify(oosPaths) } : {}),
@@ -389,6 +643,7 @@ export class Scheduler {
 		}
 		this.activeKeys.add(key);
 		this.runningByKey.set(key, { pipelineId: task.event.pipelineId });
+		this.runningEventByKey.set(key, task.event);
 		this.running++;
 		try {
 			const outcome = await this.deps.workerManager.runResume!(task);
@@ -416,6 +671,8 @@ export class Scheduler {
 			this.running--;
 			this.activeKeys.delete(key);
 			this.runningByKey.delete(key);
+			this.onSteerLost(key);
+			this.runningEventByKey.delete(key);
 			void this.pump();
 		}
 	}

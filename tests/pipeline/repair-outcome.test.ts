@@ -364,7 +364,7 @@ describe("finishRepair — ADR-0007 session 存档（跨 pipeline 复用）", ()
 		expect(findMrSession(mrEvent)!.meta.outcome).toBe("escalated");
 	});
 
-	it("failed → 不存档（无 MR 成果）", async () => {
+	it("failed 终局 + 有 mrIid → 存档 session（ADR-0011 所有终局均存档）", async () => {
 		seedSession(cwd);
 		await finishRepair({
 			dingtalk: dt,
@@ -373,7 +373,21 @@ describe("finishRepair — ADR-0007 session 存档（跨 pipeline 复用）", ()
 			removeWorktree,
 			result: { kind: "failed", summary: "worktree", error: "x" },
 		});
-		expect(findMrSession(mrEvent)).toBeNull();
+		const found = findMrSession(mrEvent);
+		expect(found).not.toBeNull();
+		expect(found!.meta.outcome).toBe("failed");
+	});
+
+	it("escalated 无 mrUrl → 同样存档", async () => {
+		seedSession(cwd);
+		await finishRepair({
+			dingtalk: dt,
+			cwd,
+			event: mrEvent,
+			removeWorktree,
+			result: { kind: "escalated", summary: "handoff" },
+		});
+		expect(findMrSession(mrEvent)!.meta.outcome).toBe("escalated");
 	});
 
 	it("无 mrIid（push pipeline）→ 不存档", async () => {

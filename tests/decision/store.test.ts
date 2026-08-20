@@ -7,8 +7,8 @@ import { DecisionStore } from "../../src/decision/store.js";
 import type { DecisionRecord, DecisionStatus } from "../../src/decision/store.js";
 import { sanitizeDecision } from "../../src/dashboard/routes.js";
 
-function makeEvent(projectId = "proj-1", pipelineId = "pipe-1") {
-	return { projectId, pipelineId, sha: "abc123", ref: "main" };
+function makeEvent(projectId = "proj-1", pipelineId = "pipe-1", mrIid?: number) {
+	return { projectId, pipelineId, sha: "abc123", ref: "main", ...(mrIid !== undefined ? { mrIid } : {}) };
 }
 
 function makeCreateParams(overrides: Partial<DecisionRecord> = {}): Omit<
@@ -308,6 +308,92 @@ describe("DecisionStore", () => {
 			expect(() => store.sweepExpired()).toThrow(/boom/);
 			expect(store.get("D-a")).toBeDefined();
 			expect(store.get("D-b")).toBeDefined();
+		});
+	});
+
+	describe("invalidateByMr", () => {
+		it("invalidates only awaiting decisions whose event_json mrIid matches", () => {
+			store.create(
+				makeCreateParams({
+					decision_id: "D-mr281-a",
+					project_id: "proj-A",
+					event_json: JSON.stringify(makeEvent("proj-A", "pipe-1", 281)),
+				}),
+			);
+			store.create(
+				makeCreateParams({
+					decision_id: "D-mr282",
+					project_id: "proj-A",
+					pipeline_id: "pipe-2",
+					event_json: JSON.stringify(makeEvent("proj-A", "pipe-2", 282)),
+				}),
+			);
+			store.create(
+				makeCreateParams({
+					decision_id: "D-mr281-b",
+					project_id: "proj-A",
+					pipeline_id: "pipe-3",
+					event_json: JSON.stringify(makeEvent("proj-A", "pipe-3", 281)),
+				}),
+			);
+			store.create(
+				makeCreateParams({
+					decision_id: "D-other-proj",
+					project_id: "proj-B",
+					event_json: JSON.stringify(makeEvent("proj-B", "pipe-4", 281)),
+				}),
+			);
+
+			const invalidated = store.invalidateByMr("proj-A", 281);
+
+			expect(invalidated.map((r) => r.decision_id).sort()).toEqual(["D-mr281-a", "D-mr281-b"]);
+			expect(invalidated[0].status).toBe("awaiting_decision");
+			expect(store.get("D-mr281-a")!.status).toBe("invalidated");
+			expect(store.get("D-mr281-b")!.status).toBe("invalidated");
+			expect(store.get("D-mr282")!.status).toBe("awaiting_decision");
+			expect(store.get("D-other-proj")!.status).toBe("awaiting_decision");
+		});
+
+		it("skips rows with missing or mismatched mrIid in event_json", () => {
+			store.create(
+				makeCreateParams({
+					decision_id: "D-no-mr",
+					project_id: "proj-A",
+					event_json: JSON.stringify(makeEvent("proj-A", "pipe-1")),
+				}),
+			);
+			store.create(
+				makeCreateParams({
+					decision_id: "D-corrupt",
+					project_id: "proj-A",
+					event_json: "{not-json",
+				}),
+			);
+
+			expect(store.invalidateByMr("proj-A", 281)).toEqual([]);
+			expect(store.get("D-no-mr")!.status).toBe("awaiting_decision");
+			expect(store.get("D-corrupt")!.status).toBe("awaiting_decision");
+		});
+
+		it("never transitions terminal-state rows even when mrIid matches", () => {
+			store.create(
+				makeCreateParams({
+					decision_id: "D-awaiting",
+					event_json: JSON.stringify(makeEvent("proj-1", "pipe-1", 10)),
+				}),
+			);
+			store.create(
+				makeCreateParams({
+					decision_id: "D-closed",
+					status: "closed",
+					event_json: JSON.stringify(makeEvent("proj-1", "pipe-2", 10)),
+				}),
+			);
+
+			const invalidated = store.invalidateByMr("proj-1", 10);
+
+			expect(invalidated.map((r) => r.decision_id)).toEqual(["D-awaiting"]);
+			expect(store.get("D-closed")!.status).toBe("closed");
 		});
 	});
 

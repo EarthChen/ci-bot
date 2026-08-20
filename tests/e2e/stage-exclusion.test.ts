@@ -50,6 +50,7 @@ const webhookConfig: WebhookConfig = {
 function pipelinePayload(opts: {
 	pipelineId: number;
 	builds: Array<{ stage: string; status: string }>;
+	mrIid?: number;
 }): Record<string, unknown> {
 	return {
 		object_kind: "pipeline",
@@ -59,7 +60,7 @@ function pipelinePayload(opts: {
 			sha: "abc1234567890",
 			status: "failed",
 		},
-		merge_request: { source_branch: "main", iid: opts.pipelineId },
+		merge_request: { source_branch: "main", iid: opts.mrIid ?? opts.pipelineId },
 		project: {
 			id: PROJECT,
 			web_url: `https://gitlab.example.com/${PROJECT}`,
@@ -205,10 +206,11 @@ describe("stage exclusion e2e", () => {
 		const scene = pending[0]!.cwd_path;
 		expect(readdirSync(bot.workRoot)).toHaveLength(1);
 
-		// 2. A format-only pipeline arrives for the same project (new id).
+		// 2. A format-only pipeline arrives for the same MR (new pipeline id).
 		const second = await bot.inject(
 			pipelinePayload({
 				pipelineId: 902,
+				mrIid: 901,
 				builds: [{ stage: "format", status: "failed" }],
 			}),
 		);

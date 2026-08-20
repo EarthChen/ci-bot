@@ -37,6 +37,17 @@ export interface GitLabClient {
 		projectId: string,
 		mrIid: number,
 	): Promise<MrPipelineStatus>;
+	/** 按 source_branch 查询 bot 修复 MR：返回状态、iid 与 web_url。 */
+	findMrBySourceBranch(
+		projectId: string,
+		sourceBranch: string,
+	): Promise<{
+		status: "opened" | "merged" | "closed";
+		iid: number;
+		url: string;
+	} | null>;
+	/** 取指定分支的最新 HEAD sha。 */
+	fetchBranchHeadSha(projectId: string, branch: string): Promise<string>;
 	/** Create a MR with the given git patch + diagnosis summary. */
 	createMr(params: {
 		projectId: string;
@@ -45,6 +56,8 @@ export interface GitLabClient {
 		title: string;
 		diagnosis: Diagnosis;
 		patch: Patch;
+		/** 描述前缀（如 closed 后重开注明拒绝语境）。 */
+		descriptionPrefix?: string;
 	}): Promise<CreatedMr>;
 }
 
@@ -142,6 +155,55 @@ export class GlabGitLabClient implements GitLabClient {
 		return this.runGlab(["mr", "diff", String(mrIid), "-R", repo]);
 	}
 
+	async findMrBySourceBranch(
+		projectId: string,
+		sourceBranch: string,
+	): Promise<{
+		status: "opened" | "merged" | "closed";
+		iid: number;
+		url: string;
+	} | null> {
+		const out = await this.runGlab([
+			"api",
+			`/projects/${projectId}/merge_requests?source_branch=${encodeURIComponent(sourceBranch)}&state=all&per_page=1&order_by=updated_at&sort=desc`,
+		]);
+		const arr = parseMergeRequests(out);
+		const mr = arr[0];
+		if (!mr || typeof mr.iid !== "number") return null;
+		const state = String(mr.state ?? "");
+		const status: "opened" | "merged" | "closed" =
+			state === "merged"
+				? "merged"
+				: state === "closed"
+					? "closed"
+					: "opened";
+		const url =
+			typeof mr.web_url === "string" && mr.web_url.length > 0
+				? mr.web_url
+				: "";
+		return { status, iid: mr.iid, url };
+	}
+
+	async fetchBranchHeadSha(projectId: string, branch: string): Promise<string> {
+		const out = await this.runGlab([
+			"api",
+			`/projects/${projectId}/repository/branches/${encodeURIComponent(branch)}`,
+		]);
+		const parsed = safeParse(out);
+		const commit = parsed?.commit;
+		if (
+			commit &&
+			typeof commit === "object" &&
+			"id" in commit &&
+			typeof (commit as { id: unknown }).id === "string"
+		) {
+			return (commit as { id: string }).id;
+		}
+		throw new Error(
+			`cannot resolve branch head for ${branch} in project ${projectId}`,
+		);
+	}
+
 	async createMr(params: {
 		projectId: string;
 		sourceBranch: string;
@@ -149,8 +211,10 @@ export class GlabGitLabClient implements GitLabClient {
 		title: string;
 		diagnosis: Diagnosis;
 		patch: Patch;
+		descriptionPrefix?: string;
 	}): Promise<CreatedMr> {
-		const body = buildMrBody(params.diagnosis, params.patch);
+		const body =
+			(params.descriptionPrefix ?? "") + buildMrBody(params.diagnosis, params.patch);
 		const repo = await this.resolveRepoRef(params.projectId);
 		// glab mr create outputs JSON with web_url when --output json is used.
 		const out = await this.runGlab([
@@ -238,6 +302,22 @@ function parsePipelines(s: string): PipelineSummary[] {
 	try {
 		const parsed = JSON.parse(s);
 		return Array.isArray(parsed) ? (parsed as PipelineSummary[]) : [];
+	} catch {
+		return [];
+	}
+}
+
+interface MergeRequestSummary {
+	readonly iid?: number;
+	readonly state?: string;
+	readonly web_url?: string;
+}
+
+/** Parse the MR list JSON array returned by `glab api`; tolerate empty/bad output. */
+function parseMergeRequests(s: string): MergeRequestSummary[] {
+	try {
+		const parsed = JSON.parse(s);
+		return Array.isArray(parsed) ? (parsed as MergeRequestSummary[]) : [];
 	} catch {
 		return [];
 	}

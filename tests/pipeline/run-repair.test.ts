@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRepair, extractPatch, parseDiffFiles, buildDiffIndex, snapshotSceneChanges, widenableG3Paths, outsideDiffPaths } from "../../src/pipeline/run-repair.js";
+import { runRepair, repairFixed, extractPatch, parseDiffFiles, buildDiffIndex, snapshotSceneChanges, widenableG3Paths, outsideDiffPaths } from "../../src/pipeline/run-repair.js";
 import type { Worktree } from "../../src/pipeline/worktree.js";
+import { repairBranchName } from "../../src/pipeline/repair-branch.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import type { AgentRunner, AgentRunInput } from "../../src/agent/runner.js";
 import type { GitLabClient } from "../../src/gitlab/glab-client.js";
@@ -21,13 +22,19 @@ const event: PipelineEvent = {
 };
 
 /** Fake worktree seam: create returns a fake repo path, remove is a spy. */
-function fakeWorktree(): { worktree: Worktree; remove: ReturnType<typeof vi.fn> } {
+function fakeWorktree(): {
+	worktree: Worktree;
+	remove: ReturnType<typeof vi.fn>;
+	pushBranch: ReturnType<typeof vi.fn>;
+} {
 	const remove = vi.fn(async (_cwd: string) => {});
+	const pushBranch = vi.fn(async () => {});
 	const worktree: Worktree = {
 		create: vi.fn(async (workDir: string) => join(workDir, "repo")),
 		remove,
+		pushBranch,
 	};
-	return { worktree, remove };
+	return { worktree, remove, pushBranch };
 }
 
 function stubAgent(result: AgentResult): AgentRunner {
@@ -72,6 +79,8 @@ function stubGlab(opts: {
 		fetchCiLog:
 			opts.fetchCiLog ?? (async () => "some unit test failure output"),
 		fetchMrDiff: async () => "",
+		findMrBySourceBranch: async () => null,
+		fetchBranchHeadSha: async () => "deadbeef",
 		fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: null }),
 		createMr: async () => ({ url: "https://mr/x" }),
 	};
@@ -608,5 +617,374 @@ describe("outsideDiffPaths / widenableG3Paths — G3 扩围判定（ADR-0009）"
 
 	it("无需扩围：patch 全在 diff 内 → null", () => {
 		expect(widenableG3Paths(patch(["src/main/java/A.java"]), diffFiles)).toBeNull();
+	});
+});
+
+describe("runRepair — 终局新鲜度闸门（ticket 07）", () => {
+	const mrEvent: PipelineEvent = {
+		...event,
+		mrIid: 42,
+		mrSourceBranch: "feature/foo",
+	};
+
+	const fixedWithMr: AgentResult = {
+		kind: "fixed",
+		diagnosis: { failureClass: 1, summary: "断言错误" },
+		summary: "修正断言",
+		mrUrl: "https://gitlab.example.com/g/p/-/merge_requests/9",
+	};
+
+	function git(args: readonly string[], cwd: string): void {
+		execFileSync("git", [...args], { cwd, stdio: "pipe" });
+	}
+
+	/** Seed worktree repo at <dir>/repo with event.sha tag for extractPatch. */
+	function seedFixedRepo(dir: string): string {
+		const repoCwd = join(dir, "repo");
+		mkdirSync(join(repoCwd, "src/test/java/com/example"), { recursive: true });
+		writeFileSync(
+			join(repoCwd, "src/test/java/com/example/FooTest.java"),
+			"// baseline\n",
+		);
+		git(["init", "--quiet"], repoCwd);
+		git(["config", "user.email", "ci-self-heal@bot"], repoCwd);
+		git(["config", "user.name", "ci-self-heal bot"], repoCwd);
+		git(["add", "-A"], repoCwd);
+		git(["commit", "--quiet", "-m", "baseline"], repoCwd);
+		git(["tag", event.sha, "HEAD"], repoCwd);
+		writeFileSync(
+			join(repoCwd, "src/test/java/com/example/FooTest.java"),
+			"// agent fix\n",
+		);
+		return repoCwd;
+	}
+
+	function glabWithHead(opts: {
+		headSha: string | (() => Promise<string>);
+		createMr?: GitLabClient["createMr"];
+	}): GitLabClient {
+		const createMr =
+			opts.createMr ??
+			(vi.fn(async () => ({ url: "https://mr/bot-created" })) as GitLabClient["createMr"]);
+		const fetchBranchHeadSha =
+			typeof opts.headSha === "function"
+				? opts.headSha
+				: async () => opts.headSha;
+		return {
+			fetchCiLog: async () => "test failure",
+			fetchMrDiff: async () =>
+				"--- src/test/java/com/example/FooTest.java\n+++ src/test/java/com/example/FooTest.java\n",
+			findMrBySourceBranch: async () => null,
+			fetchBranchHeadSha,
+			fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: null }),
+			createMr,
+		};
+	}
+
+	let cwd: string;
+	let repoCwd: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "run-repair-freshness-"));
+		repoCwd = seedFixedRepo(cwd);
+	});
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	async function runFixedPath(glab: GitLabClient, dt: InMemoryDingTalkNotifier) {
+		const remove = vi.fn(async () => {});
+		const pushBranch = vi.fn(async () => {});
+		const worktree: Worktree = {
+			create: async () => repoCwd,
+			remove,
+			pushBranch,
+		};
+		const agentInput: AgentRunInput = {
+			projectId: mrEvent.projectId,
+			pipelineId: mrEvent.pipelineId,
+			ref: mrEvent.ref,
+			sha: mrEvent.sha,
+			ciLog: "",
+			mrDiff: "",
+			cwd: repoCwd,
+			sourceBranch: repairBranchName(mrEvent),
+			targetBranch: mrEvent.mrSourceBranch!,
+		};
+		return repairFixed({
+			deps: {
+				agent: stubAgent(fixedWithMr),
+				glab,
+				dingtalk: dt,
+				cwd,
+				worktree,
+			},
+			event: mrEvent,
+			repoCwd,
+			result: fixedWithMr,
+			diffFiles: ["src/test/java/com/example/FooTest.java"],
+			agentInput,
+			agentMetrics: { turns: 1, tokens: 100, cost: 0, durationMs: 50 },
+		});
+	}
+
+	it("基线已被新提交取代 → 不开 MR、发通知、记审计", async () => {
+		const dt = new InMemoryDingTalkNotifier();
+		const createMr = vi.fn(async () => ({ url: "https://mr/should-not-create" }));
+		const out = await runFixedPath(
+			glabWithHead({ headSha: "newer9999999999", createMr }),
+			dt,
+		);
+		expect(out.kind).toBe("failed");
+		if (out.kind === "failed") {
+			expect(out.error).toBe("baseline_superseded");
+			expect(out.summary).toContain("基线已被新提交取代");
+		}
+		expect(createMr).not.toHaveBeenCalled();
+		expect(dt.sent.length).toBeGreaterThan(0);
+		expect(dt.sent.some((m) => m.text.includes("baseline_superseded"))).toBe(true);
+		const trace = JSON.parse(readFileSync(join(cwd, "audit-trace.json"), "utf8"));
+		expect(trace.outcome).toBe("failed");
+		expect(trace.reasoning).toContain("baseline_superseded");
+	});
+
+	it("基线与 MR 源分支 HEAD 一致 → MR 终局照常", async () => {
+		const dt = new InMemoryDingTalkNotifier();
+		const createMr = vi.fn(async () => ({ url: "https://mr/bot-created" }));
+		const out = await runFixedPath(glabWithHead({ headSha: event.sha, createMr }), dt);
+		expect(out.kind).toBe("mr");
+		if (out.kind === "mr") {
+			expect(out.mrUrl).toBe("https://mr/bot-created");
+		}
+		expect(createMr).toHaveBeenCalledTimes(1);
+	});
+
+	it("escalated 终局不经过新鲜度闸门（fetchBranchHeadSha 不被调用）", async () => {
+		const fetchBranchHeadSha = vi.fn(async () => "newer9999999999");
+		const { worktree, remove } = fakeWorktree();
+		const dt = new InMemoryDingTalkNotifier();
+		const glab = glabWithHead({ headSha: fetchBranchHeadSha });
+		const agent = stubAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 3, summary: "需人工决策" },
+			reason: "uncertain",
+			source: "agent",
+		});
+		await runRepair({ agent, glab, dingtalk: dt, cwd, worktree }, mrEvent);
+		expect(fetchBranchHeadSha).not.toHaveBeenCalled();
+		expect(remove).not.toHaveBeenCalled();
+	});
+
+	it("fetchBranchHeadSha 抛异常 → 降级放行，MR 终局照常", async () => {
+		const dt = new InMemoryDingTalkNotifier();
+		const out = await runFixedPath(
+			glabWithHead({
+				headSha: async () => {
+					throw new Error("glab api down");
+				},
+			}),
+			dt,
+		);
+		expect(out.kind).toBe("mr");
+	});
+});
+
+describe("runRepair — 修复 MR 恒一（ticket 08）", () => {
+	const mrEvent: PipelineEvent = {
+		...event,
+		mrIid: 42,
+		mrSourceBranch: "feature/foo",
+	};
+
+	const fixedWithMr: AgentResult = {
+		kind: "fixed",
+		diagnosis: { failureClass: 1, summary: "断言错误" },
+		summary: "修正断言",
+		mrUrl: "https://gitlab.example.com/g/p/-/merge_requests/9",
+	};
+
+	const existingOpenMr = {
+		status: "opened" as const,
+		iid: 9,
+		url: "https://gitlab.example.com/g/p/-/merge_requests/9",
+	};
+
+	function git(args: readonly string[], cwd: string): void {
+		execFileSync("git", [...args], { cwd, stdio: "pipe" });
+	}
+
+	function seedFixedRepo(dir: string): string {
+		const repoCwd = join(dir, "repo");
+		mkdirSync(join(repoCwd, "src/test/java/com/example"), { recursive: true });
+		writeFileSync(
+			join(repoCwd, "src/test/java/com/example/FooTest.java"),
+			"// baseline\n",
+		);
+		git(["init", "--quiet"], repoCwd);
+		git(["config", "user.email", "ci-self-heal@bot"], repoCwd);
+		git(["config", "user.name", "ci-self-heal bot"], repoCwd);
+		git(["add", "-A"], repoCwd);
+		git(["commit", "--quiet", "-m", "baseline"], repoCwd);
+		git(["tag", event.sha, "HEAD"], repoCwd);
+		writeFileSync(
+			join(repoCwd, "src/test/java/com/example/FooTest.java"),
+			"// agent fix\n",
+		);
+		return repoCwd;
+	}
+
+	function glabForMrConvergence(opts: {
+		findMrBySourceBranch: GitLabClient["findMrBySourceBranch"];
+		createMr?: GitLabClient["createMr"];
+		headSha?: string;
+	}): GitLabClient {
+		const createMr =
+			opts.createMr ??
+			(vi.fn(async () => ({
+				url: "https://gitlab.example.com/g/p/-/merge_requests/99",
+			})) as GitLabClient["createMr"]);
+		return {
+			fetchCiLog: async () => "test failure",
+			fetchMrDiff: async () =>
+				"--- src/test/java/com/example/FooTest.java\n+++ src/test/java/com/example/FooTest.java\n",
+			findMrBySourceBranch: opts.findMrBySourceBranch,
+			fetchBranchHeadSha: async () => opts.headSha ?? event.sha,
+			fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: null }),
+			createMr,
+		};
+	}
+
+	let cwd: string;
+	let repoCwd: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "run-repair-single-mr-"));
+		repoCwd = seedFixedRepo(cwd);
+	});
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	async function runFixedPath(
+		glab: GitLabClient,
+		dt: InMemoryDingTalkNotifier,
+		pushBranch = vi.fn(async () => {}),
+	) {
+		const remove = vi.fn(async () => {});
+		const worktree: Worktree = {
+			create: async () => repoCwd,
+			remove,
+			pushBranch,
+		};
+		const agentInput: AgentRunInput = {
+			projectId: mrEvent.projectId,
+			pipelineId: mrEvent.pipelineId,
+			ref: mrEvent.ref,
+			sha: mrEvent.sha,
+			ciLog: "",
+			mrDiff: "",
+			cwd: repoCwd,
+			sourceBranch: "ci-self-heal/feature/foo",
+			targetBranch: mrEvent.mrSourceBranch!,
+		};
+		return repairFixed({
+			deps: {
+				agent: stubAgent(fixedWithMr),
+				glab,
+				dingtalk: dt,
+				cwd,
+				worktree,
+			},
+			event: mrEvent,
+			repoCwd,
+			result: fixedWithMr,
+			diffFiles: ["src/test/java/com/example/FooTest.java"],
+			agentInput,
+			agentMetrics: { turns: 1, tokens: 100, cost: 0, durationMs: 50 },
+		});
+	}
+
+	it("已有 open 修复 MR → push 更新、不调用 createMr、返回已有 MR URL", async () => {
+		const dt = new InMemoryDingTalkNotifier();
+		const createMr = vi.fn(async () => ({ url: "https://mr/should-not-create" }));
+		const pushBranch = vi.fn(async () => {});
+		const findMrBySourceBranch = vi.fn(async () => existingOpenMr);
+		const out = await runFixedPath(
+			glabForMrConvergence({ findMrBySourceBranch, createMr }),
+			dt,
+			pushBranch,
+		);
+		expect(out.kind).toBe("mr");
+		if (out.kind === "mr") {
+			expect(out.mrUrl).toBe(existingOpenMr.url);
+		}
+		expect(createMr).not.toHaveBeenCalled();
+		expect(pushBranch).toHaveBeenCalledWith(repoCwd, "ci-self-heal/feature/foo");
+		expect(findMrBySourceBranch).toHaveBeenCalledWith(
+			mrEvent.projectId,
+			"ci-self-heal/feature/foo",
+		);
+	});
+
+	it("上一个修复 MR 被关闭 → 新开 MR 且描述注明拒绝语境", async () => {
+		const dt = new InMemoryDingTalkNotifier();
+		const closedMr = {
+			status: "closed" as const,
+			iid: 5,
+			url: "https://gitlab.example.com/g/p/-/merge_requests/5",
+		};
+		const createMr = vi.fn(async (_params: Parameters<GitLabClient["createMr"]>[0]) => ({
+			url: "https://gitlab.example.com/g/p/-/merge_requests/100",
+		}));
+		const out = await runFixedPath(
+			glabForMrConvergence({
+				findMrBySourceBranch: async () => closedMr,
+				createMr,
+			}),
+			dt,
+		);
+		expect(out.kind).toBe("mr");
+		expect(createMr).toHaveBeenCalledTimes(1);
+		const params = createMr.mock.calls[0]![0];
+		expect(params.descriptionPrefix).toContain("上一个修复 MR !5 被关闭");
+		expect(dt.sent.some((m) => m.text.includes("上一个修复 MR !5 被关闭"))).toBe(
+			true,
+		);
+	});
+
+	it("merged 或不存在 → 正常新开 MR", async () => {
+		const dt = new InMemoryDingTalkNotifier();
+		const createMr = vi.fn(async () => ({
+			url: "https://gitlab.example.com/g/p/-/merge_requests/101",
+		}));
+		const mergedMr = {
+			status: "merged" as const,
+			iid: 3,
+			url: "https://gitlab.example.com/g/p/-/merge_requests/3",
+		};
+		const outMerged = await runFixedPath(
+			glabForMrConvergence({
+				findMrBySourceBranch: async () => mergedMr,
+				createMr,
+			}),
+			dt,
+		);
+		expect(outMerged.kind).toBe("mr");
+		expect(createMr).toHaveBeenCalledTimes(1);
+		expect(createMr.mock.calls[0]![0].sourceBranch).toBe("ci-self-heal/feature/foo");
+
+		createMr.mockClear();
+		const createMrFresh = vi.fn(async () => ({
+			url: "https://gitlab.example.com/g/p/-/merge_requests/102",
+		}));
+		const outFresh = await runFixedPath(
+			glabForMrConvergence({
+				findMrBySourceBranch: async () => null,
+				createMr: createMrFresh,
+			}),
+			dt,
+		);
+		expect(outFresh.kind).toBe("mr");
+		expect(createMrFresh).toHaveBeenCalledTimes(1);
 	});
 });

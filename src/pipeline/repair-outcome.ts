@@ -130,6 +130,8 @@ export interface RepairResult {
 	readonly oosPaths?: readonly string[];
 	/** 实际选中的模型（runner 填充；终局通知任务信息上报）。 */
 	readonly model?: AgentModelRef;
+	/** Ticket 08: closed 后重开时在群通知注明拒绝语境。 */
+	readonly mrReopenedNote?: string;
 }
 
 /** Serialize one audit trace to its metric JSONL line. */
@@ -250,12 +252,14 @@ function notifySuccess(
 	mrUrl: string,
 	summary: string,
 	stats?: AgentRunStats,
+	mrReopenedNote?: string,
 ): Promise<void> {
 	return dingtalk.send({
 		title: "CI 自愈修复成功",
 		text: [
 			"### ✅ CI 自愈修复成功",
 			"",
+			...(mrReopenedNote ? [`> ${mrReopenedNote}`, ""] : []),
 			"**任务**",
 			`- 项目：${event.projectId}`,
 			`- 分支：${event.ref} @ ${shortSha(event.sha)}`,
@@ -334,7 +338,14 @@ export async function finishRepair(args: {
 	// escalated notifications moved to the main-process routed notifier (T04);
 	// the worker only reports the outcome (mr success / failed still notify here).
 	if (result.kind === "mr") {
-		await notifySuccess(dingtalk, event, result.mrUrl ?? "", summary, agentStats);
+		await notifySuccess(
+			dingtalk,
+			event,
+			result.mrUrl ?? "",
+			summary,
+			agentStats,
+			result.mrReopenedNote,
+		);
 	} else if (result.kind === "failed") {
 		logger.error(
 			{ event, stage: result.summary, error: result.error },
@@ -344,10 +355,9 @@ export async function finishRepair(args: {
 	}
 
 
-	// ADR-0007：带 MR 成果的终局存档 session（跨 pipeline 复用）。session
-	// 住在 <cwd>/.pi-agent/sessions/（worker 约定），接下来的现场清理会销毁它。
-	// best-effort：stub 模式/早败路径无 session，绝不阻断终局处理。
-	if (result.kind === "mr" || (result.kind === "escalated" && result.mrUrl)) {
+	// ADR-0011：所有终局均存档 session（跨 pipeline 复用）。
+	// 无 mrIid 的 push pipeline 跳过（无复用入口）。
+	if (event.mrIid != null) {
 		let sessionFile: string | null = null;
 		try {
 			sessionFile = findSessionFile(joinPath(cwd, ".pi-agent"));

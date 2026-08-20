@@ -42,6 +42,7 @@ import { logger } from "../util/log.js";
 import { resolveBareRoot, resolveDataRoot } from "../config/paths.js";
 import { resolveRetentionPolicy } from "../config/retention.js";
 import type { PipelineEvent } from "../types.js";
+import { repairBranchName } from "./repair-branch.js";
 
 const exec = promisify(execFile);
 
@@ -304,7 +305,7 @@ async function realWorktree(
 	const repoPath = join(workDir, "repo");
 	const barePath = await ensureBareClone(event.projectId, event.projectUrl);
 	await ensureShaPresent(barePath, event);
-	const branch = `${REPAIR_BRANCH_PREFIX}${event.ref}-${event.sha.slice(0, 8)}`;
+	const branch = repairBranchName(event);
 	// Self-heal residue from a crashed/uncleaned prior run at the same sha:
 	// stale worktree metadata shields the ci-self-heal branch from deletion,
 	// and `worktree add -b` dies on "a branch named ... already exists".
@@ -368,9 +369,9 @@ async function ensureShaPresent(
 	}
 	throw new Error(
 		`pipeline sha ${event.sha} not found in bare clone` +
-			(event.mrIid != null
-				? ` (fetched MR ${event.mrIid} head ref but sha still absent — MR head moved on)`
-				: " (no MR ref fallback for non-MR pipelines)"),
+			(event.mrIid == null
+				? " (no MR ref fallback for non-MR pipelines)"
+				: ` (fetched MR ${event.mrIid} head ref but sha still absent — MR head moved on)`),
 	);
 }
 
@@ -505,10 +506,40 @@ export interface Worktree {
 	create(workDir: string, event: PipelineEvent): Promise<string>;
 	/** Remove a worktree (best-effort, idempotent). */
 	remove(cwd: string): Promise<void>;
+	/** Push repair branch to origin (--force-with-lease). */
+	pushBranch(repoCwd: string, branch: string): Promise<void>;
 }
 
-/** Production worktree impl: real bare-clone + git worktree add/remove. */
+/**
+ * Commit staged/unstaged agent edits (if any) and force-push the repair
+ * branch to origin. GitLab MR diff updates automatically on push.
+ */
+export async function pushRepairBranch(
+	repoCwd: string,
+	branch: string,
+): Promise<void> {
+	if (process.env.CIHEAL_WORKTREE_MODE === "fake") return;
+	const { stdout } = await exec("git", ["status", "--porcelain"], {
+		cwd: repoCwd,
+	});
+	if (stdout.trim()) {
+		await exec("git", ["add", "-A"], { cwd: repoCwd, env: gitEnv() });
+		await exec(
+			"git",
+			["commit", "-m", "ci-self-heal: apply fix"],
+			{ cwd: repoCwd, env: gitEnv() },
+		);
+	}
+	await exec(
+		"git",
+		["push", "--force-with-lease", "origin", `HEAD:refs/heads/${branch}`],
+		{ cwd: repoCwd, env: gitEnv() },
+	);
+}
+
+/** Production worktree impl: real bare-clone + git worktree add/remove/push. */
 export const defaultWorktree: Worktree = {
 	create: createWorktree,
 	remove: removeWorktree,
+	pushBranch: pushRepairBranch,
 };

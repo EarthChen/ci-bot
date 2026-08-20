@@ -39,6 +39,8 @@ import {
 } from "../pipeline/run-repair.js";
 import { runResumeRepair } from "../pipeline/run-resume.js";
 import { defaultWorktree } from "../pipeline/worktree.js";
+import { installWorkerControlListener } from "./control-listener.js";
+import { clearSteerSession } from "./steer-session.js";
 
 /** Write JSON to a path, creating parent dirs (best-effort, never throws in caller). */
 async function writeJSON(path: string, value: unknown): Promise<void> {
@@ -185,6 +187,26 @@ function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
 		async fetchMrDiff(): Promise<string> {
 			return "";
 		},
+		async findMrBySourceBranch(): Promise<null> {
+			return null;
+		},
+		async fetchBranchHeadSha(
+			_projectId: string,
+			_branch: string,
+		): Promise<string> {
+			const override = process.env.CIHEAL_STUB_BRANCH_HEAD_SHA;
+			if (override) return override;
+			const taskJson = process.env.CIHEAL_WORKER_TASK;
+			if (taskJson) {
+				try {
+					const task = JSON.parse(taskJson) as { event?: { sha?: string } };
+					if (task.event?.sha) return task.event.sha;
+				} catch {
+					/* fall through */
+				}
+			}
+			return "0000000000000000000000000000000000000000";
+		},
 		async fetchMrPipelineStatus(): Promise<MrPipelineStatus> {
 			// CIHEAL_STUB_MR_STATUS 控制监控结果：
 			//   "success"      (默认) — 监控立即通过，不触发重试
@@ -207,6 +229,7 @@ function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
 				targetBranch: params.targetBranch,
 				title: params.title,
 				body: params.patch.summary,
+				descriptionPrefix: params.descriptionPrefix,
 				diagnosis: params.diagnosis,
 				fixFiles: params.patch.paths,
 			};
@@ -332,6 +355,8 @@ export async function runResumeWorker(task: WorkerTask): Promise<RepairOutcome> 
 
 /** Entry point invoked by the worker manager subprocess. */
 export async function main(): Promise<void> {
+	const uninstallControl = installWorkerControlListener();
+
 	const taskJson = process.env.CIHEAL_WORKER_TASK;
 	if (!taskJson) throw new Error("CIHEAL_WORKER_TASK not set");
 	let task: WorkerTask;
@@ -343,17 +368,21 @@ export async function main(): Promise<void> {
 		);
 	}
 
-	// Make the fake recorders observable by the test via env (if present).
-	const result =
-		task.mode === "resume"
-			? await runResumeWorker(task)
-			: await runWorker(task);
-	const resultFile = process.env.CIHEAL_RESULT_FILE;
-	if (resultFile) {
-		mkdirSync(dirname(resultFile), { recursive: true });
-		writeFileSync(resultFile, JSON.stringify(result, null, 2), "utf8");
+	try {
+		const result =
+			task.mode === "resume"
+				? await runResumeWorker(task)
+				: await runWorker(task);
+		const resultFile = process.env.CIHEAL_RESULT_FILE;
+		if (resultFile) {
+			mkdirSync(dirname(resultFile), { recursive: true });
+			writeFileSync(resultFile, JSON.stringify(result, null, 2), "utf8");
+		}
+		logger.info({ result }, "worker finished");
+	} finally {
+		uninstallControl();
+		clearSteerSession();
 	}
-	logger.info({ result }, "worker finished");
 }
 
 // Re-export for the e2e test to read fake recorder state when in-process.

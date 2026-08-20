@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
@@ -180,6 +180,31 @@ describe("createWorktree (real git, local file:// remote)", () => {
 		rmSync(join(root, "w1"), { recursive: true, force: true });
 		const repoPath = await createWorktree(join(root, "w2"), event(sha, "dev", remote.path));
 		expect(await git(repoPath, "rev-parse", "HEAD")).toBe(sha);
+	});
+
+	it("self-heals a LIVE leftover worktree holding the converged MR branch (killed run)", async () => {
+		// Production incident (dev pipelines 100034231/100034233): a deploy
+		// restart killed a mid-repair worker, leaving a LIVE worktree checked
+		// out on the converged branch ci-self-heal/<sourceBranch>. prune does
+		// not touch live dirs and branch -D refuses a checked-out branch, so
+		// every later pipeline of the same MR died at `worktree add -b`.
+		const remote = await initRemote();
+		const sha1 = await remote.commit("dev", "first");
+		await createWorktree(join(root, "w1"), {
+			...event(sha1, "dev", remote.path, 9),
+			mrSourceBranch: "dev",
+		});
+
+		// Hard-kill simulation: nothing cleaned — dir, metadata and branch all
+		// remain. The next pipeline of the same MR (new sha) must self-heal.
+		const sha2 = await remote.commit("dev", "second");
+		const repoPath = await createWorktree(join(root, "w2"), {
+			...event(sha2, "dev", remote.path, 9),
+			mrSourceBranch: "dev",
+		});
+
+		expect(await git(repoPath, "rev-parse", "HEAD")).toBe(sha2);
+		expect(existsSync(join(root, "w1", "repo"))).toBe(false);
 	});
 
 	it("agent 推到远端的 ci-self-heal/* 分支不会被 fetch 重新导入", async () => {

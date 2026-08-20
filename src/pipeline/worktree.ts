@@ -306,12 +306,16 @@ async function realWorktree(
 	const barePath = await ensureBareClone(event.projectId, event.projectUrl);
 	await ensureShaPresent(barePath, event);
 	const branch = repairBranchName(event);
-	// Self-heal residue from a crashed/uncleaned prior run at the same sha:
-	// stale worktree metadata shields the ci-self-heal branch from deletion,
-	// and `worktree add -b` dies on "a branch named ... already exists".
+	// Self-heal residue from a crashed/uncleaned prior run:
+	// - LIVE worktree still checked out on the branch (deploy restart / OOM
+	//   killed the worker mid-repair): prune keeps live dirs, branch -D refuses
+	//   checked-out branches → removeWorktreesOnBranch force-removes the holder.
+	// - stale metadata of a deleted dir shields the branch from deletion, and
+	//   `worktree add -b` dies on "a branch named ... already exists".
 	await exec("git", ["--git-dir", barePath, "worktree", "prune"], {
 		env: gitEnv(),
 	}).catch(() => {});
+	await removeWorktreesOnBranch(barePath, branch);
 	await exec("git", ["--git-dir", barePath, "branch", "-D", branch], {
 		env: gitEnv(),
 	}).catch(() => {});
@@ -334,6 +338,51 @@ async function realWorktree(
 		{ env: gitEnv() },
 	);
 	return repoPath;
+}
+
+/**
+ * Force-remove LIVE worktrees checked out on `branch` — residue of a killed
+ * run (deploy restart / crash / OOM). `worktree prune` only reaps entries
+ * whose directory is gone and `branch -D` refuses a checked-out branch, so
+ * without this the converged repair branch (ci-self-heal/<sourceBranch>,
+ * ADR-0011) stays blocked by a single leftover worktree forever. Safe under
+ * the scheduler's per-MR serialization: when a new run creates this branch,
+ * no other live run may legitimately hold it (dev incident: pipelines
+ * 100034231/100034233).
+ */
+async function removeWorktreesOnBranch(
+	barePath: string,
+	branch: string,
+): Promise<void> {
+	const { stdout } = await exec(
+		"git",
+		["--git-dir", barePath, "worktree", "list", "--porcelain"],
+		{ env: gitEnv() },
+	).catch((): { stdout: string; stderr: string } => ({ stdout: "", stderr: "" }));
+	const target = `refs/heads/${branch}`;
+	const holders: string[] = [];
+	let path: string | undefined;
+	for (const line of stdout.split("\n")) {
+		if (line.startsWith("worktree ")) {
+			path = line.slice("worktree ".length).trim();
+		} else if (
+			path !== undefined &&
+			line.startsWith("branch ") &&
+			line.slice("branch ".length).trim() === target
+		) {
+			holders.push(path);
+			path = undefined;
+		}
+	}
+	for (const holder of holders) {
+		await exec(
+			"git",
+			["--git-dir", barePath, "worktree", "remove", "--force", holder],
+			{ env: gitEnv() },
+		).catch((err) => {
+			logger.warn({ err, holder, branch }, "stale live worktree removal failed");
+		});
+	}
 }
 
 /**

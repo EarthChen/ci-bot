@@ -44,6 +44,18 @@ export interface WorkerManager {
 export function workerEventKey(event: PipelineEvent): string {
 	return `${event.projectId}-${event.pipelineId}`;
 }
+/** Grace window before SIGTERM escalates to SIGKILL during shutdown. */
+const SHUTDOWN_GRACE_MS = 3000;
+/** Bounded drain rounds: the scheduler may dequeue queued events mid-drain. */
+const SHUTDOWN_DRAIN_ROUNDS = 5;
+
+/** In-flight worker tracked for control delivery and graceful shutdown. */
+interface ActiveWorker {
+	proc?: ChildProcess;
+	done?: Promise<void>;
+	readonly event: PipelineEvent;
+	readonly cwd: string;
+}
 
 export interface WorkerSpawnOptions {
 	/** Override the node binary (tests use the harness's node). */
@@ -68,13 +80,13 @@ export interface WorkerSpawnOptions {
  * build step. Both modes pass CIHEAL_WORKER_TASK + CIHEAL_RESULT_FILE via env.
  */
 export class SubprocessWorkerManager implements WorkerManager {
-	private readonly activeWorkers = new Map<string, ChildProcess>();
+	private readonly activeWorkers = new Map<string, ActiveWorker>();
 
 	constructor(private readonly opts: WorkerSpawnOptions = {}) {}
 
 	sendControl(event: PipelineEvent, msg: WorkerControlMessage): boolean {
 		const key = workerEventKey(event);
-		const child = this.activeWorkers.get(key);
+		const child = this.activeWorkers.get(key)?.proc;
 		if (!child || child.exitCode !== null || child.killed) {
 			logger.info(
 				{ key, controlType: msg.type },
@@ -102,7 +114,11 @@ export class SubprocessWorkerManager implements WorkerManager {
 	}
 
 	async run(event: PipelineEvent, cwd: string): Promise<RepairOutcome> {
-		return this.spawnWorker(event, cwd, { event, cwd }, true);
+		return this.trackRun(
+			event,
+			cwd,
+			this.spawnWorker(event, cwd, { event, cwd }, true),
+		);
 	}
 
 	/**
@@ -112,7 +128,33 @@ export class SubprocessWorkerManager implements WorkerManager {
 	 * afterwards, even if the resume outcome would normally re-retain.
 	 */
 	async runResume(task: ResumeTask): Promise<RepairOutcome> {
-		return this.spawnWorker(task.event, task.cwd, task, false);
+		return this.trackRun(
+			task.event,
+			task.cwd,
+			this.spawnWorker(task.event, task.cwd, task, false),
+		);
+	}
+
+	/** Track an in-flight run so shutdown() can kill + drain it. */
+	private trackRun(
+		event: PipelineEvent,
+		cwd: string,
+		run: Promise<RepairOutcome>,
+	): Promise<RepairOutcome> {
+		const key = workerEventKey(event);
+		const entry: ActiveWorker = { event, cwd };
+		entry.done = run
+			.then(
+				() => {},
+				() => {},
+			)
+			.finally(() => {
+				if (this.activeWorkers.get(key) === entry) {
+					this.activeWorkers.delete(key);
+				}
+			});
+		this.activeWorkers.set(key, entry);
+		return run;
 	}
 
 	private async spawnWorker(
@@ -210,12 +252,10 @@ export class SubprocessWorkerManager implements WorkerManager {
 				onIpcMessage: ipcWired
 					? (msg) => this.opts.onIpcMessage!(event, msg)
 					: undefined,
-				onChild: ipcWired
-					? (proc) => {
-							this.activeWorkers.set(activeKey, proc);
-							proc.once("exit", () => this.activeWorkers.delete(activeKey));
-						}
-					: undefined,
+				onChild: (proc) => {
+					const entry = this.activeWorkers.get(activeKey);
+					if (entry) entry.proc = proc;
+				},
 			});
 			const { code, signal } = child;
 			stdout = child.stdout;
@@ -268,6 +308,43 @@ export class SubprocessWorkerManager implements WorkerManager {
 			if (!this.opts.keepWork && !retained) {
 				await cleanupScene(event, cwd);
 			}
+		}
+	}
+
+	/**
+	 * Graceful shutdown (SIGTERM path): terminate every active worker and
+	 * await its scene cleanup, so a container restart leaves no worktree
+	 * residue blocking the next pipeline of the same MR (dev incident:
+	 * pipelines 100034153 → 100034231/100034233).
+	 */
+	async shutdown(): Promise<void> {
+		for (let round = 0; round < SHUTDOWN_DRAIN_ROUNDS; round++) {
+			const entries = [...this.activeWorkers.values()];
+			if (entries.length === 0) return;
+			logger.info(
+				{ count: entries.length, round },
+				"shutdown: terminating active workers",
+			);
+			for (const entry of entries) {
+				const child = entry.proc;
+				if (child && child.exitCode === null && !child.killed) {
+					child.kill("SIGTERM");
+				}
+			}
+			// Escalate to SIGKILL for anything still alive after the grace window.
+			const deadline = Date.now() + SHUTDOWN_GRACE_MS;
+			for (const entry of entries) {
+				const child = entry.proc;
+				if (!child || child.exitCode !== null) continue;
+				while (child.exitCode === null && Date.now() < deadline) {
+					await new Promise((r) => setTimeout(r, 50));
+				}
+				if (child.exitCode === null) child.kill("SIGKILL");
+			}
+			// Run promises settle after their finally-block scene cleanup.
+			await Promise.allSettled(
+				entries.map((e) => e.done ?? Promise.resolve()),
+			);
 		}
 	}
 }

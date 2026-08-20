@@ -425,9 +425,13 @@ async function main(): Promise<void> {
 		ttlSweep.stop();
 		eventHub.stop();
 		streamBot.stop();
+		// Stop intake first so no new events enqueue during the drain.
+		await app.close();
+		// Kill active workers + await their scene cleanup; a restart must not
+		// leave worktree residue blocking the next pipeline of the same MR.
+		await workerManager.shutdown();
 		routeStore.close();
 		decisionStore.close();
-		await app.close();
 		process.exit(0);
 	};
 	process.on("SIGTERM", shutdown);

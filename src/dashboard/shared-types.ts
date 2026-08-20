@@ -26,9 +26,22 @@ export interface ApiStatusResponse {
 	queue: QueueDetail[];
 }
 
+/** 活跃 worker 快照条目——进 SSE snapshot，迟到客户端也能看到在跑的 worker。 */
+export interface WorkerSnapshot {
+	workerId: string;
+	pipelineId?: number;
+	projectId?: string;
+	stage?: string;
+	turn?: number;
+	tokens?: number;
+	toolCall?: string;
+	startedAt: string;
+}
+
 export interface SystemSnapshot {
 	health?: HealthInfo;
 	scheduler?: SchedulerStats;
+	workers?: WorkerSnapshot[];
 }
 
 export interface MetricsEntry {

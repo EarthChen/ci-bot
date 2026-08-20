@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import {
 	SharedAgentRuntime,
@@ -140,5 +140,98 @@ describe("SharedAgentRuntime", () => {
 			failure: "session_setup_failed",
 			metrics: { turns: 0, tokens: 0 },
 		});
+	});
+});
+
+describe("SharedAgentRuntime IPC progress", () => {
+	// vitest forks 池里 process.send 指向 tinypool 通道——覆写后必须还原，
+	// 否则破坏 vitest 自身 IPC（同 tests/dashboard/ipc.test.ts 的处理）。
+	const savedFlag = process.env.CIHEAL_WORKER_IPC;
+	const savedSend = process.send;
+
+	afterEach(() => {
+		if (savedFlag === undefined) delete process.env.CIHEAL_WORKER_IPC;
+		else process.env.CIHEAL_WORKER_IPC = savedFlag;
+		(process as { send?: unknown }).send = savedSend;
+	});
+
+	/** prompt() 时按序发出 turn_start → tool_execution_start → turn_end 的假 session。 */
+	function createEventSession(totalTokens: number): { readonly session: AgentSession } {
+		const listeners: Array<(event: unknown) => void> = [];
+		const message: FakeMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			usage: { totalTokens },
+		};
+		return {
+			session: {
+				subscribe(listener: (event: unknown) => void) {
+					listeners.push(listener);
+					return () => {
+						const index = listeners.indexOf(listener);
+						if (index >= 0) listeners.splice(index, 1);
+					};
+				},
+				async prompt() {
+					for (const listener of listeners) {
+						listener({ type: "turn_start" });
+						listener({
+							type: "tool_execution_start",
+							toolCallId: "t1",
+							toolName: "read",
+							args: { path: "ci-log.txt" },
+						});
+						listener({ type: "turn_end", message, toolResults: [] });
+					}
+				},
+				async abort() {},
+				get messages() {
+					return [message];
+				},
+			} as unknown as AgentSession,
+		};
+	}
+
+	it("turn/tool session 事件转发为 IPC 消息（tokens 为累计值）", async () => {
+		const send = vi.fn();
+		(process as { send?: unknown }).send = send;
+		process.env.CIHEAL_WORKER_IPC = "1";
+
+		const runtime = new SharedAgentRuntime({
+			sessionFactory: async () => ({
+				session: createEventSession(100).session,
+				dispose() {},
+			}),
+		});
+		await runtime.run({ definition, input: { task: "x" }, cwd: "/tmp/x" });
+
+		expect(send).toHaveBeenCalledWith({ type: "turn_start", turn: 1 });
+		expect(send).toHaveBeenCalledWith({
+			type: "tool_call",
+			name: "read",
+			summary: "ci-log.txt",
+		});
+		expect(send).toHaveBeenCalledWith({
+			type: "turn_end",
+			turn: 1,
+			tokens: 100,
+			cost: 0.0001,
+		});
+	});
+
+	it("未接 IPC 通道（无 CIHEAL_WORKER_IPC）时不发送", async () => {
+		const send = vi.fn();
+		(process as { send?: unknown }).send = send;
+		delete process.env.CIHEAL_WORKER_IPC;
+
+		const runtime = new SharedAgentRuntime({
+			sessionFactory: async () => ({
+				session: createEventSession(100).session,
+				dispose() {},
+			}),
+		});
+		await runtime.run({ definition, input: { task: "x" }, cwd: "/tmp/x" });
+
+		expect(send).not.toHaveBeenCalled();
 	});
 });

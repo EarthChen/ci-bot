@@ -1,5 +1,7 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { logger } from "../util/log.js";
+import { sendIpc } from "../dashboard/ipc-types.js";
+import { estimateTokenCost } from "../util/cost.js";
 import type { SchedulingPolicy } from "./scheduler.js";
 
 export interface BudgetConfig {
@@ -290,11 +292,31 @@ function subscribeBudget(
 	let tokens = 0;
 	let reason: string | undefined;
 	const unsubscribe = session.subscribe((event) => {
+		if (event.type === "turn_start") {
+			sendIpc({ type: "turn_start", turn: turns + 1 });
+			return;
+		}
+		if (event.type === "tool_execution_start") {
+			// sendIpc 门控 CIHEAL_WORKER_IPC：只有 bot 接了 IPC 通道的 worker
+			// 子进程才发，共享运行时本身不依赖 dashboard。
+			sendIpc({
+				type: "tool_call",
+				name: event.toolName,
+				summary: summarizeToolArgs(event.args),
+			});
+			return;
+		}
 		if (event.type !== "turn_end") return;
 		turns++;
 		const turnTokens = readTurnTokens(event.message);
+		if (turnTokens !== undefined) tokens += turnTokens;
+		sendIpc({
+			type: "turn_end",
+			turn: turns,
+			tokens,
+			cost: estimateTokenCost(tokens),
+		});
 		if (turnTokens === undefined) return;
-		tokens += turnTokens;
 		if (turnTokens > budget.perTurnTokenLimit) {
 			reason = `single turn token ${turnTokens} exceeded ${budget.perTurnTokenLimit}`;
 			abortForBudget(session);
@@ -310,6 +332,15 @@ function subscribeBudget(
 		metrics: () => ({ turns, tokens }),
 		breachReason: () => reason,
 	};
+}
+
+/** 工具参数摄要为短文本（dashboard 展示用）：取常见目标字段，截断 120 字符。 */
+function summarizeToolArgs(args: unknown): string {
+	if (!args || typeof args !== "object") return "";
+	const record = args as Record<string, unknown>;
+	const candidate = record.command ?? record.path ?? record.pattern ?? record.query ?? "";
+	const text = typeof candidate === "string" ? candidate : JSON.stringify(candidate) ?? "";
+	return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
 function readTurnTokens(message: unknown): number | undefined {

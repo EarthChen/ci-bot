@@ -7,8 +7,9 @@ export type { SystemSnapshot } from "../types.js";
 
 export interface WorkerState {
 	workerId: string;
-	pipelineId: number;
-	projectId: string;
+	// snapshot 播种/迟到 upsert 时 id 可能尚未随进度到达，允许缺失。
+	pipelineId?: number;
+	projectId?: string;
 	stage?: string;
 	turn?: number;
 	tokens?: number;
@@ -35,6 +36,28 @@ export function useEventSource(url: string) {
 		es.addEventListener("snapshot", (e) => {
 			const data = JSON.parse(e.data);
 			setSnapshot(data);
+			// 迟到客户端从 snapshot 补齐当前活跃 worker（事件是 fire-and-forget，
+			// 连上之前发出的收不到）；已有条目不覆盖，避免 snapshot 旧值盖掉新事件。
+			if (Array.isArray(data.workers)) {
+				setWorkers((prev) => {
+					const next = new Map(prev);
+					for (const w of data.workers as Array<Record<string, unknown>>) {
+						const id = w.workerId;
+						if (typeof id !== "string" || next.has(id)) continue;
+						next.set(id, {
+							workerId: id,
+							pipelineId: typeof w.pipelineId === "number" ? w.pipelineId : undefined,
+							projectId: typeof w.projectId === "string" ? w.projectId : undefined,
+							stage: typeof w.stage === "string" ? w.stage : undefined,
+							turn: typeof w.turn === "number" ? w.turn : undefined,
+							tokens: typeof w.tokens === "number" ? w.tokens : undefined,
+							toolCall: typeof w.toolCall === "string" ? w.toolCall : undefined,
+							startedAt: typeof w.startedAt === "string" ? w.startedAt : new Date().toISOString(),
+						});
+					}
+					return next;
+				});
+			}
 			setStatus("connected");
 		});
 
@@ -57,9 +80,13 @@ export function useEventSource(url: string) {
 			setWorkers((prev) => {
 				const next = new Map(prev);
 				const existing = next.get(data.workerId);
-				if (existing) {
-					next.set(data.workerId, { ...existing, ...data });
-				}
+				// upsert：迟到客户端 missed worker_started 时，首个进度事件也要建条目。
+				next.set(data.workerId, {
+					workerId: data.workerId,
+					startedAt: new Date().toISOString(),
+					...existing,
+					...data,
+				});
 				return next;
 			});
 		});

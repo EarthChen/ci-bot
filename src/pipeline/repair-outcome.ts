@@ -28,6 +28,7 @@ import { resolveRetentionPolicy } from "../config/retention.js";
 import { findSessionFile } from "../agent/real-runner.js";
 import { saveMrSession } from "./mr-session-store.js";
 import { sendIpc } from "../dashboard/ipc-types.js";
+import { estimateTokenCost } from "../util/cost.js";
 
 /**
  * G5 audit record — persisted per repair so a bad fix can be traced back
@@ -90,15 +91,9 @@ export interface RepairMetrics {
 	readonly durationMs: number;
 }
 
-const COST_PER_1K_TOKENS = Number(
-	process.env.BOT_TOKEN_UNIT_COST_PER_1K ?? "0.001",
-);
-
 /** Compute the estimated cost for a token count. */
 export function repairCost(tokens: number): number {
-	return (
-		Math.round((tokens / 1000) * COST_PER_1K_TOKENS * 1_000_000) / 1_000_000
-	);
+	return estimateTokenCost(tokens);
 }
 
 /** Zero metrics (for paths that never run the agent, e.g. class-5 early filter). */

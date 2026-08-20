@@ -65,6 +65,7 @@ describe("dispatchIpcMessage", () => {
 			emitted.push(event);
 		});
 		const updateSpy = vi.spyOn(eventHub, "updateSnapshot");
+		const progressSpy = vi.spyOn(eventHub, "workerProgress");
 		const recordSpy = vi.spyOn(metricsAggregator, "record");
 		const snapshotSpy = vi.spyOn(metricsAggregator, "snapshot").mockReturnValue({
 			count: 1,
@@ -84,6 +85,7 @@ describe("dispatchIpcMessage", () => {
 			emitted,
 			emitSpy,
 			updateSpy,
+			progressSpy,
 			recordSpy,
 			snapshotSpy,
 		};
@@ -130,6 +132,22 @@ describe("dispatchIpcMessage", () => {
 		expect(emitted).toEqual([
 			{ type: "worker_progress", data: { workerId, toolCall: "read" } },
 		]);
+	});
+
+	it("stage/turn/tool 进度同步写入 EventHub worker 注册表（迟到客户端可见）", () => {
+		const { dispatch, progressSpy } = ctx();
+		dispatch({ type: "stage_enter", stage: "agent-run", pipelineId: 42, projectId: "proj-1" });
+		dispatch({ type: "turn_start", turn: 2 });
+		dispatch({ type: "turn_end", turn: 2, tokens: 900, cost: 0.002 });
+		dispatch({ type: "tool_call", name: "read", summary: "ci-log.txt" });
+		expect(progressSpy).toHaveBeenNthCalledWith(1, workerId, {
+			stage: "agent-run",
+			pipelineId: 42,
+			projectId: "proj-1",
+		});
+		expect(progressSpy).toHaveBeenNthCalledWith(2, workerId, { turn: 2 });
+		expect(progressSpy).toHaveBeenNthCalledWith(3, workerId, { turn: 2, tokens: 900 });
+		expect(progressSpy).toHaveBeenNthCalledWith(4, workerId, { toolCall: "read" });
 	});
 
 	it("metrics_record → records metrics, updates snapshot, emits metrics_update", () => {

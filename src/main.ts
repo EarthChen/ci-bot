@@ -259,7 +259,27 @@ async function main(): Promise<void> {
 		decisionStore,
 		escalationNotifier,
 		skipStages: parseSkipStages(process.env.CIHEAL_SKIP_STAGES),
-		onLifecycleEvent: (type, data) => eventHub.emit({ type, data }),
+		onLifecycleEvent: (type, data) => {
+			// worker 注册表 + snapshot 刷新：SSE 事件 fire-and-forget，迟到客户端
+			// 只能看 snapshot，故每个生命周期节点都把权威状态推进 snapshot。
+			if (type === "worker_started" && typeof data.workerId === "string") {
+				eventHub.workerStarted(data.workerId, {
+					pipelineId: Number(data.pipelineId),
+					projectId: String(data.projectId),
+				});
+			} else if (type === "worker_done" && typeof data.workerId === "string") {
+				eventHub.workerDone(data.workerId);
+			}
+			eventHub.updateSnapshot({
+				health: {
+					uptimeSeconds: Math.floor(process.uptime()),
+					memoryMB: Math.round(process.memoryUsage().rss / 1_048_576),
+					version: process.env.npm_package_version ?? "0.0.0",
+				},
+				scheduler: scheduler.stats(),
+			});
+			eventHub.emit({ type, data });
+		},
 	});
 
 	// Dashboard: serve the React SPA from dist/dashboard-web/ (built by Vite;
@@ -279,6 +299,7 @@ async function main(): Promise<void> {
 		},
 		scheduler: scheduler.stats(),
 		metrics: metricsAggregator.snapshot(),
+		workers: [],
 	});
 
 	// Dashboard API: /api/status, /api/decisions, /api/metrics, /api/events (SSE).

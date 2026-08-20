@@ -22,6 +22,11 @@ const IPC_DISPATCH: Record<WorkerIpcMessage["type"], IpcHandler> = {
 				projectId: msg.projectId,
 			},
 		});
+		ctx.eventHub.workerProgress(ctx.workerId, {
+			stage: msg.stage,
+			pipelineId: msg.pipelineId,
+			projectId: msg.projectId,
+		});
 	},
 	stage_exit(ctx, msg) {
 		if (msg.type !== "stage_exit") return;
@@ -29,6 +34,7 @@ const IPC_DISPATCH: Record<WorkerIpcMessage["type"], IpcHandler> = {
 			type: "worker_progress",
 			data: { workerId: ctx.workerId, stageExit: msg.stage },
 		});
+		// 注册表不动：stage 值等下一个 stage_enter 覆盖，stage_exit 只意味当前 stage 收尾。
 	},
 	turn_start(ctx, msg) {
 		if (msg.type !== "turn_start") return;
@@ -36,6 +42,7 @@ const IPC_DISPATCH: Record<WorkerIpcMessage["type"], IpcHandler> = {
 			type: "worker_progress",
 			data: { workerId: ctx.workerId, turn: msg.turn },
 		});
+		ctx.eventHub.workerProgress(ctx.workerId, { turn: msg.turn });
 	},
 	turn_end(ctx, msg) {
 		if (msg.type !== "turn_end") return;
@@ -43,6 +50,7 @@ const IPC_DISPATCH: Record<WorkerIpcMessage["type"], IpcHandler> = {
 			type: "worker_progress",
 			data: { workerId: ctx.workerId, turn: msg.turn, tokens: msg.tokens },
 		});
+		ctx.eventHub.workerProgress(ctx.workerId, { turn: msg.turn, tokens: msg.tokens });
 	},
 	tool_call(ctx, msg) {
 		if (msg.type !== "tool_call") return;
@@ -50,6 +58,7 @@ const IPC_DISPATCH: Record<WorkerIpcMessage["type"], IpcHandler> = {
 			type: "worker_progress",
 			data: { workerId: ctx.workerId, toolCall: msg.name },
 		});
+		ctx.eventHub.workerProgress(ctx.workerId, { toolCall: msg.name });
 	},
 	metrics_record(ctx, msg) {
 		if (msg.type !== "metrics_record") return;

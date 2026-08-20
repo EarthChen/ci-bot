@@ -65,4 +65,65 @@ describe("EventHub", () => {
 		hub.emit({ type: "worker_done", data: { workerId: "x", outcome: "mr", durationMs: 1000 } });
 		expect(msgs.length).toBe(beforeCount);
 	});
+
+	it("worker 注册表：迟到客户端从 snapshot 看到活跃 worker", () => {
+		const hub = new EventHub();
+		hub.workerStarted("proj-1-42", { pipelineId: 42, projectId: "proj-1" });
+		hub.workerProgress("proj-1-42", { stage: "agent-run", turn: 2 });
+
+		const messages: string[] = [];
+		const fakeRes = {
+			write: (chunk: string) => { messages.push(chunk); return true; },
+			on: vi.fn(),
+		};
+		hub.addClient(fakeRes as any);
+
+		const snapshotMsg = messages.find((m) => m.includes("event: snapshot"));
+		expect(snapshotMsg).toBeDefined();
+		const data = JSON.parse(snapshotMsg!.slice(snapshotMsg!.indexOf("data: ") + 6));
+		expect(data.workers).toEqual([
+			expect.objectContaining({
+				workerId: "proj-1-42",
+				pipelineId: 42,
+				projectId: "proj-1",
+				stage: "agent-run",
+				turn: 2,
+			}),
+		]);
+	});
+
+	it("worker 注册表：workerDone 后 snapshot 不再包含该 worker", () => {
+		const hub = new EventHub();
+		hub.workerStarted("w1", { pipelineId: 1, projectId: "p" });
+		hub.workerDone("w1");
+
+		const messages: string[] = [];
+		const fakeRes = {
+			write: (chunk: string) => { messages.push(chunk); return true; },
+			on: vi.fn(),
+		};
+		hub.addClient(fakeRes as any);
+
+		const snapshotMsg = messages.find((m) => m.includes("event: snapshot"));
+		const data = JSON.parse(snapshotMsg!.slice(snapshotMsg!.indexOf("data: ") + 6));
+		expect(data.workers).toEqual([]);
+	});
+
+	it("workerProgress 对未知 worker upsert——进度早于 worker_started 也不丢", () => {
+		const hub = new EventHub();
+		hub.workerProgress("w-late", { stage: "agent-run", turn: 1 });
+
+		const messages: string[] = [];
+		const fakeRes = {
+			write: (chunk: string) => { messages.push(chunk); return true; },
+			on: vi.fn(),
+		};
+		hub.addClient(fakeRes as any);
+
+		const snapshotMsg = messages.find((m) => m.includes("event: snapshot"));
+		const data = JSON.parse(snapshotMsg!.slice(snapshotMsg!.indexOf("data: ") + 6));
+		expect(data.workers).toEqual([
+			expect.objectContaining({ workerId: "w-late", stage: "agent-run", turn: 1 }),
+		]);
+	});
 });

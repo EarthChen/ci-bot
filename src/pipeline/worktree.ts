@@ -506,7 +506,7 @@ export interface Worktree {
 	create(workDir: string, event: PipelineEvent): Promise<string>;
 	/** Remove a worktree (best-effort, idempotent). */
 	remove(cwd: string): Promise<void>;
-	/** Push repair branch to origin (--force-with-lease). */
+	/** Push repair branch to origin (force push, bot-owned branch). */
 	pushBranch(repoCwd: string, branch: string): Promise<void>;
 }
 
@@ -532,7 +532,7 @@ export async function pushRepairBranch(
 	}
 	await exec(
 		"git",
-		["push", "--force-with-lease", "origin", `HEAD:refs/heads/${branch}`],
+		["push", "--force", "origin", `HEAD:refs/heads/${branch}`],
 		{ cwd: repoCwd, env: gitEnv() },
 	);
 }

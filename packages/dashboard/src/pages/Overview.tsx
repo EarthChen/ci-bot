@@ -25,10 +25,34 @@ const KIND_LABELS: Record<SessionActivityItem["kind"], string> = {
 	user: "👤",
 };
 
+/** Sticky-scroll hook: auto-scroll only when user is near the bottom. */
+function useStickyScroll(dep: unknown) {
+	const ref = useRef<HTMLDivElement>(null);
+	const isAtBottom = useRef(true);
+
+	useEffect(() => {
+		const el = ref.current;
+		if (!el) return;
+		const onScroll = () => {
+			const threshold = 30;
+			isAtBottom.current =
+				el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+		};
+		el.addEventListener("scroll", onScroll);
+		return () => el.removeEventListener("scroll", onScroll);
+	}, []);
+
+	useEffect(() => {
+		const el = ref.current;
+		if (el && isAtBottom.current) el.scrollTop = el.scrollHeight;
+	}, [dep]);
+
+	return ref;
+}
+
 /** 展开行的日志面板：轮询 /api/workers/:id/logs（worker.log + session 活动流）。 */
 function WorkerLogsPanel({ workerId }: { workerId: string }) {
 	const [logs, setLogs] = useState<WorkerLogsResponse | null>(null);
-	const sessionRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
 		const load = () =>
@@ -43,10 +67,8 @@ function WorkerLogsPanel({ workerId }: { workerId: string }) {
 		return () => clearInterval(interval);
 	}, [workerId]);
 
-	useEffect(() => {
-		const el = sessionRef.current;
-		if (el) el.scrollTop = el.scrollHeight;
-	}, [logs]);
+	const workerLogRef = useStickyScroll(logs?.workerLog);
+	const sessionRef = useStickyScroll(logs?.session);
 
 	const paneStyle = {
 		background: "#0f172a",
@@ -68,7 +90,7 @@ function WorkerLogsPanel({ workerId }: { workerId: string }) {
 				<div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: "0.75rem" }}>
 					<div>
 						<div style={{ color: "#94a3b8", fontSize: "0.8rem", marginBottom: "0.25rem" }}>worker.log（编排层）</div>
-						<div style={paneStyle}>
+						<div ref={workerLogRef} style={paneStyle}>
 							{!logs || logs.workerLog.length === 0 ? (
 								<span style={{ color: "#64748b" }}>暂无日志</span>
 							) : (

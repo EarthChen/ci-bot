@@ -101,3 +101,26 @@ export interface DecisionSummary {
 	oos_paths: string | null;
 	decided_at: string | null;
 }
+
+/** worker.log 单行（pino JSONL 解析后）。 */
+export interface WorkerLogLine {
+	time: string;
+	level: string;
+	msg: string;
+}
+
+/** session jsonl 活动条目。 */
+export type SessionActivityKind = "text" | "tool_call" | "tool_result" | "user";
+
+export interface SessionActivityItem {
+	timestamp: string;
+	kind: SessionActivityKind;
+	summary: string;
+}
+
+/** GET /api/workers/:workerId/logs 响应。 */
+export interface WorkerLogsResponse {
+	workerId: string;
+	workerLog: WorkerLogLine[];
+	session: SessionActivityItem[];
+}

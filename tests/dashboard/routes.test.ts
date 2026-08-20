@@ -1,8 +1,14 @@
 import Fastify from "fastify";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { mountDashboardApi, type DashboardDeps } from "../../src/dashboard/routes.js";
 import type { DecisionRecord } from "../../src/decision/store.js";
 import { MetricsAggregator } from "../../src/dashboard/metrics-aggregator.js";
+import { EventHub } from "../../src/dashboard/event-hub.js";
+
+let savedDataRoot: string | undefined;
 
 function stubDeps(overrides?: Partial<DashboardDeps>): DashboardDeps {
 	return {
@@ -225,5 +231,64 @@ describe("GET /api/metrics/trend", () => {
 		expect(body).toHaveLength(14);
 		const todayEntry = body.find((d: { date: string }) => d.date === todayStr);
 		expect(todayEntry).toEqual({ date: todayStr, success: 1, escalation: 0, failure: 0 });
+	});
+});
+
+describe("GET /api/workers/:workerId/logs", () => {
+	it("returns 404 for unknown worker", async () => {
+		const app = Fastify();
+		await mountDashboardApi(app, stubDeps({ eventHub: new EventHub() }));
+
+		const res = await app.inject({ method: "GET", url: "/api/workers/nope/logs" });
+
+		expect(res.statusCode).toBe(404);
+		await app.close();
+	});
+
+	it("returns worker.log tail + session activity for a registered worker", async () => {
+		const dataRoot = mkdtempSync(join(tmpdir(), "dataroot-"));
+		const cwd = mkdtempSync(join(tmpdir(), "worker-cwd-"));
+		savedDataRoot = process.env.CIHEAL_DATA_ROOT;
+		process.env.CIHEAL_DATA_ROOT = dataRoot;
+
+		// worker.log：audit/<pipelineId>/<uuid>-worker-log/worker.log
+		const logDir = join(dataRoot, "audit", "42", "u-worker-log");
+		mkdirSync(logDir, { recursive: true });
+		writeFileSync(
+			join(logDir, "worker.log"),
+			JSON.stringify({ time: "2026-08-20T04:00:00.000Z", level: 30, msg: "runRepair start" }) + "\n",
+		);
+		// session jsonl：<cwd>/.pi-agent/sessions/<escaped>/*.jsonl
+		const sessionDir = join(cwd, ".pi-agent", "sessions", "--repo--");
+		mkdirSync(sessionDir, { recursive: true });
+		writeFileSync(
+			join(sessionDir, "s.jsonl"),
+			JSON.stringify({
+				type: "message",
+				id: "m1",
+				timestamp: "t1",
+				message: { role: "assistant", content: [{ type: "text", text: "诊断中" }] },
+			}) + "\n",
+		);
+
+		const hub = new EventHub();
+		hub.workerStarted("proj-1-42", { pipelineId: 42, projectId: "proj-1", cwd });
+		const app = Fastify();
+		await mountDashboardApi(app, stubDeps({ eventHub: hub }));
+
+		const res = await app.inject({ method: "GET", url: "/api/workers/proj-1-42/logs" });
+
+		expect(res.statusCode).toBe(200);
+		const body = res.json();
+		expect(body.workerLog).toEqual([
+			{ time: "2026-08-20T04:00:00.000Z", level: "info", msg: "runRepair start" },
+		]);
+		expect(body.session).toEqual([
+			{ timestamp: "t1", kind: "text", summary: "诊断中" },
+		]);
+
+		await app.close();
+		if (savedDataRoot === undefined) delete process.env.CIHEAL_DATA_ROOT;
+		else process.env.CIHEAL_DATA_ROOT = savedDataRoot;
 	});
 });

@@ -79,7 +79,7 @@ src/
     route-store.ts         # SQLite 动态路由（webhook_routes 表；/route 写、resolve 直读）
     route-command.ts / help-command.ts / command-help.ts  # 群命令 /route、/help + 文案外置（config/command-help.json）
   dashboard/
-    routes.ts              # Dashboard API 路由：/api/status（health+scheduler）、/api/decisions、/api/metrics、/api/events（SSE）
+    routes.ts              # Dashboard API 路由：/api/status（health+scheduler）、/api/decisions、/api/metrics、/api/events（SSE）、/api/workers/:id/logs（worker.log+session 活动流尾读）
     event-hub.ts           # EventHub：主进程事件聚合 + SSE 广播 + 系统快照（snapshot）+ keepalive
     metrics-aggregator.ts  # MetricsAggregator：启动预加载 audit JSONL + 增量更新 → 聚合指标快照
     ipc-types.ts           # Worker→Main IPC 消息类型（stage/turn/tool 进度）+ 类型守卫 + sendIpc 工具函数

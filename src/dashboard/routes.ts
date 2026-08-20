@@ -6,12 +6,15 @@ import type { DecisionRecord, DecisionStatus } from "../decision/store.js";
 import type { MetricsAggregator } from "./metrics-aggregator.js";
 import type { EventHub } from "./event-hub.js";
 import { MemoryRateLimiter } from "./rate-limit.js";
+import { readSessionActivityTail, readWorkerLogTail } from "./log-tail.js";
+import { resolveAuditDir } from "../config/paths.js";
 import type {
 	ApiStatusResponse,
 	DecisionSummary,
 	MetricsApiResponse,
 	QueueDetail,
 	SchedulerStats,
+	WorkerLogsResponse,
 } from "./shared-types.js";
 
 export type {
@@ -20,6 +23,7 @@ export type {
 	MetricsApiResponse,
 	QueueDetail,
 	SchedulerStats,
+	WorkerLogsResponse,
 } from "./shared-types.js";
 
 export interface DecisionStoreReader {
@@ -126,6 +130,22 @@ export async function mountDashboardApi(
 			});
 			dashboardApp.get("/api/metrics/trend", { preHandler: rateLimit }, async (_req, reply) => {
 				return reply.send(agg.trendData());
+			});
+		}
+
+		if (deps.eventHub) {
+			const hub = deps.eventHub;
+			// workerId 仅作注册表键，路径全部由注册表/config 派生，不拼用户输入（防穿越）。
+			dashboardApp.get("/api/workers/:workerId/logs", { preHandler: rateLimit }, async (req, reply) => {
+				const { workerId } = req.params as { workerId: string };
+				const worker = hub.getWorker(workerId);
+				if (!worker) return reply.code(404).send({ error: "unknown worker" });
+				const body: WorkerLogsResponse = {
+					workerId,
+					workerLog: readWorkerLogTail(resolveAuditDir(), String(worker.pipelineId ?? "")),
+					session: worker.cwd ? readSessionActivityTail(worker.cwd) : [],
+				};
+				return reply.send(body);
 			});
 		}
 	});

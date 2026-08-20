@@ -266,6 +266,7 @@ async function main(): Promise<void> {
 				eventHub.workerStarted(data.workerId, {
 					pipelineId: Number(data.pipelineId),
 					projectId: String(data.projectId),
+					cwd: typeof data.cwd === "string" ? data.cwd : undefined,
 				});
 			} else if (type === "worker_done" && typeof data.workerId === "string") {
 				eventHub.workerDone(data.workerId);

@@ -204,7 +204,7 @@ export class Scheduler {
 		const { event } = item;
 		const cwd = workerWorkDir(this.deps.workRoot, event);
 		const workerId = `${event.projectId}-${event.pipelineId}`;
-		this.deps.onLifecycleEvent?.("worker_started", { workerId, pipelineId: event.pipelineId, projectId: event.projectId });
+		this.deps.onLifecycleEvent?.("worker_started", { workerId, pipelineId: event.pipelineId, projectId: event.projectId, cwd });
 		const startedAt = Date.now();
 		try {
 			const outcome = await this.deps.workerManager.run(event, cwd);

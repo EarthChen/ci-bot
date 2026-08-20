@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StatusCard } from "../components/StatusCard.js";
 import { ConnectionBadge } from "../components/ConnectionBadge.js";
 import { useEventSource, type WorkerState } from "../hooks/useEventSource.js";
-import type { ApiStatusResponse } from "../types.js";
+import type { ApiStatusResponse, SessionActivityItem, WorkerLogsResponse, WorkerLogLine } from "../types.js";
 
 function formatUptime(seconds: number): string {
 	const h = Math.floor(seconds / 3600);
@@ -11,9 +11,106 @@ function formatUptime(seconds: number): string {
 	return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
-function WorkerRow({ w }: { w: WorkerState }) {
+const LEVEL_COLORS: Record<string, string> = {
+	info: "#94a3b8",
+	warn: "#f59e0b",
+	error: "#ef4444",
+	fatal: "#ef4444",
+};
+
+const KIND_LABELS: Record<SessionActivityItem["kind"], string> = {
+	text: "💬",
+	tool_call: "🔧",
+	tool_result: "📄",
+	user: "👤",
+};
+
+/** 展开行的日志面板：轮询 /api/workers/:id/logs（worker.log + session 活动流）。 */
+function WorkerLogsPanel({ workerId }: { workerId: string }) {
+	const [logs, setLogs] = useState<WorkerLogsResponse | null>(null);
+	const sessionRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		const load = () =>
+			fetch(`/api/workers/${encodeURIComponent(workerId)}/logs`)
+				.then((r) => (r.ok ? r.json() : null))
+				.then((data: WorkerLogsResponse | null) => {
+					if (data) setLogs(data);
+				})
+				.catch((err) => console.warn("[Dashboard] worker logs fetch failed:", err));
+		load();
+		const interval = setInterval(load, 2_500);
+		return () => clearInterval(interval);
+	}, [workerId]);
+
+	useEffect(() => {
+		const el = sessionRef.current;
+		if (el) el.scrollTop = el.scrollHeight;
+	}, [logs]);
+
+	const paneStyle = {
+		background: "#0f172a",
+		border: "1px solid #334155",
+		borderRadius: 6,
+		padding: "0.5rem",
+		height: "20rem",
+		overflowY: "auto" as const,
+		fontFamily: "monospace",
+		fontSize: "0.78rem",
+		lineHeight: 1.5,
+		whiteSpace: "pre-wrap" as const,
+		wordBreak: "break-all" as const,
+	};
+
 	return (
-		<tr style={{ borderBottom: "1px solid #334155" }}>
+		<tr>
+			<td colSpan={6} style={{ padding: "0.5rem" }}>
+				<div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: "0.75rem" }}>
+					<div>
+						<div style={{ color: "#94a3b8", fontSize: "0.8rem", marginBottom: "0.25rem" }}>worker.log（编排层）</div>
+						<div style={paneStyle}>
+							{!logs || logs.workerLog.length === 0 ? (
+								<span style={{ color: "#64748b" }}>暂无日志</span>
+							) : (
+								logs.workerLog.map((line: WorkerLogLine, i: number) => (
+									<div key={i}>
+										<span style={{ color: "#64748b" }}>{line.time.slice(11, 19)} </span>
+										<span style={{ color: LEVEL_COLORS[line.level] ?? "#94a3b8" }}>[{line.level}] </span>
+										{line.msg}
+									</div>
+								))
+							)}
+						</div>
+					</div>
+					<div>
+						<div style={{ color: "#94a3b8", fontSize: "0.8rem", marginBottom: "0.25rem" }}>agent 活动流（session）</div>
+						<div ref={sessionRef} style={paneStyle}>
+							{!logs || logs.session.length === 0 ? (
+								<span style={{ color: "#64748b" }}>暂无活动（agent 尚未产生输出）</span>
+							) : (
+								logs.session.map((item: SessionActivityItem, i: number) => (
+									<div key={i}>
+										<span>{KIND_LABELS[item.kind]} </span>
+										<span style={{ color: item.kind === "tool_result" ? "#64748b" : "#e2e8f0" }}>
+											{item.summary}
+										</span>
+									</div>
+								))
+							)}
+						</div>
+					</div>
+				</div>
+			</td>
+		</tr>
+	);
+}
+
+function WorkerRow({ w, expanded, onToggle }: { w: WorkerState; expanded: boolean; onToggle: () => void }) {
+	return (
+		<tr
+			onClick={onToggle}
+			style={{ borderBottom: "1px solid #334155", cursor: "pointer", background: expanded ? "#1e293b" : undefined }}
+		>
 			<td style={{ padding: "0.5rem" }}>{w.projectId}</td>
 			<td style={{ padding: "0.5rem" }}>{w.pipelineId}</td>
 			<td style={{ padding: "0.5rem" }}>
@@ -31,6 +128,7 @@ function WorkerRow({ w }: { w: WorkerState }) {
 export function Overview() {
 	const { status, snapshot, workers } = useEventSource("/api/events");
 	const [apiStatus, setApiStatus] = useState<ApiStatusResponse | null>(null);
+	const [expandedId, setExpandedId] = useState<string | null>(null);
 
 	useEffect(() => {
 		const load = () =>
@@ -79,11 +177,22 @@ export function Overview() {
 					</thead>
 					<tbody>
 						{Array.from(workers.values()).map((w) => (
-							<WorkerRow key={w.workerId} w={w} />
+							<>
+								<WorkerRow
+									key={w.workerId}
+									w={w}
+									expanded={expandedId === w.workerId}
+									onToggle={() => setExpandedId(expandedId === w.workerId ? null : w.workerId)}
+								/>
+								{expandedId === w.workerId && <WorkerLogsPanel key={`${w.workerId}-logs`} workerId={w.workerId} />}
+							</>
 						))}
 					</tbody>
 				</table>
 			)}
+			<p style={{ color: "#64748b", fontSize: "0.78rem", marginTop: "0.5rem" }}>
+				点击 worker 行展开实时日志（worker.log + agent 活动流，2.5s 轮询）
+			</p>
 		</div>
 	);
 }

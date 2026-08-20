@@ -12,6 +12,8 @@ export interface WorkerSnapshot {
 	turn?: number;
 	tokens?: number;
 	toolCall?: string;
+	/** worker 子进程 cwd——日志端点据此定位 session jsonl（不对外下发）。 */
+	cwd?: string;
 	startedAt: string;
 }
 
@@ -36,7 +38,7 @@ export class EventHub {
 	 * 活跃 worker。workerProgress 对未知 workerId 做 upsert，进度早于
 	 * worker_started 到达也不丢。
 	 */
-	workerStarted(workerId: string, info: { pipelineId: number; projectId: string }): void {
+	workerStarted(workerId: string, info: { pipelineId: number; projectId: string; cwd?: string }): void {
 		this.workers.set(workerId, { workerId, ...info, startedAt: new Date().toISOString() });
 		this.updateSnapshot({ workers: this.workerList() });
 	}
@@ -56,6 +58,10 @@ export class EventHub {
 		if (this.workers.delete(workerId)) {
 			this.updateSnapshot({ workers: this.workerList() });
 		}
+	}
+
+	getWorker(workerId: string): WorkerSnapshot | undefined {
+		return this.workers.get(workerId);
 	}
 
 	private workerList(): WorkerSnapshot[] {

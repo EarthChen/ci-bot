@@ -21,11 +21,14 @@
  *     Maven's .m2 is BOTH a read cache AND a write target (downloads +
  *     `mvn install` for multi-module projects write to it). A read-only .m2
  *     breaks `install` and causes spurious verify failures on missing deps.
- *     v1 concurrency=1 (G4) means no .m2 write contention. The agent running
- *     `mvn install`/`mvn test` writes legitimately; cross-pipeline cache reuse
- *     is a natural consequence of the shared host home. Evolution seam:
- *     concurrency>1 or threat model A upgrade → per-project isolated .m2 via
- *     deployment config (user.home override), not bot code.
+ *     v1 shipped concurrency=1 (G4), hence no .m2 write contention. In 2026-08
+ *     concurrency was raised to 2 with an explicit decision to KEEP the shared
+ *     writable .m2 (cache-reuse benefit outweighs the low write-contention risk).
+ *     The agent running `mvn install`/`mvn test` writes legitimately;
+ *     cross-pipeline cache reuse is a natural consequence of the shared host
+ *     home. Evolution seam: observed contention or threat model A upgrade →
+ *     per-project isolated .m2 via deployment config (user.home override), not
+ *     bot code.
  *   - Restricted OS user: deployment-level (v1 host restricted user; docker
  *     evolution = non-root container USER). Not asserted in e2e — documented.
  */

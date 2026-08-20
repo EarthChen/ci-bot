@@ -99,6 +99,9 @@ const REPAIR_ESCALATE_ENV = {
 	CIHEAL_STUB_FIX_KIND: "class3-no-spec",
 };
 
+/** Usage text injected into /heal rejection replies (mirrors main.ts wiring). */
+const HEAL_USAGE_TEXT = "- /heal <id> test|prod|drop [备注]";
+
 interface HdBot {
 	readonly dataRoot: string;
 	readonly store: DecisionStore;
@@ -182,6 +185,7 @@ function buildBot(opts: {
 					reply: (conversationId, message) =>
 						replies.sendTo(conversationId, message),
 					enqueueResume: enqueueResumeSpy,
+					usageText: HEAL_USAGE_TEXT,
 				},
 				groupMessage(text, overrides),
 			);
@@ -477,6 +481,7 @@ describe("e2e human-decision — 验收门（T11）", () => {
 					store: reopened,
 					reply: (cid, msg) => b.replies.sendTo(cid, msg),
 					enqueueResume: b.enqueueResumeSpy,
+					usageText: HEAL_USAGE_TEXT,
 				},
 				groupMessage("/heal D-8-rst001 test"),
 			);

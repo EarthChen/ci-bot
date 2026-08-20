@@ -50,4 +50,16 @@ describe("mountDashboardStatic", () => {
 
 		await app.close();
 	});
+
+	it("/dashboard 无尾斜杠重定向到 /dashboard/（裸路径曾 404）", async () => {
+		const app = Fastify();
+		await mountDashboardStatic(app, makeDashboardDir());
+		await app.ready();
+
+		const res = await app.inject({ method: "GET", url: "/dashboard" });
+		expect(res.statusCode).toBe(302);
+		expect(res.headers.location).toBe("/dashboard/");
+
+		await app.close();
+	});
 });

@@ -145,6 +145,9 @@ export async function mountDashboardStatic(
 	app: FastifyInstance,
 	dashboardDir: string,
 ): Promise<void> {
+	// 裸 /dashboard（无尾斜杠）→ /dashboard/：prefix "/dashboard/" 与
+	// wildcard "/dashboard/*" 都不匹配裸路径，不重定向会 404。
+	app.get("/dashboard", (_req, reply) => reply.redirect("/dashboard/"));
 	await app.register(fastifyStatic, {
 		root: dashboardDir,
 		prefix: "/dashboard/",

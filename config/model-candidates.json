@@ -5,7 +5,7 @@
 		"defaultThinkingLevel": "medium",
 		"compaction": {
 			"enabled": true,
-			"reserveTokens": 32768,
+			"reserveTokens": 106000,
 			"keepRecentTokens": 40000
 		}
 	}

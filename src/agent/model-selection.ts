@@ -13,7 +13,13 @@ export type ThinkingLevel =
 	| "xhigh"
 	| "max";
 
-/** Per-model run policy inlined into each candidate (thinking + compaction). */
+/** Per-model run policy inlined into each candidate (thinking + compaction).
+ *
+ * 压缩触发点 = contextWindow − reserveTokens（pi shouldCompact 公式）。
+ * contextWindow 来自部署侧 models.json（qwen3.8-max 声明 256000），因此
+ * reserveTokens 编码的是“希望多早触发压缩”：106000 = 256000 − 150000，
+ * 即 context 长到 ~150k token 就自动压缩（keepRecentTokens 保留近尾）。
+ * 调整窗口声明时必须同步重算此值。 */
 export interface ModelCandidateCompaction {
 	readonly enabled?: boolean;
 	readonly reserveTokens?: number;

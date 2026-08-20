@@ -559,9 +559,28 @@ export interface Worktree {
 	pushBranch(repoCwd: string, branch: string): Promise<void>;
 }
 
+/** Spill files the bot writes into the worktree (CI log / MR diff / diff
+ *  index / 预解析违规清单)——永远不得进入修复 patch 或推送的修复分支。 */
+const SPILL_RE =
+	/(^|\/)(ci-log.*\.txt|mr-diff\.patch|mr-diff-index\.txt|violations\.json)$/;
+
+/** 构建工具状态（Maven 本地仓库）：agent 在 worktree 内跑 mvn 可能写出
+ *  仓库内 .m2（MR !281 e2e：.lastUpdated 混入 patch 触发 G3 误杀）。
+ *  构建态永远不是修复产物。 */
+const BUILD_NOISE_RE = /(^|\/)\.m2\//;
+
+/** patch 提取与修复分支推送共同排除的非修复噪声。 */
+export function isPatchNoise(path: string): boolean {
+	return SPILL_RE.test(path) || BUILD_NOISE_RE.test(path);
+}
+
 /**
  * Commit staged/unstaged agent edits (if any) and force-push the repair
  * branch to origin. GitLab MR diff updates automatically on push.
+ *
+ * Bot noise（spill 文件 / .m2）先从索引剔除，使推送的 commit 与通过 G3
+ * 校验的 patch 完全一致（MR !442：extractPatch 只清洗记录用 patch，
+ * 未清洗 commit，spill 文件漏进 MR）。
  */
 export async function pushRepairBranch(
 	repoCwd: string,
@@ -573,11 +592,42 @@ export async function pushRepairBranch(
 	});
 	if (stdout.trim()) {
 		await exec("git", ["add", "-A"], { cwd: repoCwd, env: gitEnv() });
-		await exec(
+		// extractPatch 的 `git add -A`（或 agent）可能已暂存 bot 噪声；
+		// 提交前移出索引，保证 commit == 校验过的 patch。
+		const { stdout: stagedOut } = await exec(
 			"git",
-			["commit", "-m", "ci-self-heal: apply fix"],
+			["diff", "--cached", "--name-only"],
 			{ cwd: repoCwd, env: gitEnv() },
 		);
+		const noise = stagedOut
+			.split("\n")
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0 && isPatchNoise(s));
+		if (noise.length > 0) {
+			await exec(
+				"git",
+				["rm", "--cached", "-r", "--ignore-unmatch", "--", ...noise],
+				{ cwd: repoCwd, env: gitEnv() },
+			);
+		}
+		// 只剩噪声 → 不产生空修复 commit（--quiet 有 diff 时退 1）。
+		let hasStaged = true;
+		try {
+			await exec("git", ["diff", "--cached", "--quiet"], {
+				cwd: repoCwd,
+				env: gitEnv(),
+			});
+			hasStaged = false;
+		} catch {
+			hasStaged = true;
+		}
+		if (hasStaged) {
+			await exec(
+				"git",
+				["commit", "-m", "ci-self-heal: apply fix"],
+				{ cwd: repoCwd, env: gitEnv() },
+			);
+		}
 	}
 	await exec(
 		"git",

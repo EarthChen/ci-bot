@@ -16,7 +16,7 @@ import type { GitLabClient, MrPipelineStatus } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome, Patch, AgentResult, Diagnosis } from "../types.js";
 import { logger } from "../util/log.js";
-import type { Worktree } from "./worktree.js";
+import { isPatchNoise, type Worktree } from "./worktree.js";
 import { repairBranchName } from "./repair-branch.js";
 import { finishRepair, repairCost } from "./repair-outcome.js";
 import { emptyTokenUsage } from "../util/cost.js";
@@ -670,21 +670,6 @@ export async function resolveRepairMr(args: {
 		return { ok: false, summary: "createMr returned empty url" };
 	}
 	return { ok: true, mrUrl: created.url, ...(reopenedNote ? { reopenedNote } : {}) };
-}
-
-/** Spill files (CI log / MR diff / diff index) the bot writes into the
- *  worktree — must never appear in the extracted patch. */
-const SPILL_RE =
-	/(^|\/)(ci-log.*\.txt|mr-diff\.patch|mr-diff-index\.txt)$/;
-
-/** 构建工具状态（Maven 本地仓库）：agent 在 worktree 内跑 mvn 可能写出
- *  仓库内 .m2（MR !281 e2e：.lastUpdated 混入 patch 触发 G3 误杀）。
- *  构建态永远不是修复产物。 */
-const BUILD_NOISE_RE = /(^|\/)\.m2\//;
-
-/** patch 提取排除的非修复噪声（bot spill 文件 + 构建工具状态）。 */
-export function isPatchNoise(path: string): boolean {
-	return SPILL_RE.test(path) || BUILD_NOISE_RE.test(path);
 }
 
 /** Whitelist-validate a patch (G0 diff gate): every path must be in the MR

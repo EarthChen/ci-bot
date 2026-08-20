@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
-import { createWorktree, withProjectLock } from "../../src/pipeline/worktree.js";
+import { createWorktree, withProjectLock, pushRepairBranch } from "../../src/pipeline/worktree.js";
 import type { PipelineEvent } from "../../src/types.js";
 
 const exec = promisify(execFile);
@@ -255,5 +255,74 @@ describe("withProjectLock — 同项目 bare clone 操作串行化（多 MR 并�
 		});
 		await expect(first).rejects.toThrow("git exploded");
 		await expect(withProjectLock("p1", async () => 42)).resolves.toBe(42);
+	});
+});
+
+/**
+ * MR !442（pipeline 100034275）：bot 的 spill 文件（ci-log.txt /
+ * mr-diff.patch / mr-diff-index.txt）混进了修复 MR。extractPatch 的
+ * isPatchNoise 只清洗「记录用」patch，pushRepairBranch 却把整个索引
+ * （含 extractPatch `git add -A` 暂存的噪声）提交并推送——校验面与
+ * 提交面脱节。不变量：推送的 commit 只含修复产物。
+ */
+describe("pushRepairBranch — bot 噪声不入修复分支（MR !442）", () => {
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "worktree-noise-"));
+		projectId = `proj-${basename(root)}`;
+		savedEnv = {
+			CIHEAL_DATA_ROOT: process.env.CIHEAL_DATA_ROOT,
+			CIHEAL_WORKTREE_MODE: process.env.CIHEAL_WORKTREE_MODE,
+		};
+		process.env.CIHEAL_DATA_ROOT = join(root, "data");
+		process.env.CIHEAL_WORKTREE_MODE = "real";
+	});
+
+	afterEach(() => {
+		for (const [k, v] of Object.entries(savedEnv)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	async function seedWorktree(branch: string): Promise<string> {
+		const remote = await initRemote();
+		const sha = await remote.commit(branch, "base");
+		return createWorktree(join(root, "w1"), event(sha, branch, remote.path));
+	}
+
+	it("commit 只含修复改动：spill/violations/.m2 一律不进分支", async () => {
+		const repoCwd = await seedWorktree("feature/noise");
+		// agent 的合法修复
+		await writeFile(join(repoCwd, "Fix.java"), "// fix\n");
+		// bot 写入 repoCwd 的 spill 文件 + 构建噪声
+		await writeFile(join(repoCwd, "ci-log.txt"), "log");
+		await writeFile(join(repoCwd, "ci-log-retry.txt"), "log");
+		await writeFile(join(repoCwd, "mr-diff.patch"), "diff");
+		await writeFile(join(repoCwd, "mr-diff-index.txt"), "idx");
+		await writeFile(join(repoCwd, "violations.json"), "[]");
+		await mkdir(join(repoCwd, ".m2", "repository"), { recursive: true });
+		await writeFile(join(repoCwd, ".m2", "repository", "x.lastUpdated"), "");
+		// extractPatch 的 `git add -A` 已把一切暂存
+		await git(repoCwd, "add", "-A");
+
+		await pushRepairBranch(repoCwd, "ci-self-heal/feature/noise");
+
+		const committed = (
+			await git(repoCwd, "show", "--name-only", "--format=", "HEAD")
+		).split("\n").filter(Boolean);
+		expect(committed).toEqual(["Fix.java"]);
+	});
+
+	it("只剩噪声 → 不产生空修复 commit", async () => {
+		const repoCwd = await seedWorktree("feature/noise-only");
+		await writeFile(join(repoCwd, "ci-log.txt"), "log");
+		await writeFile(join(repoCwd, "mr-diff.patch"), "diff");
+		await git(repoCwd, "add", "-A");
+		const before = await git(repoCwd, "rev-parse", "HEAD");
+
+		await pushRepairBranch(repoCwd, "ci-self-heal/feature/noise-only");
+
+		expect(await git(repoCwd, "rev-parse", "HEAD")).toBe(before);
 	});
 });

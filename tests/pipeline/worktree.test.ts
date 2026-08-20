@@ -288,7 +288,13 @@ describe("pushRepairBranch — bot 噪声不入修复分支（MR !442）", () =>
 	async function seedWorktree(branch: string): Promise<string> {
 		const remote = await initRemote();
 		const sha = await remote.commit(branch, "base");
-		return createWorktree(join(root, "w1"), event(sha, branch, remote.path));
+		const repoCwd = await createWorktree(join(root, "w1"), event(sha, branch, remote.path));
+		// Repo-local identity：不依赖环境全局 gitconfig（CI runner 没有，
+		// MR !442 测试曾在 CI 因 empty ident 失败）。生产由 Dockerfile
+		// system-level config 提供。
+		await git(repoCwd, "config", "user.email", "ci-self-heal@bot");
+		await git(repoCwd, "config", "user.name", "ci-self-heal bot");
+		return repoCwd;
 	}
 
 	it("commit 只含修复改动：spill/violations/.m2 一律不进分支", async () => {

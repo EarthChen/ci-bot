@@ -11,7 +11,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 
 1. **改动范围（G3）**：
    - **单测失败**：可改 `src/test|it`/`docs` 与 **MR diff 内**的 `src/main`（有限放宽，ADR-0006）。铁律：改 `src/main` 只为让既有失败测试通过——优先改实现满足测试，严禁改写既有失败测试的断言语义来迎合实现（编译适配除外）；测试语义改动在 MR 描述逐条申报。diff 外 `src/main` → 转交。
-   - **static-analysis/checkstyle 失败**：可改 **MR diff 行范围内**（±5 行容忍度）的文件（含 `src/main`，bot 用 `validatePatchLineScope` 行级校验兜底——**只允许修改 MR diff hunk 覆盖的行及其上下各 5 行**，超出行范围的生产代码改动会被 bot 拒绝）。铁律：改动必须绑定 CI 报告的 `file:line:rule`，只在违规行 ±5 行内修改；**禁止为修 MethodLength/ParameterNumber 做整文件重构或新增跨 hunk 的 helper 方法/参数对象**——若违规行上的局部最小改法无法满足规则，该项转交（可先开部分修复 MR）。超出行范围 → 转交。
+   - **static-analysis/checkstyle 失败**：可改 **MR diff 行范围内**（±5 行容忍度）的文件（含 `src/main`，bot 用 `validatePatchLineScope` 行级校验兜底——**只允许修改 MR diff hunk 覆盖的行及其上下各 5 行**，超出行范围的生产代码改动会被 bot 拒绝）。铁律：改动必须绑定 CI 报告的 `file:line:rule`，只在违规行 ±5 行内修改；**禁止为修 MethodLength/ParameterNumber 做整文件重构或新增跨 hunk 的 helper 方法/参数对象**——若违规行上的局部最小改法无法满足规则，该项转交（可先开部分修复 MR）。超出行范围 → 转交。**此路径下禁止顺带文档同步**：`docs/`、`*.md` 仅 class 2（单测路径）可写；quality 修复中认为文档需要更新 → 写进 MR 描述，不改文件（实测：quality 修复顺带改 diff 外 `docs/api/API-INTERFACES.md` → G3 拒绝整个 patch，50 分钟/84 turns/$2.18 整轮作废）。
    - **唯一例外**：diff 外文件是你自建的过程产物（spotbugs/checkstyle 过滤器 xml、临时脚本、日志——本应写 /tmp）→ 从工作区与暂存区删除后照常继续，不转交（实测：一个误入 patch 的过滤器文件曾废弃 36 分钟/123 turn/$20 的整轮修复）。
 2. **class 3 按 spec/PRD 断言正确行为**，不按当前代码行为（否则把 bug 固化成测试）。
 3. **不猜修复**。诊断未达 class 1/2/3 确信 → 转交，不反复重试烧预算。
@@ -110,7 +110,7 @@ description: CI 失败自愈 playbook。当 GitLab pipeline 在 单元测试 / �
 
 **static-analysis/checkstyle 批量修复（默认走批量，必读）**：
 
-1. 从 CI 日志提取全部 `file:line:rule`，按规则分组（Imports / OperatorWrap / LineLength / MethodLength / SpotBugs-*）。
+1. 先拿到**结构化违规清单**（`file:line:rule`）：CI 日志只有摘要时，按 repair-detail「本地复现配方」在本地复现检查并解析报告 XML，得到全量 `file:line:rule` 后对照 MR diff hunk ±5 行分流，再按规则分组（Imports / OperatorWrap / LineLength / MethodLength / SpotBugs-*）。**先清单后修复，禁止边改边猜**。
 2. **机械项**（UnusedImports、OperatorWrap、LineLength、final、NoWhitespaceBefore 等）→ **同 turn 并行 edit 或一条 python/sed 脚本**批量改完，**禁止逐文件串行**（实测：72 项逐文件修 = 94 turns/$15；聚合后几分钟）。
 3. **结构性规则**（MethodLength、ParameterNumber、AvoidNestedBlocks）→ 仅在违规行 **hunk ±5 行内**做最小改动（删 dead code、合并单行）；**禁止**抽取 helper 方法/参数对象到 hunk 外、改方法签名波及其他文件——做不到 → 该项转交。
 4. 验证：checkstyle 用独立 CLI 秒级复跑改动文件（见 repair-detail「checkstyle 快路径」）；SpotBugs 批次末 `mvn -o -pl <mod> -am compile` 后再跑。全模块 mvn 每批最多 1 次。

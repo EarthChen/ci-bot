@@ -9,7 +9,7 @@
 **允许写的路径**：
 
 - `src/test/`、`src/it/`（测试源码）
-- `docs/`、`*.md`（文档，仅 class 2 触发）
+- `docs/`、`*.md`（文档，**仅 class 2 触发**；static-analysis/checkstyle 失败时 diff 外 docs 不可写——顺带文档同步会被 G3 整轮拒绝，实测：quality 修复改 diff 外 `docs/api/API-INTERFACES.md` → 50 分钟/84 turns 整轮作废）
 - `src/test/resources/`（测试资源）
 - **MR diff 内的 `src/main`**（有限放宽，ADR-0006；仅限 class 2/3 且被测代码在 diff 内违背其自带 spec，见下方铁律）
 - **static-analysis/checkstyle 失败**：可写 MR diff **行范围内**（±5 行容忍度）的文件（含 `src/main`），即只允许改 MR diff hunk 覆盖的行及其上下各 5 行，bot 用 `validatePatchLineScope` 行级校验兜底
@@ -17,7 +17,7 @@
 **绝对禁止的路径**：
 
 - diff 外的 `src/main`（生产代码）
-- static-analysis/checkstyle 失败时：diff 内但 hunk 行范围外的 `src/main` 行（bot 行级校验会拒绝）
+- static-analysis/checkstyle 失败时：diff 内但 hunk 行范围外的 `src/main` 行（bot 行级校验会拒绝）；**以及 diff 外的一切文件（含 `docs/`）**——quality 路径无文档同步权限，需要同步写进 MR 描述
 - `pom.xml`、`build.gradle`、`settings.gradle`（构建配置）
 - 仓库根的 `Dockerfile`、`ci/`、`.gitlab-ci.yml`（CI 配置）
 - **仓库工作区内的自建过程产物**（spotbugs/checkstyle include 过滤器、临时脚本、日志）——一律写 `/tmp`（如 `-Dspotbugs.includeFilterFile=/tmp/sb-include.xml`）；误写入仓库的必须在 commit 前删除
@@ -113,6 +113,14 @@
 1. 从 CI 日志提取工具版本与规则集（如 `spotbugs:4.8.6.8:check`、checkstyle 版本 + 规则文件）；规则集在仓库内（checkstyle.xml / exclude filter）直接用，CI 从外部拉取时按日志定位同源规则。
 2. 在仓库根用 `-pl <模块>` 复跑（同「跑测试」的多模块姿势）；先 `mvn -o -pl <模块> -am compile -DskipTests` 保编译过，再跑规则检查。
 3. 只计**本次修改行**上的阻断违规；未修改行的历史遗留不算失败（对齐 CI 行级闸；CI 若是全量闸，以 CI 日志实际判定为准）。
+
+**本地复现配方（CI 日志只有摘要时的违规清单来源）**：
+
+CI 的 quality job 通常**不上传报告 artifacts**（实测 artifacts 为空），服务端无现成报告；检查配置也常不在本仓库，而在 `.gitlab-ci.yml` 的 `include:` 指向的共享模板仓库。按序：
+
+1. **定位规则源**：读本仓库 `.gitlab-ci.yml` 的 `include:` 段，找到模板仓库与路径（实测：`ultron/ultron-dependency` 的 `/.gitlab-ci/{spotbugs,checkstyle}/`）；`git clone --depth 1 <模板仓库> /tmp/<名>` 取规则文件、include/exclude 过滤器与 job 实际执行的 mvn 命令参数。规则集就在本仓库时跳过此步。
+2. **本地复现**（参数对齐模板，仓库根执行）：SpotBugs `mvn -o -B com.github.spotbugs:spotbugs-maven-plugin:check -pl <模块>`（约 20s 级）；Checkstyle `mvn -o -B checkstyle:check -pl <模块>`（按模板参数），风格验证优先用「checkstyle 快路径」独立 CLI。
+3. **解析成清单**：报告 XML 根元素识别类型（`<BugCollection>` = SpotBugs、`<checkstyle>` = Checkstyle），解析出全量 `file:line:rule:message`，对照 MR diff hunk ±5 行分流（范围内修 / 范围外转交）后再动手——**先清单后修复，禁止边改边猜**（实测：靠日志摘要反推违规位置 + 自写脚本算 changed lines，多花 15 分钟探索 turn）。
 
 **修复与验证节奏（默认批量，小步是例外）**：
 

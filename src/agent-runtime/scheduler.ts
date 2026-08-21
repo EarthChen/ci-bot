@@ -177,12 +177,18 @@ export class Scheduler {
 	private readonly resumeChains = new Map<string, Promise<void>>();
 	/** Resumes scheduled but not yet finished (extends idle(), T05). */
 	private pendingResumes = 0;
+	/** 入队稳定窗口：同 key 最近一次入队后 CIHEAL_QUIET_WINDOW_MS 内不出队，
+	 *  分支连推时等稳定再修，减少 supersede/整轮作废浪费。0/unset = 关闭。 */
+	private readonly quietWindowMs: number;
+	private readonly lastEnqueueAtByKey = new Map<string, number>();
+	private quietTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(private readonly deps: SchedulerDeps) {
 		this.effectiveCap = Math.max(
 			1,
 			Math.min(this.deps.policy.maxParallel, this.deps.maxWorkers),
 		);
+		this.quietWindowMs = Number(process.env.CIHEAL_QUIET_WINDOW_MS) || 0;
 	}
 
 	/**
@@ -204,6 +210,7 @@ export class Scheduler {
 			return "skipped";
 		}
 		const serialKey = this.deps.policy.serialKey(event);
+		this.lastEnqueueAtByKey.set(serialKey, Date.now());
 		const queuedIdx = this.queue.findIndex(
 			(item) => this.deps.policy.serialKey(item.event) === serialKey,
 		);
@@ -375,15 +382,21 @@ export class Scheduler {
 		return failed.every((stage) => skip.includes(stage));
 	}
 
-	/** Pump items while under the (effective) concurrency cap and not key-blocked. */
+	/** Pump items while under the (effective) concurrency cap and not key-blocked.
+	 *  Items whose serialKey is still inside its stabilization window stay queued.
+	 */
 	private async pump(): Promise<void> {
 		while (this.running < this.effectiveCap && this.queue.length > 0) {
 			const idx = this.queue.findIndex(
-				(item) => !this.activeKeys.has(this.deps.policy.serialKey(item.event)),
+				(item) => {
+					const key = this.deps.policy.serialKey(item.event);
+					return !this.activeKeys.has(key) && this.quietElapsed(key);
+				},
 			);
-			if (idx < 0) break; // every queued item is blocked by an active same-key run
+			if (idx < 0) break; // active same-key run or pending quiet window
 			const [item] = this.queue.splice(idx, 1);
 			const key = this.deps.policy.serialKey(item.event);
+			this.lastEnqueueAtByKey.delete(key); // dequeued — window served its purpose
 			this.activeKeys.add(key);
 			this.runningByKey.set(key, { pipelineId: item.event.pipelineId });
 			this.runningEventByKey.set(key, item.event);
@@ -400,6 +413,35 @@ export class Scheduler {
 					void this.pump();
 				});
 		}
+		this.scheduleQuietRepump();
+	}
+
+	/** True when the key's stabilization window has elapsed (or is disabled). */
+	private quietElapsed(serialKey: string): boolean {
+		if (this.quietWindowMs <= 0) return true;
+		const last = this.lastEnqueueAtByKey.get(serialKey);
+		if (last === undefined) return true;
+		return Date.now() - last >= this.quietWindowMs;
+	}
+
+	/** Re-pump when the earliest deferred quiet window elapses. */
+	private scheduleQuietRepump(): void {
+		if (this.quietWindowMs <= 0 || this.queue.length === 0) return;
+		const now = Date.now();
+		let minWait = Number.POSITIVE_INFINITY;
+		for (const item of this.queue) {
+			const key = this.deps.policy.serialKey(item.event);
+			if (this.activeKeys.has(key)) continue;
+			const last = this.lastEnqueueAtByKey.get(key) ?? now;
+			minWait = Math.min(minWait, Math.max(0, this.quietWindowMs - (now - last)));
+		}
+		if (!Number.isFinite(minWait)) return;
+		if (this.quietTimer) clearTimeout(this.quietTimer);
+		this.quietTimer = setTimeout(() => {
+			this.quietTimer = undefined;
+			void this.pump();
+		}, minWait + 5);
+		this.quietTimer.unref?.();
 	}
 
 	private async shouldSkipGreen(event: PipelineEvent): Promise<boolean> {

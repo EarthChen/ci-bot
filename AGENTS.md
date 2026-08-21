@@ -122,6 +122,7 @@ tests/                     # agent-runtime / agent / config / dashboard / decisi
 - **终局新鲜度闸门（ADR-0011）**：createMR 前校验工作基线 vs MR 最新 HEAD——被取代则丢弃成果、不开 MR、发通知、记审计；转交类终局不受影响
 - **MR 终局跳过闸门（ADR-0012）**：出队执行前查源 MR state，`merged|closed` 则跳过修复（不 spawn worker、群通知尾注、审计）；查询失败 fail-open 放行（闸门是省钱优化不是安全边界）
 - **修复重放（ADR-0012）**：同 MR 未合并的新 pipeline，新 worktree 创建后把上轮已 push 的修复改动 git 层重放进来（单次 `fetch --refmap=` 私有 ref + range-diff `apply -3`，base = 存档 meta.sha）；applied/empty 时 prompt 注入增量声明；conflict 原子降级（`reset --hard` + `clean -fd`）退回全新修复；重放改动越出 G3 行级范围整体走现有转交/决策路径；审计记 `replay: { fromPipeline, commitRange, outcome }`
+- **入队稳定窗口**：出队前若同 serialKey 在 `CIHEAL_QUIET_WINDOW_MS`（默认 0 = 关闭）内有更新入队则延迟出队（分支连推时等稳定再修，减少 supersede/整轮作废浪费；实测：50 分钟修复中途被 supersede 三次、终局时源 MR 已 merge）；同 key 新入队重置窗口；运行中 steer 不受影响
 - **修复 MR 恒一（ADR-0011）**：修复分支名按源 MR 收敛（`ci-self-heal/<sourceBranch>`，不含 sha）；同一源 MR 至多一个 open 的 bot 修复 MR；open 时 push 原地更新，merged/closed/不存在时新开 MR（以 GitLab 按 source_branch 查询为准）
 - **session 寿命 = MR 寿命（ADR-0007/0011）**：所有终局（mr / 部分修复转交 / 纯转交 / failed）+ 决策作废时把 Pi session jsonl 存档到 `DATA_ROOT/mr-sessions/<proj>-<mr>.jsonl`（latest-wins，LRU 上限 32）；同 MR 后续 pipeline 命中则拷入新 worker → `SessionManager.open` + `AgentSession.compact()` + continue，prompt 强制声明「MR 已更新到新 commit、不得沿用旧诊断」；存档/复用任何环节失败均降级为全新 session，不阻断修复；审计记 `reusedFromPipeline`；MR merge/close 清理存档（ADR-0008）
 - **stage 排除**：`CIHEAL_SKIP_STAGES`（逗号分隔）中的 stage 全部失败时跳过修复（不起 agent、不注册决策），即时播报保留并尾注「不在自愈范围」；builds 缺失时降级为原行为。修复入队成功的失败播报尾注「已开始修复」，消除失败卡与终局卡之间的静默窗口

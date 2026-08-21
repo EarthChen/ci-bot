@@ -1380,3 +1380,69 @@ describe("MR 终局跳过闸门（repair-replay ticket 01）", () => {
 		expect(run).toHaveBeenCalledOnce();
 	});
 });
+
+describe("Scheduler — 入队稳定窗口（CIHEAL_QUIET_WINDOW_MS）", () => {
+	beforeEach(() => {
+		delete process.env.CIHEAL_QUIET_WINDOW_MS;
+	});
+
+	afterEach(() => {
+		delete process.env.CIHEAL_QUIET_WINDOW_MS;
+	});
+
+	it("窗口内不出队，窗口过后才启动 worker", async () => {
+		vi.stubEnv("CIHEAL_QUIET_WINDOW_MS", "150");
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+		});
+		scheduler.enqueue(makeEvent("proj-Q", 90, 10));
+
+		await delay(50);
+		expect(run).not.toHaveBeenCalled();
+		expect(scheduler.stats().queued).toBe(1);
+
+		await delay(200);
+		expect(run).toHaveBeenCalledOnce();
+		await scheduler.idle();
+	});
+
+	it("同 key 新入队重置窗口（合并后按最新事件计时）", async () => {
+		vi.stubEnv("CIHEAL_QUIET_WINDOW_MS", "300");
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+		});
+		scheduler.enqueue(makeEvent("proj-Q", 91, 11));
+		await delay(150);
+		scheduler.enqueue(makeEvent("proj-Q", 92, 11)); // 合并，窗口重置
+
+		// 距首次入队已 400ms，但距最新入队仅 250ms < 300ms → 仍未出队
+		await delay(250);
+		expect(run).not.toHaveBeenCalled();
+
+		await delay(150);
+		expect(run).toHaveBeenCalledOnce();
+		await scheduler.idle();
+	});
+
+	it("未配置窗口时立即出队（默认行为不变）", async () => {
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+		});
+		scheduler.enqueue(makeEvent("proj-Q", 93, 12));
+		await scheduler.idle();
+
+		expect(run).toHaveBeenCalledOnce();
+	});
+});

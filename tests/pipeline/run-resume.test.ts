@@ -79,6 +79,7 @@ function stubGlab(): GitLabClient {
 		findMrBySourceBranch: async () => null,
 		fetchBranchHeadSha: async () => "deadbeef",
 		fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: 999 }),
+		fetchMrState: async () => "open" as const,
 		createMr: async () => ({ url: "https://mr/x" }),
 	};
 }
@@ -279,6 +280,7 @@ describe("runResumeRepair — widen 扩围（ADR-0009）", () => {
 			findMrBySourceBranch: async () => null,
 			fetchBranchHeadSha: async () => "deadbeef",
 			fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: 999 }),
+			fetchMrState: async () => "open" as const,
 			createMr: async () => ({ url: "https://mr/x" }),
 		};
 	}

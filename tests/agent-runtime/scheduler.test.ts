@@ -1267,3 +1267,116 @@ describe("Scheduler — G3 扩围（ADR-0009）", () => {
 		expect(task.decision.oosPaths).toEqual(["m/src/test/T.java"]);
 	});
 });
+
+describe("MR 终局跳过闸门（repair-replay ticket 01）", () => {
+	it("mrTerminalChecker 返回 merged → 跳过 repair，通知带终局状态，不起 worker", async () => {
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const mrTerminalChecker = vi.fn(async () => "merged" as const);
+		const mrTerminalSkipNotifier = vi.fn(
+			async (_event: PipelineEvent, _state: "merged" | "closed") => {},
+		);
+		const lifecycle: Array<{ type: string; data: Record<string, unknown> }> = [];
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+			mrTerminalChecker,
+			mrTerminalSkipNotifier,
+			onLifecycleEvent: (type, data) => lifecycle.push({ type, data }),
+		});
+		scheduler.enqueue(makeEvent("proj-A", 77, 10));
+		await scheduler.idle();
+
+		expect(mrTerminalChecker).toHaveBeenCalledOnce();
+		expect(run).not.toHaveBeenCalled();
+		expect(mrTerminalSkipNotifier).toHaveBeenCalledOnce();
+		expect(mrTerminalSkipNotifier.mock.calls[0][0].pipelineId).toBe(77);
+		expect(mrTerminalSkipNotifier.mock.calls[0][1]).toBe("merged");
+		expect(lifecycle).toContainEqual({
+			type: "pipeline_mr_terminal_skipped",
+			data: {
+				pipelineId: 77,
+				projectId: "proj-A",
+				mrIid: 10,
+				sha: "abc1234567890",
+				state: "merged",
+			},
+		});
+	});
+
+	it("mrTerminalChecker 返回 closed → 跳过，状态透传给通知", async () => {
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const mrTerminalChecker = vi.fn(async () => "closed" as const);
+		const mrTerminalSkipNotifier = vi.fn(
+			async (_event: PipelineEvent, _state: "merged" | "closed") => {},
+		);
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+			mrTerminalChecker,
+			mrTerminalSkipNotifier,
+		});
+		scheduler.enqueue(makeEvent("proj-A", 78, 10));
+		await scheduler.idle();
+
+		expect(run).not.toHaveBeenCalled();
+		expect(mrTerminalSkipNotifier.mock.calls[0][1]).toBe("closed");
+	});
+
+	it("mrTerminalChecker 返回 null（MR 仍 open）→ 正常起 worker（不误杀）", async () => {
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const mrTerminalChecker = vi.fn(async () => null);
+		const mrTerminalSkipNotifier = vi.fn(async () => {});
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+			mrTerminalChecker,
+			mrTerminalSkipNotifier,
+		});
+		scheduler.enqueue(makeEvent("proj-A", 79, 10));
+		await scheduler.idle();
+
+		expect(run).toHaveBeenCalledOnce();
+		expect(mrTerminalSkipNotifier).not.toHaveBeenCalled();
+	});
+
+	it("mrTerminalChecker 抛错 → fail-open 放行修复", async () => {
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const mrTerminalChecker = vi.fn(async () => {
+			throw new Error("gitlab api down");
+		});
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+			mrTerminalChecker,
+		});
+		scheduler.enqueue(makeEvent("proj-A", 80, 10));
+		await scheduler.idle();
+
+		expect(run).toHaveBeenCalledOnce();
+	});
+
+	it("无 mrIid 的事件不走 mrTerminalChecker", async () => {
+		const run = vi.fn(async () => ({ kind: "escalated" as const, summary: "x" }));
+		const mrTerminalChecker = vi.fn(async () => "merged" as const);
+		const scheduler = new Scheduler({
+			workerManager: { run },
+			workRoot: "/tmp/w",
+			policy: CI_REPAIR_SCHEDULING_POLICY,
+			maxWorkers: 1,
+			mrTerminalChecker,
+		});
+		scheduler.enqueue(makeEvent("proj-A", 81));
+		await scheduler.idle();
+
+		expect(mrTerminalChecker).not.toHaveBeenCalled();
+		expect(run).toHaveBeenCalledOnce();
+	});
+});

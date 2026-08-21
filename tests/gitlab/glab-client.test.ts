@@ -264,3 +264,33 @@ describe("GlabGitLabClient.fetchCiLog", () => {
 		expect(log).toContain("TRACE-B");
 	});
 });
+
+describe("GlabGitLabClient.fetchMrState", () => {
+	it("returns merged/closed/open from the MR state field", async () => {
+		for (const state of ["merged", "closed", "opened"] as const) {
+			const { run } = recordingRunner([
+				{
+					match: /merge_requests\/17$/,
+					reply: JSON.stringify({ iid: 17, state }),
+				},
+			]);
+			const client = new GlabGitLabClient(run);
+
+			const result = await client.fetchMrState("31041", 17);
+
+			expect(result).toBe(state === "opened" ? "open" : state);
+		}
+	});
+
+	it("returns unknown for an unrecognized state value", async () => {
+		const { run } = recordingRunner([
+			{
+				match: /merge_requests\/17$/,
+				reply: JSON.stringify({ iid: 17, state: "locked" }),
+			},
+		]);
+		const client = new GlabGitLabClient(run);
+
+		expect(await client.fetchMrState("31041", 17)).toBe("unknown");
+	});
+});

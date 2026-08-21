@@ -307,18 +307,35 @@ async function main(): Promise<void> {
 				return false;
 			}
 		},
-		greenSkipNotifier: async (event) => {
+		mrTerminalChecker: async (event) => {
+			if (event.mrIid == null) return null;
+			try {
+				const state = await mainGlab.fetchMrState(
+					event.projectId,
+					event.mrIid,
+				);
+				return state === "merged" || state === "closed" ? state : null;
+			} catch (err) {
+				logger.warn(
+					{ err, event: { projectId: event.projectId, mrIid: event.mrIid } },
+					"MR terminal check failed — fail-open",
+				);
+				return null;
+			}
+		},
+		mrTerminalSkipNotifier: async (event, state) => {
 			const conversationId = projectRouter.resolve(event.projectId);
 			if (!conversationId) {
 				logger.warn(
 					{ projectId: event.projectId, pipelineId: event.pipelineId },
-					"green skip notification skipped: no group route",
+					"MR-terminal skip notification skipped: no group route",
 				);
 				return;
 			}
+			const stateText = state === "merged" ? "已合并" : "已关闭";
 			await groupSender.sendTo(conversationId, {
-				title: "CI 自愈绿灯跳过",
-				text: `项目 ${event.projectId} pipeline ${event.pipelineId}（MR !${event.mrIid}）最新 CI 已通过，跳过修复。`,
+				title: "CI 自愈终局跳过",
+				text: `项目 ${event.projectId} pipeline ${event.pipelineId}（MR !${event.mrIid}）源 MR ${stateText}，跳过自愈。`,
 			});
 		},
 		supersedeProvider: {

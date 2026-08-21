@@ -94,6 +94,7 @@ function stubGlab(opts: {
 		findMrBySourceBranch: async () => null,
 		fetchBranchHeadSha: async () => "deadbeef",
 		fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: null }),
+		fetchMrState: async () => "open" as const,
 		createMr: async () => ({ url: "https://mr/x" }),
 	};
 }
@@ -743,6 +744,7 @@ describe("repairFixed — static-analysis 行级 G3", () => {
 			findMrBySourceBranch: async () => null,
 			fetchBranchHeadSha: async () => headSha,
 			fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: null }),
+			fetchMrState: async () => "open" as const,
 			createMr: async () => ({ url: "https://mr/line-g3" }),
 		};
 	}
@@ -927,6 +929,7 @@ describe("runRepair — 终局新鲜度闸门（ticket 07）", () => {
 			findMrBySourceBranch: async () => null,
 			fetchBranchHeadSha,
 			fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: null }),
+			fetchMrState: async () => "open" as const,
 			createMr,
 		};
 	}
@@ -1100,6 +1103,7 @@ describe("runRepair — 修复 MR 恒一（ticket 08）", () => {
 			findMrBySourceBranch: opts.findMrBySourceBranch,
 			fetchBranchHeadSha: async () => opts.headSha ?? event.sha,
 			fetchMrPipelineStatus: async () => ({ status: "success", pipelineId: null }),
+			fetchMrState: async () => "open" as const,
 			createMr,
 		};
 	}

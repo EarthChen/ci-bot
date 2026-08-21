@@ -222,6 +222,13 @@ function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
 			}
 			return { status: mode as MrPipelineStatus["status"], pipelineId: 999 };
 		},
+		async fetchMrState(): Promise<"merged" | "closed" | "open" | "unknown"> {
+			// CIHEAL_STUB_MR_STATE 控制源 MR 状态（终局跳过闸门用）：
+			//   "open" (默认) — 源 MR 仍 open，正常修复
+			//   "merged" / "closed" — 终局，跳过修复
+			const mode = process.env.CIHEAL_STUB_MR_STATE ?? "open";
+			return mode as "merged" | "closed" | "open" | "unknown";
+		},
 		async createMr(params): Promise<{ url: string }> {
 			const rec = {
 				projectId: params.projectId,

@@ -46,6 +46,11 @@ export interface GitLabClient {
 		iid: number;
 		url: string;
 	} | null>;
+	/** 取源 MR 的终局状态（merged/closed/open/unknown）——终局跳过闸门用。 */
+	fetchMrState(
+		projectId: string,
+		mrIid: number,
+	): Promise<"merged" | "closed" | "open" | "unknown">;
 	/** 取指定分支的最新 HEAD sha。 */
 	fetchBranchHeadSha(projectId: string, branch: string): Promise<string>;
 	/** Create a MR with the given git patch + diagnosis summary. */
@@ -114,6 +119,25 @@ export class GlabGitLabClient implements GitLabClient {
 			status,
 			pipelineId: typeof p.id === "number" ? p.id : null,
 		};
+	}
+
+	async fetchMrState(
+		projectId: string,
+		mrIid: number,
+	): Promise<"merged" | "closed" | "open" | "unknown"> {
+		const out = await this.runGlab([
+			"api",
+			`/projects/${projectId}/merge_requests/${mrIid}`,
+		]);
+		const mr = safeParse(out);
+		const s = String(mr?.state ?? "");
+		return s === "merged"
+			? "merged"
+			: s === "closed"
+				? "closed"
+				: s === "opened"
+					? "open"
+					: "unknown";
 	}
 
 	async fetchCiLog(projectId: string, pipelineId: number): Promise<string> {

@@ -114,6 +114,16 @@ export interface SchedulerDeps {
 	readonly greenChecker?: (event: PipelineEvent) => Promise<boolean>;
 	/** Notifies when a dequeued repair is skipped because the MR is already green. */
 	readonly greenSkipNotifier?: (event: PipelineEvent) => Promise<void>;
+	/** Checks the source MR's terminal state before repair (repair-replay ticket 01).
+	 *  Returns "merged"/"closed" to skip the repair, null to proceed. */
+	readonly mrTerminalChecker?: (
+		event: PipelineEvent,
+	) => Promise<"merged" | "closed" | null>;
+	/** Notifies when a dequeued repair is skipped because the source MR is terminal. */
+	readonly mrTerminalSkipNotifier?: (
+		event: PipelineEvent,
+		state: "merged" | "closed",
+	) => Promise<void>;
 	/** Optional changed-files provider for running-worker supersede steer. */
 	readonly supersedeProvider?: SupersedeProvider;
 }
@@ -423,6 +433,47 @@ export class Scheduler {
 		}
 	}
 
+	/** Returns the source MR's terminal state, or null to proceed (fail-open). */
+	private async mrTerminalState(
+		event: PipelineEvent,
+	): Promise<"merged" | "closed" | null> {
+		const checker = this.deps.mrTerminalChecker;
+		if (!checker) return null;
+		try {
+			return await checker(event);
+		} catch (err) {
+			logger.warn(
+				{ err, event },
+				"MR terminal check failed — proceeding with repair (fail-open)",
+			);
+			return null;
+		}
+	}
+
+	private async handleMrTerminalSkip(
+		event: PipelineEvent,
+		state: "merged" | "closed",
+	): Promise<void> {
+		logger.info(
+			{ projectId: event.projectId, pipelineId: event.pipelineId, mrIid: event.mrIid, state },
+			"scheduler MR-terminal skip",
+		);
+		this.deps.onLifecycleEvent?.("pipeline_mr_terminal_skipped", {
+			pipelineId: event.pipelineId,
+			projectId: event.projectId,
+			mrIid: event.mrIid,
+			sha: event.sha,
+			state,
+		});
+		const notifier = this.deps.mrTerminalSkipNotifier;
+		if (!notifier) return;
+		try {
+			await notifier(event, state);
+		} catch (err) {
+			logger.error({ err, event, state }, "MR-terminal skip notification failed");
+		}
+	}
+
 	private emitSuperseded(
 		superseded: PipelineEvent,
 		superseding: PipelineEvent,
@@ -454,6 +505,16 @@ export class Scheduler {
 			if (event.mrIid != null && this.deps.greenChecker) {
 				if (await this.shouldSkipGreen(event)) {
 					await this.handleGreenSkip(event);
+					return;
+				}
+			}
+			// Repair-replay ticket 01: source MR already merged/closed → the
+			// pipeline failure is unfixable history — skip without spawning a worker.
+			// Checker errors fail open (proceed with repair).
+			if (event.mrIid != null && this.deps.mrTerminalChecker) {
+				const terminalState = await this.mrTerminalState(event);
+				if (terminalState) {
+					await this.handleMrTerminalSkip(event, terminalState);
 					return;
 				}
 			}

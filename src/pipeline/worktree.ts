@@ -34,10 +34,12 @@
  */
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, rm, readdir, stat } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { logger } from "../util/log.js";
 import { resolveBareRoot, resolveDataRoot } from "../config/paths.js";
 import { resolveRetentionPolicy } from "../config/retention.js";
@@ -557,6 +559,22 @@ export interface Worktree {
 	remove(cwd: string): Promise<void>;
 	/** Push repair branch to origin (force push, bot-owned branch). */
 	pushBranch(repoCwd: string, branch: string): Promise<void>;
+	/** Repair replay (ADR-0012): apply the previous repair's committed changes
+ *  (origin repair branch vs archived base sha) into a fresh worktree. */
+	replayChanges(args: {
+		repoCwd: string;
+		branch: string;
+		baseSha: string;
+	}): Promise<ReplayResult>;
+}
+
+/** Repair replay outcome (ADR-0012). */
+export type ReplayOutcome = "applied" | "empty" | "conflict" | "skipped";
+
+export interface ReplayResult {
+	readonly outcome: ReplayOutcome;
+	/** Short commit range the replay diff was computed over, e.g. "abc12345..def67890". */
+	readonly commitRange?: string;
 }
 
 /** Spill files the bot writes into the worktree (CI log / MR diff / diff
@@ -637,8 +655,117 @@ export async function pushRepairBranch(
 }
 
 /** Production worktree impl: real bare-clone + git worktree add/remove/push. */
+
+/** Diff/apply buffer for repair replay (large MR diffs). */
+const REPLAY_MAX_BUFFER = 64 * 1024 * 1024;
+
+/**
+ * Repair replay (ADR-0012): re-apply the previous repair's committed changes
+ * into a freshly created worktree so the agent only handles incremental
+ * violations. The worktree directory itself is NEVER reused — only the
+ * changes are replayed (range diff of the origin repair branch against the
+ * archived pipeline sha, three-way applied).
+ *
+ * Degradation is atomic: any apply failure restores the pristine worktree and
+ * reports "conflict" — the caller falls back to a fresh repair. A missing
+ * upstream branch reports "skipped"; a no-op apply (fixes already present in
+ * the new code) reports "empty".
+ */
+export async function replayRepairChanges(args: {
+	repoCwd: string;
+	branch: string;
+	baseSha: string;
+}): Promise<ReplayResult> {
+	if (process.env.CIHEAL_WORKTREE_MODE === "fake") {
+		return { outcome: "skipped" };
+	}
+	const { repoCwd, branch, baseSha } = args;
+	// Ref name: sanitize + hash suffix — sanitization alone is collision-prone
+	// (feat/a and feat.a both map to feat-a), and two workers sharing the bare
+	// clone must never cross-read each other's replay tip.
+	const replayRef = `refs/replay/${branch.replace(/[^A-Za-z0-9-]/g, "-")}-${createHash("sha1").update(branch).digest("hex").slice(0, 8)}`;
+	let tipSha = "";
+	try {
+		await exec(
+			"git",
+			["fetch", "--refmap=", "origin", `+refs/heads/${branch}:${replayRef}`],
+			{ cwd: repoCwd, env: gitEnv(), maxBuffer: REPLAY_MAX_BUFFER },
+		);
+		const { stdout: tipOut } = await exec(
+			"git",
+			["rev-parse", replayRef],
+			{ cwd: repoCwd, env: gitEnv() },
+		);
+		tipSha = tipOut.trim();
+	} catch {
+		return { outcome: "skipped" }; // no upstream repair branch
+	} finally {
+		await exec("git", ["update-ref", "-d", replayRef], {
+			cwd: repoCwd,
+			env: gitEnv(),
+		}).catch(() => {});
+	}
+	if (!/^[0-9a-f]{40}$/.test(tipSha) || tipSha === baseSha) {
+		// 40-hex assumes SHA-1 object format (the fleet standard); a SHA-256 repo
+		// would degrade every replay to "skipped" — fail-safe direction.
+		return { outcome: "skipped" }; // nothing new to replay
+	}
+	const commitRange = `${baseSha.slice(0, 8)}..${tipSha.slice(0, 8)}`;
+	let patchText: string;
+	try {
+		const r = await exec(
+			"git",
+			["diff", `${baseSha}..${tipSha}`],
+			{ cwd: repoCwd, env: gitEnv(), maxBuffer: REPLAY_MAX_BUFFER },
+		);
+		patchText = r.stdout;
+	} catch {
+		return { outcome: "skipped", commitRange };
+	}
+	if (!patchText.trim()) {
+		return { outcome: "empty", commitRange };
+	}
+	// execFile has no stdin piping — write the patch to a temp file outside
+	// the repo (never a spill file inside the worktree).
+	const patchFile = join(
+		tmpdir(),
+		`ci-self-heal-replay-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`,
+	);
+	writeFileSync(patchFile, patchText, "utf8");
+	try {
+		await exec("git", ["apply", "-3", "--whitespace=nowarn", patchFile], {
+			cwd: repoCwd,
+			env: gitEnv(),
+			maxBuffer: REPLAY_MAX_BUFFER,
+		});
+	} catch {
+		// Atomic degrade: restore the pristine worktree (no conflict markers,
+		// no half-applied index entries). The fresh worktree has no agent edits
+		// yet, so reset --hard + clean cannot destroy anything. reset --hard
+		// (not checkout --) because apply -3 leaves unmerged index entries
+		// ("AA") that checkout refuses to touch.
+		await exec("git", ["reset", "--hard"], { cwd: repoCwd, env: gitEnv() }).catch(
+			() => {},
+		);
+		await exec("git", ["clean", "-fd"], { cwd: repoCwd, env: gitEnv() }).catch(
+			() => {},
+		);
+		return { outcome: "conflict", commitRange };
+	} finally {
+		rmSync(patchFile, { force: true });
+	}
+	// Apply succeeded but the working tree is unchanged → fixes already present.
+	const { stdout: status } = await exec("git", ["status", "--porcelain"], {
+		cwd: repoCwd,
+		env: gitEnv(),
+	});
+	return status.trim()
+		? { outcome: "applied", commitRange }
+		: { outcome: "empty", commitRange };
+}
 export const defaultWorktree: Worktree = {
 	create: createWorktree,
 	remove: removeWorktree,
 	pushBranch: pushRepairBranch,
+	replayChanges: replayRepairChanges,
 };

@@ -200,6 +200,20 @@ function buildCiPrompt(input: AgentRunInput, cwd: string): string {
 					``,
 				]
 			: []),
+		...(input.replay
+			? [
+					`# 修复重放（先读这段再动手）`,
+					...(input.replay.outcome === "applied"
+						? [
+							`上一次修复（pipeline ${input.replay.fromPipeline}）的改动已由 bot 重放到当前工作区（未提交，git diff 可见）。`,
+							`先验证这些重放改动在新代码上仍然成立，再只处理本次 CI 新增的失败；已重放的文件勿重复修改。`,
+						]
+						: [
+							`上一次修复（pipeline ${input.replay.fromPipeline}）的改动已包含在当前代码中，勿重做；只诊断并修复本次 CI 的新增失败。`,
+						]),
+					``,
+				]
+			: []),
 		`# 任务`,
 		`分支 ${input.ref} @ ${input.sha.slice(0, 8)} 的 ${failureDesc}。`,
 		...scopeHint,

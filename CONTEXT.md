@@ -80,6 +80,10 @@ _Avoid_: treating supersede as discard-and-restart, per-sha repair MR branches
 The preserved cwd + worktree + session + branch set that enables resume.
 _Avoid_: partial retention (session without worktree), permanent retention without TTL
 
+**Repair replay**:
+The git-level re-application of a previous repair's committed changes (range diff of the origin repair branch against the archived pipeline sha, three-way applied) into a freshly created worktree for a new pipeline on the same unmerged MR. The worktree itself is never reused — only the changes are replayed. Replay failure degrades atomically to a fresh repair.
+_Avoid_: reusing the worktree directory across pipelines, cherry-picking commit history, replaying after MR terminal cleanup
+
 ## Dashboard
 
 **EventHub**:

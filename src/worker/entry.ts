@@ -17,7 +17,7 @@
  * CIHEAL_WORKER_TASK.
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join as joinPath } from "node:path";
 import type { AgentRunner } from "../agent/runner.js";
 import { StubAgentRunner } from "../agent/runner.js";
@@ -187,7 +187,41 @@ function makeFakeGlab(cwd: string): GitLabClient & FakeGlabRecorder {
 		async fetchMrDiff(): Promise<string> {
 			return "";
 		},
-		async findMrBySourceBranch(): Promise<null> {
+		async findMrBySourceBranch(): Promise<{
+			status: "opened" | "merged" | "closed";
+			iid: number;
+			url: string;
+		} | null> {
+			// CIHEAL_STUB_EXISTING_MR：模拟已有 open 修复 MR（修复 MR 恒一链路用）。
+			//   "after-first" — 首次查询返回 null（新开 MR），其后返回 opened（原地更新）
+			//   其他非空值     — 始终返回 opened（iid 取数值解析）
+			//   未设           — 始终返回 null（每次新开 MR）
+			const existing = process.env.CIHEAL_STUB_EXISTING_MR;
+			if (existing === "after-first") {
+				// 跨 worker 共享状态：标记文件在共享 dataRoot 下（每个 pipeline 是
+				// 独立子进程，进程内计数器不跨 worker 累计）。
+				const marker = joinPath(
+					process.env.CIHEAL_DATA_ROOT ?? cwd,
+					"stub-existing-mr.marker",
+				);
+				if (!existsSync(marker)) {
+					writeFileSync(marker, "1", "utf8");
+					return null;
+				}
+				return {
+					status: "opened",
+					iid: 442,
+					url: "https://gitlab.example.com/fake/-/merge_requests/442",
+				};
+			}
+			if (existing) {
+				const iid = Number(existing);
+				return {
+					status: "opened",
+					iid,
+					url: `https://gitlab.example.com/fake/-/merge_requests/${iid}`,
+				};
+			}
 			return null;
 		},
 		async fetchBranchHeadSha(

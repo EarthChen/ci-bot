@@ -273,6 +273,23 @@ export const stubSessionFactory: SessionFactory = (input: AgentRunInput) => {
 	const turnTokens =
 		Number(process.env.CIHEAL_STUB_TURN_TOKENS ?? "1000") || 1000;
 	const session = new StubSession(result, turnTokens, input.cwd);
+	// Persist a stub session jsonl so finishRepair's findSessionFile archives it
+	// to mr-sessions — this makes the ADR-0007 session-reuse chain and the
+	// ADR-0012 repair-replay chain e2e-testable without a live LLM session.
+	try {
+		// 与生产一致：session jsonl 落在 PI_CODING_AGENT_DIR（worker cwd 的
+		// .pi-agent），finishRepair 的 findSessionFile 从那里发现并存档。
+		const agentDir = process.env.PI_CODING_AGENT_DIR ?? joinPath(input.cwd, ".pi-agent");
+		const sessionDir = joinPath(agentDir, "sessions");
+		mkdirSync(sessionDir, { recursive: true });
+		writeFileSync(
+			joinPath(sessionDir, `stub-${input.pipelineId}.jsonl`),
+			JSON.stringify({ stub: true, pipelineId: input.pipelineId, sha: input.sha }) + "\n",
+			"utf8",
+		);
+	} catch {
+		// best-effort: archive-less e2e still works (reuse chain just skips)
+	}
 	const bundle: RuntimeSessionBundle = {
 		session: session as unknown as AgentSession,
 		dispose: () => session.dispose(),

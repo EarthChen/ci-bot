@@ -16,7 +16,7 @@ import type { GitLabClient, MrPipelineStatus } from "../gitlab/glab-client.js";
 import type { DingTalkNotifier } from "../notify/dingtalk.js";
 import type { PipelineEvent, RepairOutcome, Patch, AgentResult, Diagnosis } from "../types.js";
 import { logger } from "../util/log.js";
-import { isPatchNoise, type Worktree } from "./worktree.js";
+import { isPatchNoise, type Worktree, type ReplayResult } from "./worktree.js";
 import { repairBranchName } from "./repair-branch.js";
 import { finishRepair, repairCost } from "./repair-outcome.js";
 import { emptyTokenUsage } from "../util/cost.js";
@@ -195,6 +195,36 @@ export async function runRepair(
 		}
 	}
 
+	// ADR-0012: repair replay — re-apply the previous repair's committed changes
+	// (origin repair branch vs archived base sha) into the fresh worktree so the
+	// agent only handles incremental violations. Replay never blocks: failure
+	// degrades to a fresh repair. Only MR-triggered pipelines replay.
+	let replay: ReplayResult | undefined;
+	if (stored && event.mrIid != null) {
+		try {
+			replay = await worktree.replayChanges({
+				repoCwd,
+				branch: sourceBranch,
+				baseSha: stored.meta.sha,
+			});
+		} catch (err) {
+			replay = { outcome: "skipped" };
+			logger.warn({ err: errMessage(err) }, "repair replay failed — skipped");
+		}
+		logger.info(
+			{ fromPipeline: stored.meta.pipelineId, replay: replay.outcome },
+			"repair replay",
+		);
+	}
+	const replayAudit =
+		replay && stored
+			? {
+					fromPipeline: stored.meta.pipelineId,
+					commitRange: replay.commitRange ?? "",
+					outcome: replay.outcome,
+				}
+			: undefined;
+
 	const agentInput: AgentRunInput = {
 		projectId: event.projectId,
 		pipelineId: event.pipelineId,
@@ -207,6 +237,14 @@ export async function runRepair(
 		targetBranch,
 		failedStages: event.failedStages,
 		...(reuseSessionFile ? { reuseSessionFile, reuseMeta } : {}),
+		...(replay && stored && (replay.outcome === "applied" || replay.outcome === "empty")
+			? {
+					replay: {
+						outcome: replay.outcome,
+						fromPipeline: stored.meta.pipelineId,
+					},
+				}
+			: {}),
 	};
 	let result;
 	try {
@@ -254,8 +292,13 @@ export async function runRepair(
 			cwd: deps.cwd,
 			event,
 			removeWorktree: worktree.remove,
-			...(reuseMeta
-				? { audit: { reusedFromPipeline: reuseMeta.pipelineId } }
+			...(reuseMeta || replayAudit
+				? {
+						audit: {
+							...(reuseMeta ? { reusedFromPipeline: reuseMeta.pipelineId } : {}),
+							...(replayAudit ? { replay: replayAudit } : {}),
+						},
+					}
 				: {}),
 			result: {
 				kind: "escalated",
@@ -286,8 +329,13 @@ export async function runRepair(
 			mrDiff: agentInput.mrDiff,
 			agentInput,
 			agentMetrics,
-			...(reuseMeta
-				? { audit: { reusedFromPipeline: reuseMeta.pipelineId } }
+			...(reuseMeta || replayAudit
+				? {
+						audit: {
+							...(reuseMeta ? { reusedFromPipeline: reuseMeta.pipelineId } : {}),
+							...(replayAudit ? { replay: replayAudit } : {}),
+						},
+					}
 				: {}),
 		});
 	} finally {

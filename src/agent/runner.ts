@@ -35,6 +35,12 @@ export interface AgentRunInput {
 	readonly reuseSessionFile?: string;
 	/** 存档元数据（旧 pipeline/sha）——prompt「新 commit」声明用。 */
 	readonly reuseMeta?: { readonly pipelineId: number; readonly sha: string };
+	/** ADR-0012：上轮修复已重放进工作区（applied/empty）——prompt 增量声明用。
+ *  conflict/skipped 不注入（agent 全新诊断）。 */
+	readonly replay?: {
+		readonly outcome: "applied" | "empty";
+		readonly fromPipeline: number;
+	};
 	/** Webhook 解析的失败 stage 名（可选，用于 prompt 精准描述）。 */
 	readonly failedStages?: readonly string[];
 }

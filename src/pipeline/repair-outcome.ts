@@ -81,6 +81,12 @@ export interface AuditTrace {
 	readonly classDescription?: string;
 	/** G3 扩围（ADR-0009）：widenable 转交冻入的 MR diff 外文件清单（决策与审计可追溯）。 */
 	readonly oosPaths?: readonly string[];
+	/** ADR-0012：本次修复的重放结果（同 MR 上轮修复改动重放进新 worktree）。 */
+	readonly replay?: {
+		readonly fromPipeline: number;
+		readonly commitRange: string;
+		readonly outcome: string;
+	};
 }
 
 /** Metrics slice embedded in an audit trace. */
@@ -145,6 +151,7 @@ export function metricLine(trace: AuditTrace): string {
 		cost: trace.cost,
 		durationMs: trace.durationMs,
 		createdAt: trace.createdAt,
+		...(trace.replay ? { replay: trace.replay.outcome } : {}),
 	});
 }
 
@@ -309,7 +316,13 @@ export async function finishRepair(args: {
 	/** Injected worktree cleanup seam (best-effort). */
 	removeWorktree: (cwd: string) => Promise<void>;
 	/** T06: resume-run audit context (decision chain) threaded into the trace. */
-	audit?: { readonly decisionId?: string; readonly chainDepth?: number; readonly reusedFromPipeline?: number };
+	audit?: {
+		readonly decisionId?: string;
+		readonly chainDepth?: number;
+		readonly reusedFromPipeline?: number;
+		/** ADR-0012：修复重放结果（入 trace 与 metrics）。 */
+		readonly replay?: AuditTrace["replay"];
+	};
 }): Promise<RepairOutcome> {
 	const { dingtalk, cwd, event, result, removeWorktree, audit } = args;
 	const metrics = result.metrics ?? ZERO_METRICS;

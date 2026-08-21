@@ -202,3 +202,42 @@ describe("buildCiPrompt — failedStages 与 violations 预解析", () => {
 		expect(prompt).toContain("其余超范围无需处理");
 	});
 });
+
+describe("buildCiPrompt — 修复重放声明（ADR-0012）", () => {
+	const base = {
+		projectId: "31041",
+		pipelineId: 100034349,
+		ref: "refs/merge-requests/432/head",
+		sha: "6034c68cb2e6fdcae6d431a58e7398317cea4768",
+		ciLog: "checkstyle failure",
+		mrDiff: "",
+		cwd: "",
+		sourceBranch: "ci-self-heal/x",
+		targetBranch: "dev",
+	};
+
+	it("replay=applied → 声明改动已重放，先验证再只修增量", () => {
+		const prompt = createCiRepairDefinition("/tmp/x").buildPrompt({
+			...base,
+			replay: { outcome: "applied", fromPipeline: 100034275 },
+		});
+		expect(prompt).toContain("修复重放");
+		expect(prompt).toContain("已重放");
+		expect(prompt).toContain("100034275");
+		expect(prompt).toContain("只处理");
+	});
+
+	it("replay=empty → 声明修复已在新代码中，勿重做", () => {
+		const prompt = createCiRepairDefinition("/tmp/x").buildPrompt({
+			...base,
+			replay: { outcome: "empty", fromPipeline: 100034275 },
+		});
+		expect(prompt).toContain("已包含在当前代码中");
+		expect(prompt).toContain("勿重做");
+	});
+
+	it("无 replay → 无重放声明", () => {
+		const prompt = createCiRepairDefinition("/tmp/x").buildPrompt(base);
+		expect(prompt).not.toContain("修复重放");
+	});
+});

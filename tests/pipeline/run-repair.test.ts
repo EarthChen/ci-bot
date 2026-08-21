@@ -17,7 +17,7 @@ import {
 	widenableG3Paths,
 	outsideDiffPaths,
 } from "../../src/pipeline/run-repair.js";
-import type { Worktree } from "../../src/pipeline/worktree.js";
+import type { Worktree, ReplayResult } from "../../src/pipeline/worktree.js";
 import { repairBranchName } from "../../src/pipeline/repair-branch.js";
 import { InMemoryDingTalkNotifier } from "../../src/notify/dingtalk.js";
 import type { AgentRunner, AgentRunInput } from "../../src/agent/runner.js";
@@ -45,6 +45,7 @@ function fakeWorktree(): {
 		create: vi.fn(async (workDir: string) => join(workDir, "repo")),
 		remove,
 		pushBranch,
+		replayChanges: vi.fn(async () => ({ outcome: "skipped" as const })),
 	};
 	return { worktree, remove, pushBranch };
 }
@@ -220,6 +221,7 @@ describe("runRepair — 编排 + worktree seam", () => {
 			},
 			remove,
 			pushBranch: async () => {},
+			replayChanges: vi.fn(async () => ({ outcome: 'skipped' as const })),
 		};
 		const dt = new InMemoryDingTalkNotifier();
 		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
@@ -767,6 +769,7 @@ describe("repairFixed — static-analysis 行级 G3", () => {
 			create: async () => repoCwd,
 			remove,
 			pushBranch: vi.fn(async () => {}),
+			replayChanges: vi.fn(async () => ({ outcome: 'skipped' as const })),
 		};
 		const agentInput: AgentRunInput = {
 			projectId: mrEvent.projectId,
@@ -952,6 +955,7 @@ describe("runRepair — 终局新鲜度闸门（ticket 07）", () => {
 			create: async () => repoCwd,
 			remove,
 			pushBranch,
+			replayChanges: vi.fn(async () => ({ outcome: 'skipped' as const })),
 		};
 		const agentInput: AgentRunInput = {
 			projectId: mrEvent.projectId,
@@ -1129,6 +1133,7 @@ describe("runRepair — 修复 MR 恒一（ticket 08）", () => {
 			create: async () => repoCwd,
 			remove,
 			pushBranch,
+			replayChanges: vi.fn(async () => ({ outcome: 'skipped' as const })),
 		};
 		const agentInput: AgentRunInput = {
 			projectId: mrEvent.projectId,
@@ -1240,5 +1245,138 @@ describe("runRepair — 修复 MR 恒一（ticket 08）", () => {
 		);
 		expect(outFresh.kind).toBe("mr");
 		expect(createMrFresh).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("runRepair — ADR-0012 修复重放", () => {
+	let cwd: string;
+	let dataRoot: string;
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "run-repair-replay-"));
+		dataRoot = mkdtempSync(join(tmpdir(), "run-repair-replay-data-"));
+		process.env.CIHEAL_DATA_ROOT = dataRoot;
+	});
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(dataRoot, { recursive: true, force: true });
+		delete process.env.CIHEAL_DATA_ROOT;
+	});
+
+	const mrEvent: PipelineEvent = { ...event, mrIid: 7 };
+
+	function fakeWorktreeWithReplay(outcome: ReplayResult["outcome"]) {
+		const replayChanges = vi.fn(
+			async (_args: { repoCwd: string; branch: string; baseSha: string }) => ({
+				outcome,
+				...(outcome === "applied" ? { commitRange: "abc12345..def67890" } : {}),
+			}),
+		);
+		const remove = vi.fn(async (_cwd: string) => {});
+		const pushBranch = vi.fn(async () => {});
+		const worktree: Worktree = {
+			create: vi.fn(async (workDir: string) => join(workDir, "repo")),
+			remove,
+			pushBranch,
+			replayChanges,
+		};
+		return { worktree, replayChanges };
+	}
+
+	it("有存档 + applied → agent input 注入 replay，审计记重放来源", async () => {
+		const src = join(dataRoot, "prev-session.jsonl");
+		writeFileSync(src, '{"prev":true}\n');
+		saveMrSession(mrEvent, src, "mr");
+
+		const { worktree, replayChanges } = fakeWorktreeWithReplay("applied");
+		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
+		const { agent, run } = spyAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 4, summary: "x" },
+			reason: "stop",
+			source: "runtime",
+		});
+		await runRepair(
+			{ agent, glab, dingtalk: new InMemoryDingTalkNotifier(), cwd, worktree },
+			mrEvent,
+		);
+
+		expect(replayChanges).toHaveBeenCalledOnce();
+		expect(replayChanges.mock.calls[0]?.[0]?.baseSha).toBe("abc1234567890");
+		const input = run.mock.calls[0][0];
+		expect(input.replay).toEqual({ outcome: "applied", fromPipeline: 1001 });
+		const trace = JSON.parse(
+			readFileSync(join(cwd, "audit-trace.json"), "utf8"),
+		) as Record<string, unknown>;
+		expect(trace.replay).toEqual({
+			fromPipeline: 1001,
+			commitRange: "abc12345..def67890",
+			outcome: "applied",
+		});
+	});
+
+	it("conflict → agent input 不注入 replay（全新诊断），审计记 conflict", async () => {
+		const src = join(dataRoot, "prev-session.jsonl");
+		writeFileSync(src, '{"prev":true}\n');
+		saveMrSession(mrEvent, src, "mr");
+
+		const { worktree, replayChanges } = fakeWorktreeWithReplay("conflict");
+		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
+		const { agent, run } = spyAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 4, summary: "x" },
+			reason: "stop",
+			source: "runtime",
+		});
+		await runRepair(
+			{ agent, glab, dingtalk: new InMemoryDingTalkNotifier(), cwd, worktree },
+			mrEvent,
+		);
+
+		expect(replayChanges).toHaveBeenCalledOnce();
+		expect(run.mock.calls[0][0].replay).toBeUndefined();
+		const trace = JSON.parse(
+			readFileSync(join(cwd, "audit-trace.json"), "utf8"),
+		) as Record<string, unknown>;
+		expect((trace.replay as Record<string, unknown>).outcome).toBe("conflict");
+	});
+
+	it("无存档 → 不调 replayChanges", async () => {
+		const { worktree, replayChanges } = fakeWorktreeWithReplay("applied");
+		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
+		const { agent, run } = spyAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 4, summary: "x" },
+			reason: "stop",
+			source: "runtime",
+		});
+		await runRepair(
+			{ agent, glab, dingtalk: new InMemoryDingTalkNotifier(), cwd, worktree },
+			mrEvent,
+		);
+
+		expect(replayChanges).not.toHaveBeenCalled();
+		expect(run.mock.calls[0][0].replay).toBeUndefined();
+	});
+
+	it("无 mrIid 的 push pipeline → 不调 replayChanges", async () => {
+		const src = join(dataRoot, "prev-session.jsonl");
+		writeFileSync(src, '{"prev":true}\n');
+		saveMrSession(event, src, "mr");
+
+		const { worktree, replayChanges } = fakeWorktreeWithReplay("applied");
+		const glab = stubGlab({ fetchCiLog: async () => "test failure" });
+		const { agent, run } = spyAgent({
+			kind: "escalated",
+			diagnosis: { failureClass: 4, summary: "x" },
+			reason: "stop",
+			source: "runtime",
+		});
+		await runRepair(
+			{ agent, glab, dingtalk: new InMemoryDingTalkNotifier(), cwd, worktree },
+			event,
+		);
+
+		expect(replayChanges).not.toHaveBeenCalled();
+		expect(run.mock.calls[0][0].replay).toBeUndefined();
 	});
 });

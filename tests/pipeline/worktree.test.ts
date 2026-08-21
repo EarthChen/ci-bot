@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
-import { createWorktree, withProjectLock, pushRepairBranch } from "../../src/pipeline/worktree.js";
+import { createWorktree, withProjectLock, pushRepairBranch, replayRepairChanges } from "../../src/pipeline/worktree.js";
 import type { PipelineEvent } from "../../src/types.js";
 
 const exec = promisify(execFile);
@@ -330,5 +330,159 @@ describe("pushRepairBranch — bot 噪声不入修复分支（MR !442）", () =>
 		await pushRepairBranch(repoCwd, "ci-self-heal/feature/noise-only");
 
 		expect(await git(repoCwd, "rev-parse", "HEAD")).toBe(before);
+	});
+});
+
+describe("replayRepairChanges (real git, local file:// remote)", () => {
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "worktree-replay-"));
+		projectId = `proj-${basename(root)}`;
+		savedEnv = {
+			CIHEAL_DATA_ROOT: process.env.CIHEAL_DATA_ROOT,
+			CIHEAL_WORKTREE_MODE: process.env.CIHEAL_WORKTREE_MODE,
+		};
+		process.env.CIHEAL_DATA_ROOT = join(root, "data");
+		process.env.CIHEAL_WORKTREE_MODE = "real";
+	});
+
+	afterEach(() => {
+		for (const [k, v] of Object.entries(savedEnv)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	/** 显式构造分支拓扑（不用 remote.commit helper——它的 pin-master 语义
+	 *  会把索引残留卷进后续 commit，污染分支树）。返回 { baseSha, fixSha, newSha }。 */
+	async function buildTopology(
+		remote: RemoteRepo,
+		fixFileContent: string,
+		developerFileContent: string,
+	): Promise<{ baseSha: string; fixSha: string; newSha: string }> {
+		const baseSha = await remote.commit("dev", "base");
+		// 上轮修复分支：基于 baseSha，改 fix.txt
+		await git(remote.path, "checkout", "--quiet", "-B", "ci-self-heal/dev", baseSha);
+		await writeFile(join(remote.path, "fix.txt"), fixFileContent);
+		await git(remote.path, "add", "-A");
+		await git(remote.path, "commit", "--quiet", "-m", "bot fix");
+		const fixSha = await git(remote.path, "rev-parse", "ci-self-heal/dev");
+		// 开发者新提交：基于 baseSha，不含修复
+		await git(remote.path, "checkout", "--quiet", "-B", "dev", baseSha);
+		await writeFile(join(remote.path, "other.txt"), developerFileContent);
+		await git(remote.path, "add", "-A");
+		await git(remote.path, "commit", "--quiet", "-m", "developer change");
+		const newSha = await git(remote.path, "rev-parse", "dev");
+		return { baseSha, fixSha, newSha };
+	}
+
+	it("applied: 上游修复分支的改动被三方应用进新 worktree", async () => {
+		const remote = await initRemote();
+		const { baseSha, fixSha, newSha } = await buildTopology(
+			remote,
+			"bot fix content\n",
+			"developer work\n",
+		);
+
+		const repoPath = await createWorktree(join(root, "wr1"), event(newSha, "dev", remote.path));
+		const result = await replayRepairChanges({
+			repoCwd: repoPath,
+			branch: "ci-self-heal/dev",
+			baseSha,
+		});
+
+		expect(result.outcome).toBe("applied");
+		expect(result.commitRange).toBe(`${baseSha.slice(0, 8)}..${fixSha.slice(0, 8)}`);
+		// fix.txt 的改动确实落在工作区
+		const status = await git(repoPath, "status", "--porcelain");
+		expect(status).toContain("fix.txt");
+	});
+
+	it("empty: 新代码已含修复 → apply 成功但工作区无改动", async () => {
+		const remote = await initRemote();
+		const { baseSha, newSha } = await buildTopology(
+			remote,
+			"bot fix content\n",
+			"developer work\n",
+		);
+		// 开发者把同样的修复带进了新提交（cherry-pick 场景）
+		await git(remote.path, "checkout", "--quiet", "-B", "dev", newSha);
+		await writeFile(join(remote.path, "fix.txt"), "bot fix content\n");
+		await git(remote.path, "add", "-A");
+		await git(remote.path, "commit", "--quiet", "-m", "dev includes fix");
+		const withFixSha = await git(remote.path, "rev-parse", "dev");
+
+		const repoPath = await createWorktree(join(root, "wr2"), event(withFixSha, "dev", remote.path));
+		const result = await replayRepairChanges({
+			repoCwd: repoPath,
+			branch: "ci-self-heal/dev",
+			baseSha,
+		});
+
+		expect(result.outcome).toBe("empty");
+		expect(await git(repoPath, "status", "--porcelain")).toBe("");
+	});
+
+	it("conflict: 开发者改写同一区域 → 原子降级，工作区还原干净", async () => {
+		const remote = await initRemote();
+		const { baseSha, newSha } = await buildTopology(
+			remote,
+			"bot fix content\n",
+			"developer work\n",
+		);
+		// 开发者把 fix.txt 改成完全不同的内容（同文件冲突）
+		await git(remote.path, "checkout", "--quiet", "-B", "dev", newSha);
+		await writeFile(join(remote.path, "fix.txt"), "conflicting developer content\n");
+		await git(remote.path, "add", "-A");
+		await git(remote.path, "commit", "--quiet", "-m", "conflicting change");
+		const conflictSha = await git(remote.path, "rev-parse", "dev");
+
+		const repoPath = await createWorktree(join(root, "wr3"), event(conflictSha, "dev", remote.path));
+		const result = await replayRepairChanges({
+			repoCwd: repoPath,
+			branch: "ci-self-heal/dev",
+			baseSha,
+		});
+
+		expect(result.outcome).toBe("conflict");
+		// 原子降级：不留冲突标记、不留半套改动
+		expect(await git(repoPath, "status", "--porcelain")).toBe("");
+		// fix.txt 还原为开发者版本（无冲突标记、无 bot 内容）
+		const { readFileSync: rf } = await import("node:fs");
+		expect(rf(join(repoPath, "fix.txt"), "utf8")).toBe("conflicting developer content\n");
+	});
+
+	it("skipped: 上游无修复分支（fetch 失败）", async () => {
+		const remote = await initRemote();
+		const baseSha = await remote.commit("dev", "base");
+		await remote.commit("dev", "developer change");
+		const newSha = await git(remote.path, "rev-parse", "dev");
+
+		const repoPath = await createWorktree(join(root, "wr4"), event(newSha, "dev", remote.path));
+		const result = await replayRepairChanges({
+			repoCwd: repoPath,
+			branch: "ci-self-heal/dev",
+			baseSha,
+		});
+
+		expect(result.outcome).toBe("skipped");
+	});
+
+	it("skipped: 上游 tip 与 base 相同（无新修复）", async () => {
+		const remote = await initRemote();
+		const baseSha = await remote.commit("dev", "base");
+		// 修复分支存在但停在 baseSha（上轮无成果 push）
+		await git(remote.path, "branch", "ci-self-heal/dev", baseSha);
+		await remote.commit("dev", "developer change");
+		const newSha = await git(remote.path, "rev-parse", "dev");
+
+		const repoPath = await createWorktree(join(root, "wr5"), event(newSha, "dev", remote.path));
+		const result = await replayRepairChanges({
+			repoCwd: repoPath,
+			branch: "ci-self-heal/dev",
+			baseSha,
+		});
+
+		expect(result.outcome).toBe("skipped");
 	});
 });

@@ -67,6 +67,7 @@ function retainedWorktree(repoCwd: string): {
 			removeCalls.push(cwd);
 		},
 		pushBranch: async () => {},
+		replayChanges: async () => ({ outcome: "skipped" as const }),
 	};
 	void repoCwd;
 	return { worktree, removeCalls };
